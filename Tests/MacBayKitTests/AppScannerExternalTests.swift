@@ -331,22 +331,42 @@ final class AppScannerExternalTests: XCTestCase {
 
         let output = formatter.scan(report)
 
-        // Check Candidates section
+        // Check Header
         XCTAssertTrue(output.contains("MacBay scan"))
-        XCTAssertTrue(output.contains("Candidates: 0"))
+        XCTAssertTrue(output.contains("0 apps · 0 caches · 3 external"))
+        XCTAssertTrue(output.contains("App threshold: 200.0 MB"))
 
         // Check Already external section
         XCTAssertTrue(output.contains("Already external · 3"))
-        XCTAssertTrue(output.contains("  ↗ Example.app — 2.1 GB [MacBay]"))
-        XCTAssertTrue(output.contains("    /Applications/Example.app"))
-        XCTAssertTrue(output.contains("    → /Volumes/KLEVV/Applications/Example.app"))
-        XCTAssertTrue(output.contains("  ↗ Another.app — 850.0 MB [Unmanaged]"))
-        XCTAssertTrue(output.contains("  ↗ UnknownSize.app — Unknown [Unconfirmed]"))
+        XCTAssertTrue(output.contains("Example.app"))
+        XCTAssertTrue(output.contains("2.1 GB"))
+        XCTAssertTrue(output.contains("MacBay"))
+        XCTAssertTrue(output.contains("→ /Volumes/KLEVV/Applications/Example.app"))
+        XCTAssertTrue(output.contains("Another.app"))
+        XCTAssertTrue(output.contains("850.0 MB"))
+        XCTAssertTrue(output.contains("Unmanaged"))
+        XCTAssertTrue(output.contains("UnknownSize.app"))
+        XCTAssertTrue(output.contains("Unknown"))
+        XCTAssertTrue(output.contains("Unconfirmed"))
+
+        // Check legends
+        XCTAssertTrue(output.contains("MacBay: recorded in volume manifest"))
+        XCTAssertTrue(output.contains("Unmanaged: no matching MacBay migration record"))
+        XCTAssertTrue(output.contains("Unconfirmed: volume manifest read error"))
 
         // Check Unresolved links section
         XCTAssertTrue(output.contains("Unresolved links · 1"))
-        XCTAssertTrue(output.contains("  ? Offline.app — Target unavailable"))
-        XCTAssertTrue(output.contains("    → /Volumes/Backup/Applications/Offline.app"))
+        XCTAssertTrue(output.contains("Offline.app — Target unavailable"))
+        XCTAssertTrue(output.contains("→ /Volumes/Backup/Applications/Offline.app"))
+
+        // In non-verbose mode, sourcePath should not appear
+        XCTAssertFalse(output.contains("    /Applications/Example.app"))
+        XCTAssertFalse(output.contains("    /Applications/Offline.app"))
+
+        // In verbose mode, sourcePath should appear
+        let verboseOutput = formatter.scan(report, verbose: true)
+        XCTAssertTrue(verboseOutput.contains("    /Applications/Example.app"))
+        XCTAssertTrue(verboseOutput.contains("    /Applications/Offline.app"))
     }
 
     func testScanReportBackwardsCompatibleDecoding() throws {

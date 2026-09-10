@@ -189,4 +189,28 @@ final class CLIIntegrationTests: XCTestCase {
         XCTAssertEqual(result.status, 0)
         XCTAssertFalse(result.stdout.contains("\u{001B}"))
     }
+
+    func testScanVerboseExecution() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+
+        let result = try runCLI(arguments: ["scan", "--verbose"])
+        XCTAssertEqual(result.status, 0)
+        XCTAssertTrue(result.stdout.contains("MacBay scan"))
+    }
+
+    func testScanJsonWithVerboseOutputsPureJson() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+
+        let result = try runCLI(arguments: ["scan", "--json", "--verbose"])
+        XCTAssertEqual(result.status, 0)
+        guard let data = result.stdout.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return XCTFail("stdout was not valid JSON when --json --verbose were passed: \(result.stdout)")
+        }
+        XCTAssertNotNil(json["candidates"])
+    }
 }

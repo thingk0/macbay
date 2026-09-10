@@ -154,33 +154,48 @@ mb scan
 Output example:
 ```text
 MacBay scan
-Threshold: 200.0 MB
-Candidates: 8
-  • [app] 🟢 SAFE Aside.app — 2.0 GB (/Applications/Aside.app)
-  • [app] ⚠️ POPUP_RISK Claude.app — 825.2 MB (/Applications/Claude.app)
-  • [app] ❌ BLOCKED OrbStack.app — 694.6 MB (/Applications/OrbStack.app)
-  • [cache] CoreSimulator — 191.5 MB (/Users/.../Library/Developer/CoreSimulator)
-  • [cache] npm cache — 124.2 MB (/Users/.../.npm)
+8 apps · 2 caches · 2 external
+App threshold: 200.0 MB
+
+Applications · 8
+  NAME                  SIZE  STATUS
+  Aside.app           2.0 GB  Review
+  Claude.app        825.2 MB  Blocked
+  OrbStack.app      694.6 MB  Blocked
+  Antigravity.app   435.4 MB  Safe
+  Google Drive.app  345.4 MB  Safe
+  Grok Bot.app      311.4 MB  Review
+  cmux.app          310.2 MB  Blocked
+  KakaoTalk.app     240.2 MB  Safe
+
+  Safe: no relocation signals detected
+  Review: check compatibility details before using --force
+  Blocked: migration not allowed
+
+Developer caches · 2
+  CoreSimulator  191.5 MB
+  npm cache      124.2 MB
 
 Already external · 2
-  ↗ Aside.app — 2.0 GB [MacBay]
-    /Applications/Aside.app
-    → /Volumes/KLEVV/MacBay/Applications/Aside.app
+  ChatGPT.app   1.3 GB  Unmanaged
+    → /Volumes/KLEVV/Applications/ChatGPT.app
+  Kiro CLI.app  1.8 GB  Unmanaged
+    → /Volumes/KLEVV/Applications/Kiro CLI.app
 
-  ↗ LegacyTool.app — 850.0 MB [Unmanaged]
-    /Applications/LegacyTool.app
-    → /Volumes/KLEVV/Applications/LegacyTool.app
-
-Unresolved links · 1
-  ? Offline.app — Target unavailable
-    → /Volumes/Backup/Applications/Offline.app
+  Unmanaged: no matching MacBay migration record
 ```
 
-- **Candidates**: Local apps (≥ 200 MB) and caches eligible for docking.
-- **Already external**: Applications already relocated to external storage as symlinks:
-  - `[MacBay]`: Registered and managed in the external volume's `manifest.json`.
-  - `[Unmanaged]`: Relocated manually or outside of MacBay.
-  - `[Unconfirmed]`: Target is on external storage, but manifest reading failed.
+To see full bundle paths and detailed compatibility reasons/evidence:
+```sh
+mb scan --verbose
+```
+
+- **Applications**: Local apps (≥ 200 MB) with compatibility status (`Safe`, `Review`, `Blocked`).
+- **Developer caches**: Large developer tool caches (e.g. CoreSimulator, npm cache).
+- **Already external**: Applications already relocated to external storage:
+  - `MacBay`: Recorded and managed in the external volume's `manifest.json`.
+  - `Unmanaged`: Relocated manually or outside of MacBay.
+  - `Unconfirmed`: Target is on external storage, but manifest reading failed.
 - **Unresolved links**: Broken symlinks (`Target unavailable`), circular symlinks, or failed volume checks.
 
 ---
@@ -207,7 +222,7 @@ mb dock Example.app
 5. **System Refresh**: Rebuilds LaunchServices registration (`lsregister -f`) and restarts the Dock to avoid generic white icons.
 
 > [!NOTE]
-> If an application is flagged with ⚠️ **POPUP_RISK**, pass `--force` to proceed after reviewing potential risks:
+> If an application is flagged with ⚠️ **Review** (`POPUP_RISK` in JSON), pass `--force` to proceed after reviewing potential risks:
 > ```sh
 > mb dock Claude.app --force --dry-run
 > ```
@@ -283,9 +298,9 @@ To ensure data integrity, MacBay enforces strict volume eligibility criteria:
 
 Before migrating any bundle, `AppInspector` grades the application:
 
-- 🟢 **SAFE**: Clean bundle layout with no relocation hooks or virtualization requirements. Safe for standard relocation.
-- ⚠️ **POPUP_RISK**: Application contains self-relocation checks (e.g., `moveToApplicationsFolder`, `PFMoveToApplicationsFolder` in Mach-O/ASAR) or privileged helper tools (`SMPrivilegedExecutables`). Requires the `-f, --force` flag to migrate.
-- ❌ **BLOCKED**: Application requires hypervisor/virtualization entitlements (`com.apple.security.virtualization`), contains Driver/System/Kernel Extensions, or has corrupted code signatures. **Migration is blocked to prevent system instability.**
+- 🟢 **Safe** (`SAFE` in JSON): Clean bundle layout with no relocation hooks or virtualization requirements. Safe for standard relocation.
+- ⚠️ **Review** (`POPUP_RISK` in JSON): Application contains self-relocation checks (e.g., `moveToApplicationsFolder`, `PFMoveToApplicationsFolder` in Mach-O/ASAR) or privileged helper tools (`SMPrivilegedExecutables`). Requires the `-f, --force` flag to migrate.
+- ❌ **Blocked** (`BLOCKED` in JSON): Application requires hypervisor/virtualization entitlements (`com.apple.security.virtualization`), contains Driver/System/Kernel Extensions, or has corrupted code signatures. **Migration is blocked to prevent system instability.**
 
 ---
 

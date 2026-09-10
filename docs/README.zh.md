@@ -154,33 +154,48 @@ mb scan
 输出示例：
 ```text
 MacBay scan
-Threshold: 200.0 MB
-Candidates: 8
-  • [app] 🟢 SAFE Aside.app — 2.0 GB (/Applications/Aside.app)
-  • [app] ⚠️ POPUP_RISK Claude.app — 825.2 MB (/Applications/Claude.app)
-  • [app] ❌ BLOCKED OrbStack.app — 694.6 MB (/Applications/OrbStack.app)
-  • [cache] CoreSimulator — 191.5 MB (/Users/.../Library/Developer/CoreSimulator)
-  • [cache] npm cache — 124.2 MB (/Users/.../.npm)
+8 apps · 2 caches · 2 external
+App threshold: 200.0 MB
+
+Applications · 8
+  NAME                  SIZE  STATUS
+  Aside.app           2.0 GB  Review
+  Claude.app        825.2 MB  Blocked
+  OrbStack.app      694.6 MB  Blocked
+  Antigravity.app   435.4 MB  Safe
+  Google Drive.app  345.4 MB  Safe
+  Grok Bot.app      311.4 MB  Review
+  cmux.app          310.2 MB  Blocked
+  KakaoTalk.app     240.2 MB  Safe
+
+  Safe: no relocation signals detected
+  Review: check compatibility details before using --force
+  Blocked: migration not allowed
+
+Developer caches · 2
+  CoreSimulator  191.5 MB
+  npm cache      124.2 MB
 
 Already external · 2
-  ↗ Aside.app — 2.0 GB [MacBay]
-    /Applications/Aside.app
-    → /Volumes/KLEVV/MacBay/Applications/Aside.app
+  ChatGPT.app   1.3 GB  Unmanaged
+    → /Volumes/KLEVV/Applications/ChatGPT.app
+  Kiro CLI.app  1.8 GB  Unmanaged
+    → /Volumes/KLEVV/Applications/Kiro CLI.app
 
-  ↗ LegacyTool.app — 850.0 MB [Unmanaged]
-    /Applications/LegacyTool.app
-    → /Volumes/KLEVV/Applications/LegacyTool.app
-
-Unresolved links · 1
-  ? Offline.app — Target unavailable
-    → /Volumes/Backup/Applications/Offline.app
+  Unmanaged: no matching MacBay migration record
 ```
 
-- **候选目标 (Candidates)**: 位于本地内置磁盘、可进行迁移的大型应用程序（≥ 200 MB）与缓存。
-- **已外部化应用 (Already external)**: 已通过符号链接重定向至外置磁盘的应用程序：
-  - `[MacBay]`: 已登记在外置卷的 `manifest.json` 中并由 MacBay 管理。
-  - `[Unmanaged]`: 手动迁移或通过其他工具迁移、MacBay 中无记录的应用。
-  - `[Unconfirmed]`: 目标位于外置卷，但读取清单文件时出错。
+若需查看完整应用路径及详细兼容性评估原因与证据：
+```sh
+mb scan --verbose
+```
+
+- **候选应用 (Applications)**: 位于内置磁盘的大型应用（≥ 200 MB）及兼容性等级（`Safe`、`Review`、`Blocked`）。
+- **开发者缓存 (Developer caches)**: 大型开发工具缓存（如 CoreSimulator、npm cache）。
+- **已外部化应用 (Already external)**: 已重定向至外置存储的应用程序：
+  - `MacBay`: 已登记在外置卷的 `manifest.json` 中并由 MacBay 管理。
+  - `Unmanaged`: 手动迁移或通过其他工具迁移、MacBay 中无记录的应用。
+  - `Unconfirmed`: 目标位于外置卷，但读取清单文件时出错。
 - **未解析链接 (Unresolved links)**: 目标不存在（`Target unavailable`）、循环链接或卷检查失败等异常链接。
 
 ---
@@ -207,7 +222,7 @@ mb dock Example.app
 5. **系统刷新**：重建 LaunchServices 注册数据库（`lsregister -f`）并重启 Dock，防止应用图标变为通用的白色占位图标。
 
 > [!NOTE]
-> 如果应用程序被标记为 ⚠️ **POPUP_RISK**，在评估潜在风险后可传入 `--force` 参数强制继续：
+> 如果应用程序被标记为 ⚠️ **Review**（JSON 中的 `POPUP_RISK`），在评估潜在风险后可传入 `--force` 参数强制继续：
 > ```sh
 > mb dock Claude.app --force --dry-run
 > ```
@@ -283,9 +298,9 @@ mb cache --reset
 
 在迁移任何应用包之前，`AppInspector` 都会对该应用程序进行等级评估：
 
-- 🟢 **SAFE**：应用包结构规范，无自我重定位钩子或虚拟化依赖。可安全进行常规迁移。
-- ⚠️ **POPUP_RISK**：应用程序包含自我重定位检测（例如在 Mach-O/ASAR 中调用 `moveToApplicationsFolder`、`PFMoveToApplicationsFolder`）或特权辅助工具（`SMPrivilegedExecutables`）。需要传入 `-f, --force` 参数才可迁移。
-- ❌ **BLOCKED**：应用程序需要虚拟化/虚拟机管理权限（`com.apple.security.virtualization`）、包含驱动程序/系统/内核扩展（Driver/System/Kernel Extensions），或代码签名损坏。**禁止迁移此类应用，以防引发系统不稳定。**
+- 🟢 **Safe**（JSON 中的 `SAFE`）：应用包结构规范，无自我重定位钩子或虚拟化依赖。可安全进行常规迁移。
+- ⚠️ **Review**（JSON 中的 `POPUP_RISK`）：应用程序包含自我重定位检测（例如在 Mach-O/ASAR 中调用 `moveToApplicationsFolder`、`PFMoveToApplicationsFolder`）或特权辅助工具（`SMPrivilegedExecutables`）。需要传入 `-f, --force` 参数才可迁移。
+- ❌ **Blocked**（JSON 中的 `BLOCKED`）：应用程序需要虚拟化/虚拟机管理权限（`com.apple.security.virtualization`）、包含驱动程序/系统/内核扩展（Driver/System/Kernel Extensions），或代码签名损坏。**禁止迁移此类应用，以防引发系统不稳定。**
 
 ---
 

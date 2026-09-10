@@ -31,4 +31,5 @@ Icon?
 
 # Agent / Tool Artifacts
 .gemini/
+.commandcode/
 scratch/

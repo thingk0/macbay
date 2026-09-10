@@ -223,4 +223,266 @@ final class OutputFormatterTests: XCTestCase {
 
         XCTAssertFalse(output.contains("\u{001B}"))
     }
+
+    func testDisplayWidthCalculation() {
+        // ASCII
+        XCTAssertEqual(OutputFormatter.displayWidth(of: "Hello World"), 11)
+        XCTAssertEqual(OutputFormatter.displayWidth(of: ""), 0)
+
+        // Korean (Hangul Syllables: width 2 each)
+        // "카카오톡.app": 4 * 2 + 4 = 12
+        XCTAssertEqual(OutputFormatter.displayWidth(of: "카카오톡.app"), 12)
+
+        // Japanese (Kanji + Katakana / Hiragana: width 2 each)
+        // "日本語.app": 3 * 2 + 4 = 10
+        XCTAssertEqual(OutputFormatter.displayWidth(of: "日本語.app"), 10)
+
+        // Chinese (Unified Ideographs: width 2 each)
+        // "微信.app": 2 * 2 + 4 = 8
+        XCTAssertEqual(OutputFormatter.displayWidth(of: "微信.app"), 8)
+
+        // Emoji (width 2 each)
+        // "🚀.app": 2 + 4 = 6
+        XCTAssertEqual(OutputFormatter.displayWidth(of: "🚀.app"), 6)
+
+        // ANSI escape codes should be ignored (width 0)
+        XCTAssertEqual(OutputFormatter.displayWidth(of: "\u{001B}[1;36mSafe\u{001B}[0m"), 4)
+        XCTAssertEqual(OutputFormatter.displayWidth(of: "\u{001B}[90m   path\u{001B}[0m"), 7)
+
+        // Control characters should be ignored
+        XCTAssertEqual(OutputFormatter.displayWidth(of: "\u{0007}text\u{001B}"), 4)
+    }
+
+    func testTerminalWidthDetection() {
+        // Explicit COLUMNS environment variable
+        XCTAssertEqual(OutputFormatter.terminalWidth(isTTY: false, environment: ["COLUMNS": "120"]), 120)
+        XCTAssertEqual(OutputFormatter.terminalWidth(isTTY: true, environment: ["COLUMNS": "40"]), 40)
+
+        // Non-TTY with no or invalid COLUMNS should default to 80
+        XCTAssertEqual(OutputFormatter.terminalWidth(isTTY: false, environment: [:]), 80)
+        XCTAssertEqual(OutputFormatter.terminalWidth(isTTY: false, environment: ["COLUMNS": "-5"]), 80)
+        XCTAssertEqual(OutputFormatter.terminalWidth(isTTY: false, environment: ["COLUMNS": "abc"]), 80)
+    }
+
+    func testScanEmptyState() {
+        let formatter = OutputFormatter(useColor: false)
+        let report = ScanReport(
+            generatedAt: "2026-09-10T12:00:00Z",
+            minimumApplicationSizeBytes: 200 * 1024 * 1024,
+            candidates: [],
+            externalApplications: [],
+            unresolvedApplicationLinks: [],
+            warnings: []
+        )
+
+        let output = formatter.scan(report)
+        XCTAssertTrue(output.contains("MacBay scan"))
+        XCTAssertTrue(output.contains("0 apps · 0 caches · 0 external"))
+        XCTAssertTrue(output.contains("App threshold: 200.0 MB"))
+        XCTAssertTrue(output.contains("No relocation candidates or external applications found."))
+        XCTAssertFalse(output.contains("Applications ·"))
+        XCTAssertFalse(output.contains("Developer caches ·"))
+        XCTAssertFalse(output.contains("Already external ·"))
+    }
+
+    func testScanDefaultLayoutAndAlignment() {
+        let formatter = OutputFormatter(useColor: false)
+        let app1 = AppCandidate(
+            name: "Aside.app",
+            path: "/Applications/Aside.app",
+            sizeBytes: 2_147_483_648, // 2.0 GB
+            kind: .application,
+            compatibility: CompatibilityAssessment(grade: .popupRisk, reasons: ["Accessibility helper detected"])
+        )
+        let app2 = AppCandidate(
+            name: "Claude.app",
+            path: "/Applications/Claude.app",
+            sizeBytes: 865_278_361, // 825.2 MB
+            kind: .application,
+            compatibility: CompatibilityAssessment(grade: .blocked, reasons: ["System extension"])
+        )
+        let app3 = AppCandidate(
+            name: "Antigravity.app",
+            path: "/Applications/Antigravity.app",
+            sizeBytes: 456_555_724, // 435.4 MB
+            kind: .application,
+            compatibility: CompatibilityAssessment(grade: .safe, reasons: [])
+        )
+        let cache = AppCandidate(
+            name: "CoreSimulator",
+            path: "/Users/test/Library/Developer/CoreSimulator",
+            sizeBytes: 200_802_304, // 191.5 MB
+            kind: .developerCache,
+            compatibility: nil
+        )
+        let ext = ExternalApplication(
+            name: "ChatGPT.app",
+            sourcePath: "/Applications/ChatGPT.app",
+            destinationPath: "/Volumes/KLEVV/Applications/ChatGPT.app",
+            sizeBytes: 1_395_864_371, // 1.3 GB
+            managementStatus: .unmanaged
+        )
+
+        let report = ScanReport(
+            generatedAt: "2026-09-10T12:00:00Z",
+            minimumApplicationSizeBytes: 200 * 1024 * 1024,
+            candidates: [app1, app2, app3, cache],
+            externalApplications: [ext],
+            unresolvedApplicationLinks: [],
+            warnings: []
+        )
+
+        let output = formatter.scan(report, terminalWidth: 80)
+
+        // Summary header
+        XCTAssertTrue(output.contains("MacBay scan"))
+        XCTAssertTrue(output.contains("3 apps · 1 cache · 1 external"))
+        XCTAssertTrue(output.contains("App threshold: 200.0 MB"))
+
+        // Applications section
+        XCTAssertTrue(output.contains("Applications · 3"))
+        XCTAssertTrue(output.contains("NAME"))
+        XCTAssertTrue(output.contains("SIZE"))
+        XCTAssertTrue(output.contains("STATUS"))
+        XCTAssertTrue(output.contains("Aside.app"))
+        XCTAssertTrue(output.contains("Review"))
+        XCTAssertTrue(output.contains("Claude.app"))
+        XCTAssertTrue(output.contains("Blocked"))
+        XCTAssertTrue(output.contains("Antigravity.app"))
+        XCTAssertTrue(output.contains("Safe"))
+
+        // Legends
+        XCTAssertTrue(output.contains("Safe: no relocation signals detected"))
+        XCTAssertTrue(output.contains("Review: check compatibility details before using --force"))
+        XCTAssertTrue(output.contains("Blocked: migration not allowed"))
+
+        // Developer caches section
+        XCTAssertTrue(output.contains("Developer caches · 1"))
+        XCTAssertTrue(output.contains("CoreSimulator"))
+        XCTAssertTrue(output.contains("191.5 MB"))
+
+        // Already external section
+        XCTAssertTrue(output.contains("Already external · 1"))
+        XCTAssertTrue(output.contains("ChatGPT.app"))
+        XCTAssertTrue(output.contains("1.3 GB"))
+        XCTAssertTrue(output.contains("Unmanaged"))
+        XCTAssertTrue(output.contains("Unmanaged: no matching MacBay migration record"))
+    }
+
+    func testScanNarrowTerminalWrapping() {
+        let formatter = OutputFormatter(useColor: false)
+        let longName = "VeryLongAppNameExceedingNarrowTerminalLimit.app"
+        let app = AppCandidate(
+            name: longName,
+            path: "/Applications/\(longName)",
+            sizeBytes: 1_073_741_824, // 1.0 GB
+            kind: .application,
+            compatibility: CompatibilityAssessment(grade: .safe, reasons: [])
+        )
+        let report = ScanReport(
+            generatedAt: "2026-09-10T12:00:00Z",
+            minimumApplicationSizeBytes: 200 * 1024 * 1024,
+            candidates: [app],
+            externalApplications: [],
+            unresolvedApplicationLinks: [],
+            warnings: []
+        )
+
+        let output = formatter.scan(report, terminalWidth: 40)
+        XCTAssertTrue(output.contains("  \(longName)\n    1.0 GB  Safe"))
+        // Name should never be truncated
+        XCTAssertTrue(output.contains(longName))
+    }
+
+    func testScanVerboseMode() {
+        let formatter = OutputFormatter(useColor: false)
+        let app = AppCandidate(
+            name: "Aside.app",
+            path: "/Applications/Aside.app",
+            sizeBytes: 2_147_483_648,
+            kind: .application,
+            compatibility: CompatibilityAssessment(
+                grade: .popupRisk,
+                reasons: ["Contains LaunchAgent"],
+                evidence: ["com.example.aside.plist"]
+            )
+        )
+        let cache = AppCandidate(
+            name: "npm cache",
+            path: "/Users/test/.npm",
+            sizeBytes: 130_245_000,
+            kind: .developerCache,
+            compatibility: nil
+        )
+        let ext = ExternalApplication(
+            name: "ChatGPT.app",
+            sourcePath: "/Applications/ChatGPT.app",
+            destinationPath: "/Volumes/KLEVV/Applications/ChatGPT.app",
+            sizeBytes: 1_000_000_000,
+            managementStatus: .macBay
+        )
+        let link = UnresolvedApplicationLink(
+            name: "DeadLink.app",
+            sourcePath: "/Applications/DeadLink.app",
+            destinationPath: "/Volumes/Gone/DeadLink.app",
+            reason: "Target unavailable"
+        )
+        let report = ScanReport(
+            generatedAt: "2026-09-10T12:00:00Z",
+            minimumApplicationSizeBytes: 200 * 1024 * 1024,
+            candidates: [app, cache],
+            externalApplications: [ext],
+            unresolvedApplicationLinks: [link],
+            warnings: []
+        )
+
+        let normalOutput = formatter.scan(report, verbose: false)
+        XCTAssertFalse(normalOutput.contains("• Contains LaunchAgent"))
+        XCTAssertFalse(normalOutput.contains("Evidence: com.example.aside.plist"))
+        XCTAssertFalse(normalOutput.contains("    /Users/test/.npm"))
+        XCTAssertFalse(normalOutput.contains("    /Applications/ChatGPT.app"))
+        XCTAssertFalse(normalOutput.contains("    /Applications/DeadLink.app"))
+
+        let verboseOutput = formatter.scan(report, verbose: true)
+        XCTAssertTrue(verboseOutput.contains("• Contains LaunchAgent"))
+        XCTAssertTrue(verboseOutput.contains("Evidence: com.example.aside.plist"))
+        XCTAssertTrue(verboseOutput.contains("    /Users/test/.npm"))
+        XCTAssertTrue(verboseOutput.contains("    /Applications/ChatGPT.app"))
+        XCTAssertTrue(verboseOutput.contains("    /Applications/DeadLink.app"))
+    }
+
+    func testScanNoColorProducesNoAnsi() {
+        let formatter = OutputFormatter(useColor: false)
+        let app = AppCandidate(
+            name: "Aside.app",
+            path: "/Applications/Aside.app",
+            sizeBytes: 2_147_483_648,
+            kind: .application,
+            compatibility: CompatibilityAssessment(grade: .popupRisk, reasons: ["Risk"])
+        )
+        let ext = ExternalApplication(
+            name: "Ext.app",
+            sourcePath: "/Applications/Ext.app",
+            destinationPath: "/Volumes/Ext/Ext.app",
+            sizeBytes: 100,
+            managementStatus: .macBay
+        )
+        let link = UnresolvedApplicationLink(
+            name: "Link.app",
+            sourcePath: "/Applications/Link.app",
+            destinationPath: "/Volumes/Gone/Link.app",
+            reason: "Target unavailable"
+        )
+        let report = ScanReport(
+            generatedAt: "2026-09-10T12:00:00Z",
+            minimumApplicationSizeBytes: 200 * 1024 * 1024,
+            candidates: [app],
+            externalApplications: [ext],
+            unresolvedApplicationLinks: [link],
+            warnings: ["A warning"]
+        )
+
+        let output = formatter.scan(report, verbose: true)
+        XCTAssertFalse(output.contains("\u{001B}"))
+    }
 }
