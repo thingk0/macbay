@@ -39,11 +39,7 @@ public struct DirectoryMigrator {
 
         try processInspector.assertSafeToMove(path: source)
         let sizeBytes = try sizeCalculator.size(of: source)
-        var messages = [
-            "Source: \(source.path)",
-            "Destination: \(destination.path)",
-            "Size: \(OutputFormatter.humanBytes(sizeBytes))"
-        ]
+        var messages: [String] = []
 
         if dryRun {
             messages.append("Dry run: no files were changed")
