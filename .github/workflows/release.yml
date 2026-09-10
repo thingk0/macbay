@@ -1,0 +1,51 @@
+name: Release
+
+# Releases are cut by tagging a commit on main. Homebrew builds macbay from the
+# tagged source, so the tag is what users actually install.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish release
+    runs-on: macos-14
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app
+
+      - name: Show Swift version
+        run: swift --version
+
+      - name: Build release binaries
+        run: swift build -c release
+
+      - name: Verify the tagged binaries run
+        run: |
+          .build/release/mb --version
+          .build/release/macbay --version
+
+      # The tag must match the version the CLI reports, otherwise `brew upgrade`
+      # installs a binary that disagrees with the release it came from.
+      - name: Check the tag matches the reported version
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          cli_version="$(.build/release/mb --version)"
+          if [ "$tag_version" != "$cli_version" ]; then
+            echo "Tag ${GITHUB_REF_NAME} reports version ${cli_version}" >&2
+            echo "Update the version in Sources/macbay/main.swift or retag." >&2
+            exit 1
+          fi
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" --verify-tag --generate-notes
