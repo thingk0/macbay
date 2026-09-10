@@ -145,7 +145,7 @@ Warnings · 2
 
 ### 2. 发现可迁移目标
 
-扫描大型应用程序及各类开发者缓存，并获取安全评估结果：
+扫描大型应用程序、开发者缓存、已外部化应用程序以及断开的符号链接：
 
 ```sh
 mb scan
@@ -161,7 +161,27 @@ Candidates: 8
   • [app] ❌ BLOCKED OrbStack.app — 694.6 MB (/Applications/OrbStack.app)
   • [cache] CoreSimulator — 191.5 MB (/Users/.../Library/Developer/CoreSimulator)
   • [cache] npm cache — 124.2 MB (/Users/.../.npm)
+
+Already external · 2
+  ↗ Aside.app — 2.0 GB [MacBay]
+    /Applications/Aside.app
+    → /Volumes/KLEVV/MacBay/Applications/Aside.app
+
+  ↗ LegacyTool.app — 850.0 MB [Unmanaged]
+    /Applications/LegacyTool.app
+    → /Volumes/KLEVV/Applications/LegacyTool.app
+
+Unresolved links · 1
+  ? Offline.app — Target unavailable
+    → /Volumes/Backup/Applications/Offline.app
 ```
+
+- **候选目标 (Candidates)**: 位于本地内置磁盘、可进行迁移的大型应用程序（≥ 200 MB）与缓存。
+- **已外部化应用 (Already external)**: 已通过符号链接重定向至外置磁盘的应用程序：
+  - `[MacBay]`: 已登记在外置卷的 `manifest.json` 中并由 MacBay 管理。
+  - `[Unmanaged]`: 手动迁移或通过其他工具迁移、MacBay 中无记录的应用。
+  - `[Unconfirmed]`: 目标位于外置卷，但读取清单文件时出错。
+- **未解析链接 (Unresolved links)**: 目标不存在（`Target unavailable`）、循环链接或卷检查失败等异常链接。
 
 ---
 

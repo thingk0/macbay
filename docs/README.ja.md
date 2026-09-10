@@ -145,7 +145,7 @@ Warnings · 2
 
 ### 2. 外部化候補の検出
 
-大容量アプリケーションや開発者キャッシュをスキャンし、それぞれの安全性評価を確認します:
+大容量アプリケーション、開発者キャッシュ、すでに外部化されたアプリ、および壊れたリンクをスキャンします:
 
 ```sh
 mb scan
@@ -161,7 +161,27 @@ Candidates: 8
   • [app] ❌ BLOCKED OrbStack.app — 694.6 MB (/Applications/OrbStack.app)
   • [cache] CoreSimulator — 191.5 MB (/Users/.../Library/Developer/CoreSimulator)
   • [cache] npm cache — 124.2 MB (/Users/.../.npm)
+
+Already external · 2
+  ↗ Aside.app — 2.0 GB [MacBay]
+    /Applications/Aside.app
+    → /Volumes/KLEVV/MacBay/Applications/Aside.app
+
+  ↗ LegacyTool.app — 850.0 MB [Unmanaged]
+    /Applications/LegacyTool.app
+    → /Volumes/KLEVV/Applications/LegacyTool.app
+
+Unresolved links · 1
+  ? Offline.app — Target unavailable
+    → /Volumes/Backup/Applications/Offline.app
 ```
+
+- **移行候補（Candidates）**: 内蔵ディスク上にあり、外部化可能な大容量アプリ（200 MB以上）およびキャッシュ。
+- **外部化済みアプリ（Already external）**: シンボリックリンクによりすでに外部ストレージに配置されているアプリ:
+  - `[MacBay]`: 外部ボリュームの `manifest.json` に記録され、MacBay によって管理されているアプリ。
+  - `[Unmanaged]`: 手動または他のツールで外部へ移動され、MacBay の記録にない未管理アプリ。
+  - `[Unconfirmed]`: 外部ボリューム上にあるものの、マニフェスト読み取りに失敗した状態。
+- **未解決リンク（Unresolved links）**: リンク先が存在しない（`Target unavailable`）、循環リンク、ボリューム確認エラーなどの異常なリンク。
 
 ---
 

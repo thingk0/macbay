@@ -145,7 +145,7 @@ Warnings · 2
 
 ### 2. 외장화 대상 탐색
 
-안전성 평가 결과와 함께 대용량 애플리케이션 및 개발자 캐시를 검색합니다:
+대용량 애플리케이션, 개발자 캐시, 이미 외장으로 옮긴 앱 및 비정상 심볼릭 링크를 검색합니다:
 
 ```sh
 mb scan
@@ -161,7 +161,27 @@ Candidates: 8
   • [app] ❌ BLOCKED OrbStack.app — 694.6 MB (/Applications/OrbStack.app)
   • [cache] CoreSimulator — 191.5 MB (/Users/.../Library/Developer/CoreSimulator)
   • [cache] npm cache — 124.2 MB (/Users/.../.npm)
+
+Already external · 2
+  ↗ Aside.app — 2.0 GB [MacBay]
+    /Applications/Aside.app
+    → /Volumes/KLEVV/MacBay/Applications/Aside.app
+
+  ↗ LegacyTool.app — 850.0 MB [Unmanaged]
+    /Applications/LegacyTool.app
+    → /Volumes/KLEVV/Applications/LegacyTool.app
+
+Unresolved links · 1
+  ? Offline.app — Target unavailable
+    → /Volumes/Backup/Applications/Offline.app
 ```
+
+- **이동 후보 (Candidates)**: 내장 디스크에 위치하며 이전 가능한 대용량 앱(200 MB 이상) 및 캐시입니다.
+- **이미 외장화된 앱 (Already external)**: 심볼릭 링크로 외장 디스크를 가리키는 애플리케이션입니다:
+  - `[MacBay]`: 외장 볼륨의 `manifest.json`에 기록되어 MacBay가 관리 중인 앱.
+  - `[Unmanaged]`: 수동 또는 다른 도구로 외장에 이전되어 MacBay 기록이 없는 앱.
+  - `[Unconfirmed]`: 외장 볼륨에 있으나 매니페스트 확인 중 오류가 발생한 상태.
+- **연결 끊긴 링크 (Unresolved links)**: 대상이 없거나(`Target unavailable`), 순환 링크, 볼륨 확인 실패 등의 비정상 링크입니다.
 
 ---
 
