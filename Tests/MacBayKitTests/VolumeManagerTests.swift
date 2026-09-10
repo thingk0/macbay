@@ -292,6 +292,8 @@ final class MockDiskInfoProvider: DiskInfoProvider, @unchecked Sendable {
 
 final class MockFileManager: FileManager, @unchecked Sendable {
     let mountedPaths: [String]
+    var unreadableLinkPaths: Set<String> = []
+    var unreadableDirectoryPaths: Set<String> = []
 
     init(mountedPaths: [String]) {
         self.mountedPaths = mountedPaths
@@ -303,5 +305,31 @@ final class MockFileManager: FileManager, @unchecked Sendable {
         options: FileManager.VolumeEnumerationOptions = []
     ) -> [URL]? {
         mountedPaths.map { URL(fileURLWithPath: $0) }
+    }
+
+    override func destinationOfSymbolicLink(atPath path: String) throws -> String {
+        if unreadableLinkPaths.contains(path) {
+            throw NSError(
+                domain: NSPOSIXErrorDomain,
+                code: Int(EACCES),
+                userInfo: [NSLocalizedDescriptionKey: "Operation not permitted"]
+            )
+        }
+        return try super.destinationOfSymbolicLink(atPath: path)
+    }
+
+    override func contentsOfDirectory(
+        at url: URL,
+        includingPropertiesForKeys keys: [URLResourceKey]?,
+        options mask: FileManager.DirectoryEnumerationOptions = []
+    ) throws -> [URL] {
+        if unreadableDirectoryPaths.contains(url.path) {
+            throw NSError(
+                domain: NSPOSIXErrorDomain,
+                code: Int(EACCES),
+                userInfo: [NSLocalizedDescriptionKey: "Operation not permitted"]
+            )
+        }
+        return try super.contentsOfDirectory(at: url, includingPropertiesForKeys: keys, options: mask)
     }
 }

@@ -38,4 +38,16 @@ enum CommandSupport {
             print(human(formatter))
         }
     }
+
+    static func printFailure(_ error: Error, json: Bool) {
+        if json {
+            let payload = MacBayErrorPayload(error: error)
+            if let jsonString = try? formatter(json: true).json(payload) {
+                fputs("\(jsonString)\n", stderr)
+            }
+        } else {
+            let message = (error as? MacBayError)?.errorDescription ?? error.localizedDescription
+            fputs("Error: \(message)\n", stderr)
+        }
+    }
 }

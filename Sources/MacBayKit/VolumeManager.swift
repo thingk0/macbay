@@ -196,6 +196,43 @@ public struct VolumeManager {
         try externalVolumesWithWarnings().eligible
     }
 
+    public func diagnosticVolumes() -> (volumes: [VolumeDiskInfo], warnings: [String]) {
+        let mounted = fileManager.mountedVolumeURLs(
+            includingResourceValuesForKeys: nil,
+            options: [.skipHiddenVolumes]
+        ) ?? []
+
+        let container = URL(fileURLWithPath: volumeMountPrefix).standardizedFileURL.path
+        let prefix = container.hasSuffix("/") ? container : container + "/"
+
+        var volumes: [VolumeDiskInfo] = []
+        var warnings: [String] = []
+        var seenMountPoints: Set<String> = []
+
+        for url in mounted {
+            let path = url.standardizedFileURL.path
+            guard path.hasPrefix(prefix), path != container else {
+                continue
+            }
+            do {
+                let info = try diskInfoProvider.diskInfo(for: path)
+                guard !info.isInternal else { continue }
+                let mountPoint = URL(fileURLWithPath: info.mountPoint).standardizedFileURL.path
+                guard mountPoint != container else { continue }
+                let key = mountPoint.lowercased()
+                guard !seenMountPoints.contains(key) else { continue }
+                seenMountPoints.insert(key)
+                volumes.append(info)
+            } catch {
+                warnings.append("Unable to inspect volume at \(path): \(error.localizedDescription)")
+            }
+        }
+
+        volumes.sort { $0.mountPoint.localizedCaseInsensitiveCompare($1.mountPoint) == .orderedAscending }
+        warnings.sort()
+        return (volumes, warnings)
+    }
+
     public func resolveExternalVolume(path: String?) throws -> StorageVolume {
         if let path {
             let standardizedPath = MacBayPaths.expandedURL(path).path

@@ -7,7 +7,7 @@ struct DockCommand: ParsableCommand {
         abstract: "Move an application to external storage and symlink it back."
     )
 
-    @Argument(help: "Application name, such as Aside.app, or an application path.")
+    @Argument(help: "Application name, such as Example.app, or an application path.")
     var app: String
 
     @Flag(name: .long, help: "Force migration for apps flagged with popup risk.")

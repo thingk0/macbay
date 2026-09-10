@@ -11,6 +11,7 @@ struct MacBay: ParsableCommand {
         subcommands: [
             StatusCommand.self,
             ScanCommand.self,
+            DoctorCommand.self,
             DockCommand.self,
             UndockCommand.self,
             XcodeCommand.self,
@@ -22,6 +23,8 @@ struct MacBay: ParsableCommand {
         do {
             var command = try parseAsRoot()
             try command.run()
+        } catch let exitCode as ExitCode {
+            Darwin.exit(exitCode.rawValue)
         } catch {
             let code = exitCode(for: error)
             if code.isSuccess {

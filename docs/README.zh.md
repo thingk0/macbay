@@ -129,18 +129,18 @@ Internal · Macintosh HD
   Used: 96.3 GB / 228.3 GB
   Free: 132.0 GB
 
-External · KLEVV
-  /Volumes/KLEVV
-  ██░░░░░░░░░░░░░░░░░░  7.6% used
-  Used: 70.9 GB / 931.3 GB
-  Free: 860.4 GB
+External · ExternalSSD
+  /Volumes/ExternalSSD
+  ████░░░░░░░░░░░░░░░░  20.5% used
+  Used: 205.0 GB / 1000.0 GB
+  Free: 795.0 GB
 
 Docked items · 0
   None
 
 Warnings · 2
-  • Excluded volume 'Antigravity' (/Volumes/Antigravity): Disk image volumes are not supported
-  • Excluded volume 'Grok Bot Installer' (/Volumes/Grok Bot Installer): Disk image volumes are not supported
+  • Excluded volume 'InstallerImage' (/Volumes/InstallerImage): Disk image volumes are not supported
+  • Excluded volume 'ToolInstaller' (/Volumes/ToolInstaller): Disk image volumes are not supported
 ```
 
 ### 2. 发现可迁移目标
@@ -158,15 +158,15 @@ MacBay scan
 App threshold: 200.0 MB
 
 Applications · 8
-  NAME                  SIZE  STATUS
-  Aside.app           2.0 GB  Review
-  Claude.app        825.2 MB  Blocked
-  OrbStack.app      694.6 MB  Blocked
-  Antigravity.app   435.4 MB  Safe
-  Google Drive.app  345.4 MB  Safe
-  Grok Bot.app      311.4 MB  Review
-  cmux.app          310.2 MB  Blocked
-  KakaoTalk.app     240.2 MB  Safe
+  NAME                    SIZE  STATUS
+  HeavyStudio.app       2.1 GB  Review
+  VirtualMachine.app    1.8 GB  Blocked
+  ContainerRuntime.app  1.2 GB  Blocked
+  DeveloperIDE.app    850.0 MB  Safe
+  CloudStorage.app    620.4 MB  Safe
+  SystemHelper.app    410.2 MB  Review
+  DriverDaemon.app    320.0 MB  Blocked
+  Messenger.app       240.5 MB  Safe
 
   Safe: no relocation signals detected
   Review: check compatibility details before using --force
@@ -177,11 +177,12 @@ Developer caches · 2
   npm cache      124.2 MB
 
 Already external · 2
-  ChatGPT.app   1.3 GB  Unmanaged
-    → /Volumes/KLEVV/Applications/ChatGPT.app
-  Kiro CLI.app  1.8 GB  Unmanaged
-    → /Volumes/KLEVV/Applications/Kiro CLI.app
+  DesignKit.app    1.5 GB  Unmanaged
+    → /Volumes/ExternalSSD/Applications/DesignKit.app
+  AudioEngine.app  1.2 GB  MacBay
+    → /Volumes/ExternalSSD/MacBay/Applications/AudioEngine.app
 
+  MacBay: recorded in volume manifest
   Unmanaged: no matching MacBay migration record
 ```
 
@@ -198,9 +199,68 @@ mb scan --verbose
   - `Unconfirmed`: 目标位于外置卷，但读取清单文件时出错。
 - **未解析链接 (Unresolved links)**: 目标不存在（`Target unavailable`）、循环链接或卷检查失败等异常链接。
 
+### 3. 链接与记录诊断
+
+检查应用程序链接、开发者缓存链接，以及已连接卷中的 MacBay 记录是否与实际情况一致。`doctor` 为只读命令，不会修改任何文件：
+
+```sh
+mb doctor
+```
+
+输出示例：
+```text
+MacBay doctor
+
+Volumes consulted · 1
+  • ExternalSSD (/Volumes/ExternalSSD) — 2 records
+
+Needs attention · 1
+  ! OfflineApp.app — Target unavailable: /Volumes/ExternalSSD/MacBay/Applications/OfflineApp.app
+    Next: Reconnect the volume or confirm the path exists, then run 'mb doctor' again.
+
+Healthy · 2
+  • AudioEngine.app → /Volumes/ExternalSSD/MacBay/Applications/AudioEngine.app [MacBay]
+  • LegacyTool.app → /Volumes/Backup/LegacyTool.app [unmanaged]
+```
+
+- `Healthy`：链接可正常解析，且与 MacBay 记录或既有目录结构一致。无记录的链接会作为 `unmanaged` 信息展示，而非问题。
+- `Needs attention`：链接断开、循环链接、实际目标与记录路径不一致，或记录中的外置副本已丢失。
+- `Unable to verify`：无法读取链接、链接所在卷或该卷的 `manifest.json`（例如权限错误或清单文件损坏）。
+- `Nothing to verify`（没有可检查的记录或链接）会与“未发现问题”分开报告。
+
+退出码：无异常 `0`，发现问题或存在无法验证项 `1`，诊断本身执行失败（例如 `--volume` 路径无法检查）`2`。
+
+> [!NOTE]
+> MacBay 只读取已连接外置卷中的记录，因此无法验证已断开的驱动器。诊断只报告实际检查到的范围，不会假设目标丢失是由于磁盘拔出或数据删除。
+
 ---
 
 ## 命令与用法
+
+### 链接与记录诊断 (`doctor`)
+
+检查 `/Applications` 中的链接、已知的开发者缓存链接，以及已连接外置卷（含只读卷）中的 MacBay 记录。该命令不会修改任何文件或配置：
+
+```sh
+# 诊断已连接的卷与本地链接
+mb doctor
+
+# 额外检查未挂载在 /Volumes 下的卷
+mb doctor --volume /Volumes/Archive
+```
+
+**检查内容**：
+1. **应用程序链接**：解析 `/Applications` 中的所有符号链接（包括相对链接、链式链接与循环链接）。
+2. **开发者缓存链接**：`~/Library/Developer/Xcode/iOS DeviceSupport`、`~/Library/Developer/CoreSimulator`、`~/.npm`、`~/.cache/uv`、`~/.gradle` 与 `~/.cache/huggingface`。
+3. **卷记录**：将已连接卷的 `MacBay/manifest.json` 与实际源路径和目标路径进行比对。
+4. **记录副本**：若源路径已不再是链接且外置副本也已丢失，则报告为记录与实际状态不一致。
+
+**结果分组**：`Healthy`、`Needs attention`、`Unable to verify`，以及针对非 MacBay 创建的链接的 `unmanaged` 信息。所有问题在 `--json` 输出中都会附带稳定的诊断代码与建议操作。
+
+**退出码**：健康 `0`，发现问题或存在无法验证项 `1`，诊断本身失败 `2`。
+
+> [!IMPORTANT]
+> `doctor` 为只读命令：它不会删除、移动或修复任何内容，也不会在内置磁盘中保存额外记录，因此断开的外置卷在重新连接之前无法被验证。
 
 ### 迁移应用程序 (`dock`)
 
@@ -224,7 +284,7 @@ mb dock Example.app
 > [!NOTE]
 > 如果应用程序被标记为 ⚠️ **Review**（JSON 中的 `POPUP_RISK`），在评估潜在风险后可传入 `--force` 参数强制继续：
 > ```sh
-> mb dock Claude.app --force --dry-run
+> mb dock HeavyStudio.app --force --dry-run
 > ```
 
 ### 恢复应用程序 (`undock`)
@@ -326,13 +386,15 @@ mb cache --reset
 mb status --json
 ```
 
+`mb doctor --json` 会输出 `volumes`、`findings` 与 `summary`。每个条目都带有稳定的 `code`（例如 `link_target_unavailable`、`link_unmanaged`、`manifest_unreadable`）、`status`（`healthy`、`needs_attention`、`unable_to_verify`）、相关路径以及建议操作。
+
 当发生错误时，MacBay 会向 `stderr` 输出结构化的错误信封（Envelope）并以非零状态码退出：
 
 ```json
 {
   "error": {
     "code": "configuration_error | retryable_error | execution_error",
-    "message": "Application is blocked from migration (/Applications/OrbStack.app)",
+    "message": "Application is blocked from migration (/Applications/VirtualMachine.app)",
     "details": "com.apple.security.virtualization=true in codesign entitlements"
   }
 }

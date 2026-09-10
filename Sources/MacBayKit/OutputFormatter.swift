@@ -426,6 +426,111 @@ public struct OutputFormatter {
         return lines.joined(separator: "\n")
     }
 
+    public func doctor(_ report: DoctorReport) -> String {
+        var sections: [[String]] = []
+
+        sections.append([style("MacBay doctor", color: "36", bold: true)])
+
+        var volumeLines = [bold("Volumes consulted · \(report.volumes.count)")]
+        if report.volumes.isEmpty {
+            volumeLines.append("  None detected")
+        } else {
+            for scope in report.volumes {
+                volumeLines.append(
+                    "  • " + bold(scope.name)
+                        + dim(" (\(scope.mountPoint))")
+                        + " — " + Self.manifestSummary(scope)
+                )
+            }
+        }
+        sections.append(volumeLines)
+
+        let attention = report.findings.filter { $0.status == .needsAttention }
+        let unverified = report.findings.filter { $0.status == .unableToVerify }
+        let healthy = report.findings.filter { $0.status == .healthy }
+
+        if report.findings.isEmpty {
+            sections.append([
+                bold("Nothing to verify"),
+                "  " + dim("No MacBay records and no relocated links were found on the connected volumes.")
+            ])
+        } else {
+            if !attention.isEmpty {
+                sections.append(findingSection(title: "Needs attention", color: "31", findings: attention))
+            }
+            if !unverified.isEmpty {
+                sections.append(findingSection(title: "Unable to verify", color: "33", findings: unverified))
+            }
+            if !healthy.isEmpty {
+                sections.append(healthySection(healthy))
+            }
+        }
+
+        if !report.warnings.isEmpty {
+            var warningLines = [bold("Warnings · \(report.warnings.count)")]
+            for warning in report.warnings {
+                warningLines.append("  • " + warning)
+            }
+            sections.append(warningLines)
+        }
+
+        return sections.map { $0.joined(separator: "\n") }.joined(separator: "\n\n")
+    }
+
+    private func findingSection(title: String, color: String, findings: [DoctorFinding]) -> [String] {
+        var lines = [bold("\(title) · \(findings.count)")]
+        for finding in findings {
+            lines.append("  " + bold(finding.name) + " — " + style(finding.detail, color: color))
+            if !finding.recommendation.isEmpty {
+                lines.append("    " + dim("Next:") + " " + finding.recommendation)
+            }
+        }
+        return lines
+    }
+
+    private func healthySection(_ findings: [DoctorFinding]) -> [String] {
+        var lines = [bold("Healthy · \(findings.count)")]
+        for finding in findings {
+            var line = "  • " + bold(finding.name)
+            if finding.paths.count > 1 {
+                line += " → " + dim(finding.paths[1])
+            }
+            let tag = Self.managementTag(for: finding)
+            if !tag.isEmpty {
+                line += " " + style(tag, color: finding.managed == true ? "36" : "33")
+            }
+            lines.append(line)
+        }
+        return lines
+    }
+
+    private static func managementTag(for finding: DoctorFinding) -> String {
+        switch finding.code {
+        case .linkManagedRecord: return "[MacBay]"
+        case .linkManagedLayout: return "[layout]"
+        case .linkUnmanaged: return "[unmanaged]"
+        default: return ""
+        }
+    }
+
+    private static func manifestSummary(_ scope: DoctorVolumeScope) -> String {
+        var summary: String
+        switch scope.manifestStatus {
+        case .loaded:
+            summary = scope.recordCount == 1 ? "1 record" : "\(scope.recordCount) records"
+        case .missing:
+            summary = "no MacBay records"
+        case .unreadable:
+            summary = "records unreadable"
+        case .unsupportedVersion:
+            summary = "records use an unsupported version"
+        }
+        if scope.isReadOnly {
+            summary += " (read-only)"
+        }
+        return summary
+    }
+
     public static func humanBytes(_ bytes: UInt64) -> String {
         let units = ["B", "KB", "MB", "GB", "TB"]
         var value = Double(bytes)

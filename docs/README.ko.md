@@ -129,18 +129,18 @@ Internal · Macintosh HD
   Used: 96.3 GB / 228.3 GB
   Free: 132.0 GB
 
-External · KLEVV
-  /Volumes/KLEVV
-  ██░░░░░░░░░░░░░░░░░░  7.6% used
-  Used: 70.9 GB / 931.3 GB
-  Free: 860.4 GB
+External · ExternalSSD
+  /Volumes/ExternalSSD
+  ████░░░░░░░░░░░░░░░░  20.5% used
+  Used: 205.0 GB / 1000.0 GB
+  Free: 795.0 GB
 
 Docked items · 0
   None
 
 Warnings · 2
-  • Excluded volume 'Antigravity' (/Volumes/Antigravity): Disk image volumes are not supported
-  • Excluded volume 'Grok Bot Installer' (/Volumes/Grok Bot Installer): Disk image volumes are not supported
+  • Excluded volume 'InstallerImage' (/Volumes/InstallerImage): Disk image volumes are not supported
+  • Excluded volume 'ToolInstaller' (/Volumes/ToolInstaller): Disk image volumes are not supported
 ```
 
 ### 2. 외장화 대상 탐색
@@ -158,15 +158,15 @@ MacBay scan
 App threshold: 200.0 MB
 
 Applications · 8
-  NAME                  SIZE  STATUS
-  Aside.app           2.0 GB  Review
-  Claude.app        825.2 MB  Blocked
-  OrbStack.app      694.6 MB  Blocked
-  Antigravity.app   435.4 MB  Safe
-  Google Drive.app  345.4 MB  Safe
-  Grok Bot.app      311.4 MB  Review
-  cmux.app          310.2 MB  Blocked
-  KakaoTalk.app     240.2 MB  Safe
+  NAME                    SIZE  STATUS
+  HeavyStudio.app       2.1 GB  Review
+  VirtualMachine.app    1.8 GB  Blocked
+  ContainerRuntime.app  1.2 GB  Blocked
+  DeveloperIDE.app    850.0 MB  Safe
+  CloudStorage.app    620.4 MB  Safe
+  SystemHelper.app    410.2 MB  Review
+  DriverDaemon.app    320.0 MB  Blocked
+  Messenger.app       240.5 MB  Safe
 
   Safe: no relocation signals detected
   Review: check compatibility details before using --force
@@ -177,11 +177,12 @@ Developer caches · 2
   npm cache      124.2 MB
 
 Already external · 2
-  ChatGPT.app   1.3 GB  Unmanaged
-    → /Volumes/KLEVV/Applications/ChatGPT.app
-  Kiro CLI.app  1.8 GB  Unmanaged
-    → /Volumes/KLEVV/Applications/Kiro CLI.app
+  DesignKit.app    1.5 GB  Unmanaged
+    → /Volumes/ExternalSSD/Applications/DesignKit.app
+  AudioEngine.app  1.2 GB  MacBay
+    → /Volumes/ExternalSSD/MacBay/Applications/AudioEngine.app
 
+  MacBay: recorded in volume manifest
   Unmanaged: no matching MacBay migration record
 ```
 
@@ -198,9 +199,68 @@ mb scan --verbose
   - `Unconfirmed`: 외장 볼륨에 있으나 매니페스트 확인 중 오류가 발생한 상태.
 - **연결 끊긴 링크 (Unresolved links)**: 대상이 없거나(`Target unavailable`), 순환 링크, 볼륨 확인 실패 등의 비정상 링크.
 
+### 3. 링크·기록 진단
+
+애플리케이션 링크, 개발자 캐시 링크, 연결된 볼륨의 MacBay 기록이 실제 상태와 일치하는지 확인합니다. `doctor`는 읽기 전용이며 파일을 변경하지 않습니다:
+
+```sh
+mb doctor
+```
+
+출력 예시:
+```text
+MacBay doctor
+
+Volumes consulted · 1
+  • ExternalSSD (/Volumes/ExternalSSD) — 2 records
+
+Needs attention · 1
+  ! OfflineApp.app — Target unavailable: /Volumes/ExternalSSD/MacBay/Applications/OfflineApp.app
+    Next: Reconnect the volume or confirm the path exists, then run 'mb doctor' again.
+
+Healthy · 2
+  • AudioEngine.app → /Volumes/ExternalSSD/MacBay/Applications/AudioEngine.app [MacBay]
+  • LegacyTool.app → /Volumes/Backup/LegacyTool.app [unmanaged]
+```
+
+- `Healthy`: 링크가 정상적으로 해석되고 MacBay 기록 또는 기대 레이아웃과 일치합니다. 기록이 없는 링크는 문제가 아니라 `unmanaged` 정보로 표시합니다.
+- `Needs attention`: 끊어진 링크, 순환 링크, 기록된 대상 경로와 실제 대상이 다른 경우, 기록된 외장 복사본이 사라진 경우.
+- `Unable to verify`: 링크, 링크 대상 볼륨, 볼륨의 `manifest.json`을 읽지 못한 경우(권한 오류, 매니페스트 오류 등).
+- `Nothing to verify`(검사할 기록·링크가 없음)는 "문제 없음"과 구분해서 표시합니다.
+
+종료 코드: 문제 없음 `0`, 문제 또는 검증 불가 항목 발견 `1`, 진단 자체 실패(예: `--volume` 경로 확인 불가) `2`.
+
+> [!NOTE]
+> MacBay는 연결된 외장 볼륨에서만 기록을 읽으므로 분리된 드라이브는 검증할 수 없습니다. 진단은 실제로 확인한 범위를 보고하며, 대상이 사라진 이유를 디스크 분리나 데이터 삭제로 단정하지 않습니다.
+
 ---
 
 ## 명령어 및 사용법
+
+### 링크·기록 진단 (`doctor`)
+
+`/Applications`의 링크, 알려진 개발자 캐시 링크, 연결된 외장 볼륨(읽기 전용 포함)의 MacBay 기록을 검사합니다. 파일과 설정을 변경하지 않습니다:
+
+```sh
+# 연결된 볼륨과 로컬 링크 진단
+mb doctor
+
+# /Volumes 밖에 마운트된 볼륨을 추가 검사
+mb doctor --volume /Volumes/Archive
+```
+
+**검사 항목**:
+1. **애플리케이션 링크**: `/Applications`의 모든 심볼릭 링크를 해석합니다(상대·연쇄·순환 링크 포함).
+2. **개발자 캐시 링크**: `~/Library/Developer/Xcode/iOS DeviceSupport`, `~/Library/Developer/CoreSimulator`, `~/.npm`, `~/.cache/uv`, `~/.gradle`, `~/.cache/huggingface`.
+3. **볼륨 기록**: 연결된 볼륨의 `MacBay/manifest.json`과 실제 원본·대상 경로를 대조합니다.
+4. **기록된 복사본**: 원본이 더 이상 링크가 아니고 외장 복사본도 존재하지 않으면 기록과 실제 상태가 다름으로 보고합니다.
+
+**결과 그룹**: `Healthy`, `Needs attention`, `Unable to verify`와 MacBay가 만들지 않은 링크를 위한 `unmanaged` 정보. 모든 문제는 `--json` 출력에서 안정적인 진단 코드와 권장 행동을 함께 제공합니다.
+
+**종료 코드**: 정상 `0`, 문제 또는 검증 불가 `1`, 진단 자체 실패 `2`.
+
+> [!IMPORTANT]
+> `doctor`는 읽기 전용입니다. 삭제·이동·복구를 수행하지 않으며 내부 디스크에 별도 기록을 저장하지 않으므로, 분리된 외장 볼륨은 다시 연결하기 전까지 검증할 수 없습니다.
 
 ### 애플리케이션 이전 (`dock`)
 
@@ -224,7 +284,7 @@ mb dock Example.app
 > [!NOTE]
 > 애플리케이션이 ⚠️ **Review** (JSON의 `POPUP_RISK`) 등급으로 분류된 경우, 잠재적 위험 요소를 검토한 후 `--force` 플래그를 추가하여 진행할 수 있습니다:
 > ```sh
-> mb dock Claude.app --force --dry-run
+> mb dock HeavyStudio.app --force --dry-run
 > ```
 
 ### 애플리케이션 복원 (`undock`)
@@ -326,13 +386,15 @@ mb cache --reset
 mb status --json
 ```
 
+`mb doctor --json`은 `volumes`, `findings`, `summary`를 보고합니다. 각 항목에는 안정적인 `code`(예: `link_target_unavailable`, `link_unmanaged`, `manifest_unreadable`), `status`(`healthy`, `needs_attention`, `unable_to_verify`), 관련 경로와 권장 행동이 포함됩니다.
+
 오류 발생 시 MacBay는 `stderr`로 구조화된 에러 봉투(envelope)를 출력하고 0이 아닌 종료 상태 코드를 반환합니다:
 
 ```json
 {
   "error": {
     "code": "configuration_error | retryable_error | execution_error",
-    "message": "Application is blocked from migration (/Applications/OrbStack.app)",
+    "message": "Application is blocked from migration (/Applications/VirtualMachine.app)",
     "details": "com.apple.security.virtualization=true in codesign entitlements"
   }
 }

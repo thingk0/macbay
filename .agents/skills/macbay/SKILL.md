@@ -10,14 +10,15 @@ Use the `mb` CLI (or its alias `macbay`) for storage-aware Mac maintenance. Pref
 ## Safety rules
 
 1. **Check Dashboard & Warnings**: Start with `mb status --json`. Verify `externalVolumes` and inspect any excluded volumes in `warnings` (installer DMGs, non-APFS drives, etc.). If more than one eligible volume is mounted, `--volume` is strictly required.
-2. **Inspect App Compatibility**: Run `mb scan --json` (or `mb scan`). App candidates are graded:
+2. **Verify Links & Records**: Run `mb doctor --json` before mutating anything. It is read-only and reports `findings` grouped as `healthy`, `needs_attention`, and `unable_to_verify` with stable `code` values (for example `link_target_unavailable`, `link_record_mismatch`, `record_target_missing`, `manifest_unreadable`) plus a recommended action per finding. Exit codes: `0` healthy, `1` problems or unverifiable items, `2` the check itself failed. Never treat a nonzero `doctor` result as something to force past — report the finding to the user, and never claim a missing target was ejected or deleted.
+3. **Inspect App Compatibility**: Run `mb scan --json` (or `mb scan`). App candidates are graded:
    - 🟢 **SAFE**: Safe to dock.
    - ⚠️ **POPUP_RISK**: Contains relocation signals or privileged helper tools. Never dock without informing the user and providing the `--force` flag.
    - ❌ **BLOCKED**: Has hypervisor/virtualization entitlements, kernel/system/driver extensions, or corrupted bundles. Never attempt to dock a blocked app.
-3. **Always Dry-Run First**: Use `--dry-run` before any mutating command (`dock`, `undock`, `xcode`, `cache`). Note: `status` and `scan` are read-only and do not accept `--dry-run` or `--yes`.
-4. **Locks & Process Safety**: Do not bypass process or SQLite lock errors. Ask the user to quit the reported process and retry.
-5. **Confirmation Prompts**: Preserve user confirmation prompts unless the user explicitly requested unattended execution with `--yes`.
-6. **Structured Errors**: In `--json` mode, failures output a standard JSON error envelope to `stderr` with a non-zero exit code:
+4. **Always Dry-Run First**: Use `--dry-run` before any mutating command (`dock`, `undock`, `xcode`, `cache`). Note: `status`, `scan`, and `doctor` are read-only and do not accept `--dry-run` or `--yes`.
+5. **Locks & Process Safety**: Do not bypass process or SQLite lock errors. Ask the user to quit the reported process and retry.
+6. **Confirmation Prompts**: Preserve user confirmation prompts unless the user explicitly requested unattended execution with `--yes`.
+7. **Structured Errors**: In `--json` mode, failures output a standard JSON error envelope to `stderr` with a non-zero exit code:
    ```json
    {
      "error": {
@@ -31,8 +32,9 @@ Use the `mb` CLI (or its alias `macbay`) for storage-aware Mac maintenance. Pref
 ## Common workflows
 
 ```sh
-# 1. Status & Scan
+# 1. Status, Scan & Diagnosis
 mb status --json
+mb doctor --json
 mb scan --json
 
 # 2. Docking applications
@@ -52,5 +54,5 @@ mb cache --enable
 mb cache --reset
 ```
 
-Explain the planned source, destination, size, and any safety warnings before running a mutating command. Never claim a migration succeeded unless the CLI exits successfully.
+Explain the planned source, destination, size, and any safety warnings before running a mutating command. Never claim a migration succeeded unless the CLI exits successfully. When `mb doctor` reports `needs_attention` or `unable_to_verify`, describe the reported paths and suggested action to the user; do not delete, overwrite, or re-move anything on their behalf.
 

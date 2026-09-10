@@ -59,6 +59,7 @@ final class CLIIntegrationTests: XCTestCase {
         XCTAssertEqual(result.status, 0)
         XCTAssertTrue(result.stdout.contains("status"))
         XCTAssertTrue(result.stdout.contains("scan"))
+        XCTAssertTrue(result.stdout.contains("doctor"))
         XCTAssertTrue(result.stdout.contains("dock"))
         XCTAssertTrue(result.stdout.contains("undock"))
         XCTAssertTrue(result.stdout.contains("xcode"))
@@ -212,5 +213,64 @@ final class CLIIntegrationTests: XCTestCase {
             return XCTFail("stdout was not valid JSON when --json --verbose were passed: \(result.stdout)")
         }
         XCTAssertNotNil(json["candidates"])
+    }
+
+    func testDoctorJsonSchema() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+
+        let result = try runCLI(arguments: ["doctor", "--json"])
+        XCTAssertTrue([0, 1].contains(result.status), "unexpected exit code \(result.status)")
+
+        guard let data = result.stdout.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return XCTFail("stdout was not valid JSON: \(result.stdout)")
+        }
+
+        XCTAssertNotNil(json["generatedAt"] as? String)
+        XCTAssertNotNil(json["volumes"] as? [[String: Any]])
+        XCTAssertNotNil(json["findings"] as? [[String: Any]])
+        XCTAssertNotNil(json["summary"] as? [String: Any])
+        XCTAssertNotNil(json["warnings"] as? [String])
+        XCTAssertNil(json["exitCode"])
+    }
+
+    func testDoctorHumanOutputIsReadOnly() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+
+        let result = try runCLI(arguments: ["doctor"])
+        XCTAssertTrue([0, 1].contains(result.status), "unexpected exit code \(result.status)")
+        XCTAssertTrue(result.stdout.contains("MacBay doctor"))
+        XCTAssertFalse(result.stdout.contains("\u{001B}"))
+    }
+
+    func testDoctorRejectsDryRunOption() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+
+        let result = try runCLI(arguments: ["doctor", "--dry-run"])
+        XCTAssertNotEqual(result.status, 0)
+    }
+
+    func testDoctorWithUnknownVolumeExitsTwo() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+
+        let result = try runCLI(arguments: ["doctor", "--volume", "/DefinitelyMissingVolume", "--json"])
+        XCTAssertEqual(result.status, 2)
+
+        guard let data = result.stderr.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let errorObj = json["error"] as? [String: Any] else {
+            return XCTFail("stderr was not valid error JSON envelope: \(result.stderr)")
+        }
+
+        XCTAssertEqual(errorObj["code"] as? String, "configuration_error")
+        XCTAssertTrue(result.stdout.isEmpty)
     }
 }
