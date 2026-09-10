@@ -3,29 +3,58 @@ name: CI
 on:
   push:
     branches: [ main ]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.github/FUNDING.yml'
   pull_request:
     branches: [ main ]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.github/FUNDING.yml'
+
+# A new push to the same branch makes the in-flight run obsolete.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-and-test:
     name: Build and Test (macOS)
     runs-on: macos-14
+    # Draft pull requests do not run CI; marking one ready for review starts it.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
       - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_15.4.app || true
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app
 
       - name: Show Swift version
         run: swift --version
 
-      - name: Build CLI executables (Debug)
-        run: swift build
+      # Builds the package, the executables and the test targets in one pass,
+      # so the test step does not compile them a second time.
+      - name: Build package and tests
+        run: swift build --build-tests
+
+      - name: Run test suite
+        run: swift test --skip-build
+
+  release-build:
+    name: Release Build (macOS)
+    runs-on: macos-14
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app
 
       - name: Build release binaries
         run: swift build -c release
-
-      - name: Run test suite
-        run: swift test
