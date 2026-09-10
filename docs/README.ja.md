@@ -238,6 +238,26 @@ Healthy · 2
 
 ## コマンドと使い方
 
+### デフォルトボリュームの選択（`init`）
+
+`--volume` を省略したときに変更系コマンドが使用する外部ボリュームを保存します。`dock`、`undock`、`xcode`、`cache` が常に同じドライブを対象とするようになります:
+
+```sh
+# 適合するボリュームが1つだけならそのまま保存し、ターミナルでは番号付きリストから選択します
+mb init
+
+# 確認なしで特定のボリュームをデフォルトとして保存
+mb init --volume /Volumes/ExternalSSD
+
+# 保存されたデフォルトを表示
+mb init --show
+
+# 保存されたデフォルトを削除
+mb init --reset
+```
+
+デフォルトはボリュームUUIDとともに `$XDG_CONFIG_HOME/macbay/config.json`（または `~/.config/macbay/config.json`）へ保存されるため、ドライブが別名でマウントされても認識されます。保存されたボリュームが接続されていない場合、変更系コマンドは他のドライブへ黙って切り替えずに停止します。`mb status` と `mb doctor` がその状態を報告し、`mb init` を再実行すると確認のうえでデフォルトを置き換えます。
+
 ### リンクと記録の診断（`doctor`）
 
 `/Applications` のリンク、既知の開発者キャッシュのリンク、接続中の外部ボリューム（読み取り専用を含む）の MacBay 記録を検査します。ファイルや設定は変更しません:
@@ -283,8 +303,8 @@ mb dock Example.app
 Dry run: dock Example.app
   Size: 21.6 GB
   Source: /Applications/Example.app
-  Destination: /Volumes/KLEVV/MacBay/Applications/Example.app
-  Space: destination free 859.5 GB on /Volumes/KLEVV
+  Destination: /Volumes/ExternalSSD/MacBay/Applications/Example.app
+  Space: destination free 859.5 GB on /Volumes/ExternalSSD
   Space: estimated free after copy 837.9 GB
   Space: estimated internal space freed 21.6 GB (logical size estimate; APFS shared blocks and snapshots can change the actual amount)
   Dry run: no files were changed
@@ -369,8 +389,10 @@ mb cache --reset
 | **アクセス権限** | 書き込み可能（`WritableVolume == true`） | 読み取り専用ドライブにはアプリケーションバンドルを配置できないため |
 | **プロトコル** | `BusProtocol != "Disk Image"` | 一時的なインストーラーDMGを自動的に除外するため |
 
+- **選択の優先順位**: `--volume`（または `-v`）が最優先で、次に `mb init` で保存したデフォルト、最後に自動検出です。
 - **自動選択**: 適合する外部ボリュームが1つだけマウントされている場合、MacBayが自動的に選択します。
-- **複数ボリューム接続時**: 適合するドライブが2台以上接続されている場合、誤ったドライブへの書き込みを防ぐため `--volume <path>`（または `-v`）の指定が必須となります。
+- **複数ボリューム接続時**: 適合するドライブが2台以上接続されている場合、誤ったドライブへの書き込みを防ぐため `--volume <path>`（または `-v`）の指定が必須となります。`mb init` でデフォルトを保存すれば、毎回フラグを付ける必要はありません。
+- **保存されたデフォルト**: `mb init` は適合するボリュームを1つ `~/.config/macbay/config.json`（`$XDG_CONFIG_HOME` を尊重）に保存し、デフォルトが利用できないときに別のドライブへ黙って切り替えることはありません。
 
 ---
 

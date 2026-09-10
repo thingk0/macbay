@@ -42,6 +42,20 @@ public struct OutputFormatter {
             }
         }
 
+        if let defaultVolume = report.defaultVolume {
+            var lines = ["Default volume · \(defaultVolume.name)", "  \(defaultVolume.path)"]
+            if let mountedPath = defaultVolume.mountedPath,
+               mountedPath.caseInsensitiveCompare(defaultVolume.path) != .orderedSame {
+                lines.append("  Mounted at \(mountedPath)")
+            }
+            groups.append(lines)
+        } else {
+            groups.append([
+                style("Default volume · none", color: "33"),
+                "  None (run 'mb init')"
+            ])
+        }
+
         var dockedLines = ["Docked items · \(report.dockedItems.count)"]
         if report.dockedItems.isEmpty {
             dockedLines.append("  None")
@@ -422,6 +436,33 @@ public struct OutputFormatter {
             lines.append("Cache routing: \(report.enabled ? "enabled" : "preview")")
             lines.append("Shell configuration: \(report.shellConfigurationPath)")
             lines.append(contentsOf: report.targets.map { migration($0) })
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    public func initReport(_ report: InitReport) -> String {
+        var lines = [style("MacBay default volume", color: "36", bold: true)]
+        lines.append("  Saved: \(report.volume.name) (\(report.volume.path))")
+        if report.replaced, let previous = report.previousDefault {
+            lines.append("  Previous: \(previous.name) (\(previous.path))")
+        }
+        lines.append("  Configuration: \(report.configPath)")
+        return lines.joined(separator: "\n")
+    }
+
+    public func configReport(_ report: ConfigReport) -> String {
+        var lines = [style("MacBay configuration", color: "36", bold: true)]
+        lines.append("  Configuration: \(report.configPath)")
+        if let removed = report.removedVolume {
+            lines.append("  Removed default volume: \(removed.name) (\(removed.path))")
+        }
+        if let volume = report.defaultVolume {
+            lines.append("  Default volume: \(volume.name) (\(volume.path))")
+            if let uuid = volume.uuid, !uuid.isEmpty {
+                lines.append("  UUID: \(uuid)")
+            }
+        } else {
+            lines.append("  Default volume: None (run 'mb init')")
         }
         return lines.joined(separator: "\n")
     }

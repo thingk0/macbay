@@ -238,6 +238,26 @@ Exit codes: `0` when nothing needs attention, `1` when problems or unverifiable 
 
 ## Commands & Usage
 
+### Choosing the Default Volume (`init`)
+
+Saves the external volume that mutating commands use when `--volume` is omitted, so `dock`, `undock`, `xcode`, and `cache` keep targeting the same drive:
+
+```sh
+# Save the only eligible volume, or pick from a numbered list in a terminal
+mb init
+
+# Save a specific volume without prompting
+mb init --volume /Volumes/ExternalSSD
+
+# Print the saved default
+mb init --show
+
+# Remove the saved default
+mb init --reset
+```
+
+The saved default is written to `$XDG_CONFIG_HOME/macbay/config.json` (or `~/.config/macbay/config.json`) together with the volume UUID, so the default is still recognized when the drive mounts under a different name. If the saved volume is not connected, mutating commands stop instead of writing to another drive; `mb status` and `mb doctor` report the situation, and running `mb init` again replaces the default after confirmation.
+
 ### Diagnosing Links and Records (`doctor`)
 
 Inspects `/Applications` links, known developer cache links, and the MacBay records on connected external volumes (including read-only volumes). It never writes files or configuration:
@@ -283,8 +303,8 @@ Preview output example:
 Dry run: dock Example.app
   Size: 21.6 GB
   Source: /Applications/Example.app
-  Destination: /Volumes/KLEVV/MacBay/Applications/Example.app
-  Space: destination free 859.5 GB on /Volumes/KLEVV
+  Destination: /Volumes/ExternalSSD/MacBay/Applications/Example.app
+  Space: destination free 859.5 GB on /Volumes/ExternalSSD
   Space: estimated free after copy 837.9 GB
   Space: estimated internal space freed 21.6 GB (logical size estimate; APFS shared blocks and snapshots can change the actual amount)
   Dry run: no files were changed
@@ -369,8 +389,10 @@ To ensure data integrity, MacBay enforces strict volume eligibility criteria:
 | **Permissions** | Writable (`WritableVolume == true`) | Read-only drives cannot host application bundles |
 | **Protocol** | `BusProtocol != "Disk Image"` | Rejects temporary installer DMGs automatically |
 
+- **Selection Priority**: `--volume` (or `-v`) wins, then the default saved by `mb init`, then automatic detection.
 - **Auto-Selection**: When exactly one eligible external volume is mounted, MacBay automatically selects it.
-- **Multiple Volumes**: When two or more eligible drives are connected, `--volume <path>` (or `-v`) is required to prevent accidental writes to the wrong drive.
+- **Multiple Volumes**: When two or more eligible drives are connected, `--volume <path>` (or `-v`) is required to prevent accidental writes to the wrong drive. `mb init` saves a default so the flag is not needed on every command.
+- **Saved Default**: `mb init` stores one eligible volume in `~/.config/macbay/config.json` (respecting `$XDG_CONFIG_HOME`) and never silently switches to a different drive while the default is unavailable.
 
 ---
 

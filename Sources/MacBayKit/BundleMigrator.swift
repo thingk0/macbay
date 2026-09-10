@@ -188,7 +188,12 @@ public struct BundleMigrator {
         )
     }
 
-    public func undock(appName: String, from volume: URL?, dryRun: Bool) throws -> MigrationResult {
+    public func undock(
+        appName: String,
+        from volume: URL?,
+        fallbackVolume: URL? = nil,
+        dryRun: Bool
+    ) throws -> MigrationResult {
         let source = MacBayPaths.applicationURL(named: appName)
         guard source.pathExtension.lowercased() == "app" else {
             throw MacBayError.invalidApplication(source.path)
@@ -248,17 +253,29 @@ public struct BundleMigrator {
         try runDitto(from: destination, to: restored)
         do {
             try verifyCodeSignature(at: restored)
-            try fileManager.removeItem(at: source)
-            try fileManager.moveItem(at: restored, to: source)
-            try fileManager.removeItem(at: destination)
         } catch {
-            if fileManager.fileExists(atPath: restored.path) {
-                try? fileManager.removeItem(at: restored)
-            }
+            try? fileManager.removeItem(at: restored)
             throw error
         }
 
-        if let volume = volume ?? inferredVolume(for: destination) {
+        // 기존 링크를 제거한 뒤 복원본 이동이 실패하면 /Applications에서 앱이 사라진다.
+        // 이 경우 원래 링크를 되살려 외장 원본으로 다시 연결한다.
+        try fileManager.removeItem(at: source)
+        do {
+            try fileManager.moveItem(at: restored, to: source)
+        } catch {
+            try? fileManager.removeItem(at: restored)
+            if !fileManager.fileExists(atPath: source.path) {
+                try? fileManager.createSymbolicLink(
+                    atPath: source.path,
+                    withDestinationPath: linkDestination
+                )
+            }
+            throw error
+        }
+        try fileManager.removeItem(at: destination)
+
+        if let volume = volume ?? inferredVolume(for: destination) ?? fallbackVolume {
             try manifestStore.updating(on: volume) { manifest in
                 manifest.items.removeAll { $0.sourcePath == source.path || $0.externalPath == destination.path }
             }

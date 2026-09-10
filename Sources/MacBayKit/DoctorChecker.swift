@@ -10,6 +10,7 @@ public struct DoctorChecker {
     private let fileManager: FileManager
     private let volumeManager: VolumeManager
     private let manifestStore: ManifestStore
+    private let configStore: ConfigStore
     private let symlinkResolver: SymlinkResolver
     private let sizeCalculator: FileSizeCalculator
 
@@ -17,7 +18,8 @@ public struct DoctorChecker {
         fileManager: FileManager = .default,
         commandRunner: any CommandRunner = SystemCommandRunner(),
         volumeManager: VolumeManager? = nil,
-        manifestStore: ManifestStore? = nil
+        manifestStore: ManifestStore? = nil,
+        configStore: ConfigStore? = nil
     ) {
         self.fileManager = fileManager
         self.volumeManager = volumeManager ?? VolumeManager(
@@ -25,6 +27,7 @@ public struct DoctorChecker {
             diskInfoProvider: SystemDiskInfoProvider(commandRunner: commandRunner)
         )
         self.manifestStore = manifestStore ?? ManifestStore(fileManager: fileManager)
+        self.configStore = configStore ?? ConfigStore(fileManager: fileManager)
         self.symlinkResolver = SymlinkResolver(fileManager: fileManager)
         self.sizeCalculator = FileSizeCalculator(fileManager: fileManager)
     }
@@ -117,6 +120,59 @@ public struct DoctorChecker {
                     recordCount: manifestStatus == .loaded ? (manifest?.items.count ?? 0) : 0
                 )
             ))
+        }
+
+        let config: MacBayConfig?
+        do {
+            config = try configStore.load()
+        } catch {
+            config = nil
+            findings.append(DoctorFinding(
+                code: .configUnreadable,
+                status: .unableToVerify,
+                category: .volume,
+                name: "MacBay configuration",
+                paths: [configStore.configURL.path],
+                detail: "Configuration could not be read: \(error.localizedDescription)",
+                recommendation: "Repair or remove \(configStore.configURL.path), then run 'mb init' to save a default volume."
+            ))
+        }
+
+        if let configured = config?.defaultVolume {
+            switch volumeManager.availability(of: configured) {
+            case let .mounted(volume, pathChanged):
+                findings.append(DoctorFinding(
+                    code: .defaultVolumeMounted,
+                    status: .healthy,
+                    category: .volume,
+                    name: configured.name,
+                    paths: [volume.path],
+                    detail: pathChanged
+                        ? "Default volume is mounted at \(volume.path); the saved path was \(configured.path)"
+                        : "Default volume is mounted at \(volume.path)",
+                    recommendation: ""
+                ))
+            case .notMounted:
+                findings.append(DoctorFinding(
+                    code: .defaultVolumeUnavailable,
+                    status: .needsAttention,
+                    category: .volume,
+                    name: configured.name,
+                    paths: [configured.path],
+                    detail: "Default volume is not mounted",
+                    recommendation: "Run 'mb init' to update the default volume."
+                ))
+            case let .ineligible(mountPoint, reason):
+                findings.append(DoctorFinding(
+                    code: .defaultVolumeIneligible,
+                    status: .needsAttention,
+                    category: .volume,
+                    name: configured.name,
+                    paths: [mountPoint],
+                    detail: "Default volume is not eligible: \(reason)",
+                    recommendation: "Run 'mb init' to update the default volume."
+                ))
+            }
         }
 
         for directory in applicationDirectories {

@@ -42,7 +42,11 @@ final class CLIIntegrationTests: XCTestCase {
         return root
     }
 
-    private func runCLI(arguments: [String], environment: [String: String]? = nil) throws -> (status: Int32, stdout: String, stderr: String) {
+    private func runCLI(
+        arguments: [String],
+        environment: [String: String]? = nil,
+        closeStdin: Bool = false
+    ) throws -> (status: Int32, stdout: String, stderr: String) {
         let process = Process()
         process.executableURL = binaryURL
         process.arguments = arguments
@@ -55,6 +59,12 @@ final class CLIIntegrationTests: XCTestCase {
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
+        if closeStdin {
+            let stdinPipe = Pipe()
+            process.standardInput = stdinPipe
+            try stdinPipe.fileHandleForWriting.close()
+        }
+
         try process.run()
         process.waitUntilExit()
 
@@ -65,6 +75,23 @@ final class CLIIntegrationTests: XCTestCase {
         let stderr = String(data: stderrData, encoding: .utf8) ?? ""
 
         return (process.terminationStatus, stdout, stderr)
+    }
+
+    private func makeConfigHome() throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacBayCLIConfig-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    private func configEnvironment(_ configHome: URL) -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        environment["XDG_CONFIG_HOME"] = configHome.path
+        return environment
+    }
+
+    private func configFilePath(in configHome: URL) -> String {
+        configHome.appendingPathComponent("macbay/config.json").path
     }
 
     func testVersionOutput() throws {
@@ -91,6 +118,8 @@ final class CLIIntegrationTests: XCTestCase {
         XCTAssertTrue(result.stdout.contains("undock"))
         XCTAssertTrue(result.stdout.contains("xcode"))
         XCTAssertTrue(result.stdout.contains("cache"))
+        XCTAssertTrue(result.stdout.contains("init"))
+        XCTAssertTrue(result.stdout.contains("Choose and save the default external volume"))
         XCTAssertFalse(result.stdout.contains("clean"))
     }
 
@@ -303,5 +332,113 @@ final class CLIIntegrationTests: XCTestCase {
 
         XCTAssertEqual(errorObj["code"] as? String, "configuration_error")
         XCTAssertTrue(result.stdout.isEmpty)
+    }
+
+    func testInitShowJsonReportsNoDefault() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+
+        let configHome = try makeConfigHome()
+        defer { try? FileManager.default.removeItem(at: configHome) }
+
+        let result = try runCLI(
+            arguments: ["init", "--show", "--json"],
+            environment: configEnvironment(configHome)
+        )
+        XCTAssertEqual(result.status, 0)
+
+        guard let data = result.stdout.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return XCTFail("stdout was not valid JSON: \(result.stdout)")
+        }
+
+        XCTAssertEqual(json["configPath"] as? String, configFilePath(in: configHome))
+        XCTAssertTrue(json["defaultVolume"] == nil || json["defaultVolume"] is NSNull)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: configFilePath(in: configHome)))
+    }
+
+    func testInitResetWithoutSavedDefaultIsNoOp() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+
+        let configHome = try makeConfigHome()
+        defer { try? FileManager.default.removeItem(at: configHome) }
+
+        let result = try runCLI(
+            arguments: ["init", "--reset", "--json"],
+            environment: configEnvironment(configHome)
+        )
+        XCTAssertEqual(result.status, 0)
+
+        guard let data = result.stdout.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return XCTFail("stdout was not valid JSON: \(result.stdout)")
+        }
+
+        XCTAssertEqual(json["configPath"] as? String, configFilePath(in: configHome))
+        XCTAssertTrue(json["removedVolume"] == nil || json["removedVolume"] is NSNull)
+    }
+
+    func testInitRejectsCombinedModes() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+
+        let showAndReset = try runCLI(arguments: ["init", "--show", "--reset"])
+        XCTAssertNotEqual(showAndReset.status, 0)
+
+        let volumeAndShow = try runCLI(arguments: ["init", "--volume", "/Volumes/Example", "--show"])
+        XCTAssertNotEqual(volumeAndShow.status, 0)
+    }
+
+    func testInitWithUnknownVolumeReportsJsonError() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+
+        let configHome = try makeConfigHome()
+        defer { try? FileManager.default.removeItem(at: configHome) }
+
+        let result = try runCLI(
+            arguments: ["init", "--volume", "/DefinitelyMissingVolume", "--json"],
+            environment: configEnvironment(configHome)
+        )
+        XCTAssertNotEqual(result.status, 0)
+
+        guard let data = result.stderr.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let errorObj = json["error"] as? [String: Any] else {
+            return XCTFail("stderr was not valid error JSON envelope: \(result.stderr)")
+        }
+
+        XCTAssertNotNil(errorObj["code"] as? String)
+        XCTAssertNotNil(errorObj["message"] as? String)
+        XCTAssertNotNil(errorObj["details"] as? String)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: configFilePath(in: configHome)))
+    }
+
+    func testInitWithClosedStdinIsNotInteractive() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+
+        let configHome = try makeConfigHome()
+        defer { try? FileManager.default.removeItem(at: configHome) }
+
+        let result = try runCLI(
+            arguments: ["init"],
+            environment: configEnvironment(configHome),
+            closeStdin: true
+        )
+
+        if result.status == 0 {
+            XCTAssertTrue(result.stdout.contains("MacBay default volume"))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: configFilePath(in: configHome)))
+        } else {
+            XCTAssertFalse(result.stderr.isEmpty)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: configFilePath(in: configHome)))
+        }
     }
 }

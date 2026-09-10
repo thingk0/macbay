@@ -97,4 +97,53 @@ final class CacheManagerTests: XCTestCase {
         let npmResult = try XCTUnwrap(report.targets.first(where: { $0.name == "npm" }))
         XCTAssertTrue(npmResult.messages.contains { $0.contains("already a symbolic link") })
     }
+
+    func testEnableRefusesToOverwriteUnreadableZshrc() throws {
+        let zshrc = homeDir.appendingPathComponent(".zshrc")
+        // UTF-8로 해석되지 않는 바이트: 읽기 실패를 빈 파일로 취급하면 안 된다.
+        try Data([0xFF, 0xFE, 0x41]).write(to: zshrc)
+
+        let manager = CacheManager(homeDirectory: homeDir)
+        XCTAssertThrowsError(try manager.enable(on: volumeURL, dryRun: false))
+
+        let after = try Data(contentsOf: zshrc)
+        XCTAssertEqual(after, Data([0xFF, 0xFE, 0x41]))
+    }
+
+    func testExternalPathIsShellQuoted() throws {
+        let trickyVolume = tempDir.appendingPathComponent("Ext $(echo pwned) `id` it's")
+        try FileManager.default.createDirectory(at: trickyVolume, withIntermediateDirectories: true)
+
+        let manager = CacheManager(homeDirectory: homeDir)
+        _ = try manager.enable(on: trickyVolume, dryRun: false)
+
+        let content = try String(contentsOf: homeDir.appendingPathComponent(".zshrc"), encoding: .utf8)
+        XCTAssertFalse(content.contains("export HF_HOME=\""))
+        XCTAssertTrue(content.contains("export HF_HOME='"))
+        XCTAssertTrue(content.contains("it'\\''s"))
+        XCTAssertEqual(CacheManager.shellQuoted("a'b"), "'a'\\''b'")
+    }
+
+    func testSymlinkedZshrcIsPreservedAsLink() throws {
+        let dotfiles = tempDir.appendingPathComponent("dotfiles")
+        try FileManager.default.createDirectory(at: dotfiles, withIntermediateDirectories: true)
+        let real = dotfiles.appendingPathComponent("zshrc")
+        try "alias ll='ls -l'\n".write(to: real, atomically: true, encoding: .utf8)
+        let zshrc = homeDir.appendingPathComponent(".zshrc")
+        try FileManager.default.createSymbolicLink(atPath: zshrc.path, withDestinationPath: real.path)
+
+        let manager = CacheManager(homeDirectory: homeDir)
+        _ = try manager.enable(on: volumeURL, dryRun: false)
+
+        XCTAssertNotNil(try? FileManager.default.destinationOfSymbolicLink(atPath: zshrc.path))
+        let realContent = try String(contentsOf: real, encoding: .utf8)
+        XCTAssertTrue(realContent.contains("alias ll='ls -l'"))
+        XCTAssertTrue(realContent.contains("# >>> macbay cache >>>"))
+
+        _ = try manager.reset(dryRun: false)
+        XCTAssertNotNil(try? FileManager.default.destinationOfSymbolicLink(atPath: zshrc.path))
+        let afterReset = try String(contentsOf: real, encoding: .utf8)
+        XCTAssertTrue(afterReset.contains("alias ll='ls -l'"))
+        XCTAssertFalse(afterReset.contains("# >>> macbay cache >>>"))
+    }
 }
