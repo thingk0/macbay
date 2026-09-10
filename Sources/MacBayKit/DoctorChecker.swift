@@ -11,6 +11,7 @@ public struct DoctorChecker {
     private let volumeManager: VolumeManager
     private let manifestStore: ManifestStore
     private let symlinkResolver: SymlinkResolver
+    private let sizeCalculator: FileSizeCalculator
 
     public init(
         fileManager: FileManager = .default,
@@ -25,6 +26,7 @@ public struct DoctorChecker {
         )
         self.manifestStore = manifestStore ?? ManifestStore(fileManager: fileManager)
         self.symlinkResolver = SymlinkResolver(fileManager: fileManager)
+        self.sizeCalculator = FileSizeCalculator(fileManager: fileManager)
     }
 
     public func check(
@@ -170,17 +172,9 @@ public struct DoctorChecker {
         for volume in consulted {
             guard let manifest = volume.manifest else { continue }
             for item in manifest.items {
+                // 링크로 남아 있는 원본은 링크 검사에서 이미 보고되므로 기록 검사에서 제외한다.
                 guard !isSymbolicLink(at: item.sourcePath) else { continue }
-                guard !fileManager.fileExists(atPath: item.externalPath) else { continue }
-                findings.append(DoctorFinding(
-                    code: .recordTargetMissing,
-                    status: .needsAttention,
-                    category: .record,
-                    name: item.name,
-                    paths: [item.sourcePath, item.externalPath],
-                    detail: "Recorded external copy is missing: \(item.externalPath)",
-                    recommendation: "Reconnect the volume or locate the copy; the record and the actual state differ."
-                ))
+                findings.append(inspectRecord(item))
             }
         }
 
@@ -199,8 +193,86 @@ public struct DoctorChecker {
             volumes: consulted.map(\.scope),
             findings: findings,
             summary: summary,
-            warnings: warnings
+            warnings: warnings,
+            notes: notes(for: consulted)
         )
+    }
+
+    private func inspectRecord(_ item: DockedItem) -> DoctorFinding {
+        let sourceURL = URL(fileURLWithPath: item.sourcePath)
+        let externalURL = URL(fileURLWithPath: item.externalPath)
+        let localExists = fileManager.fileExists(atPath: item.sourcePath)
+        let externalExists = fileManager.fileExists(atPath: item.externalPath)
+
+        if localExists && externalExists {
+            let localSize = try? sizeCalculator.size(of: sourceURL)
+            let externalSize = try? sizeCalculator.size(of: externalURL)
+            return DoctorFinding(
+                code: .localDataDetected,
+                status: .needsAttention,
+                category: .record,
+                name: item.name,
+                paths: [item.sourcePath, item.externalPath],
+                detail: "Local data detected at \(item.sourcePath)\(Self.sizeNote(localSize)); recorded copy exists at \(item.externalPath)\(Self.sizeNote(externalSize))",
+                recommendation: "Compare the two copies manually; MacBay does not delete, overwrite, or re-move anything.",
+                localSizeBytes: localSize,
+                externalSizeBytes: externalSize
+            )
+        }
+
+        if !localExists && externalExists {
+            let externalSize = try? sizeCalculator.size(of: externalURL)
+            return DoctorFinding(
+                code: .recordSourceMissing,
+                status: .needsAttention,
+                category: .record,
+                name: item.name,
+                paths: [item.sourcePath, item.externalPath],
+                detail: "Recorded source path is missing: \(item.sourcePath); the recorded copy exists at \(item.externalPath)\(Self.sizeNote(externalSize))",
+                recommendation: "Confirm whether the item was removed intentionally; MacBay does not change records automatically.",
+                externalSizeBytes: externalSize
+            )
+        }
+
+        var detail = "Recorded external copy is missing: \(item.externalPath)"
+        var localSize: UInt64?
+        if localExists {
+            localSize = try? sizeCalculator.size(of: sourceURL)
+            detail += "; local data is present at \(item.sourcePath)\(Self.sizeNote(localSize))"
+        } else {
+            detail += "; the recorded source path is also missing: \(item.sourcePath)"
+        }
+        return DoctorFinding(
+            code: .recordTargetMissing,
+            status: .needsAttention,
+            category: .record,
+            name: item.name,
+            paths: [item.sourcePath, item.externalPath],
+            detail: detail,
+            recommendation: "Reconnect the volume or locate the copy; the record and the actual state differ.",
+            localSizeBytes: localSize
+        )
+    }
+
+    private func notes(for consulted: [ConsultedVolume]) -> [String] {
+        var notes: [String] = []
+
+        if consulted.isEmpty {
+            notes.append("No external volumes were consulted, so recorded items could not be checked.")
+        } else {
+            notes.append("Local data checks cover items recorded in MacBay manifests; manually relocated items have no MacBay history and are not evaluated.")
+        }
+
+        for volume in consulted where volume.manifest == nil {
+            notes.append("Recorded items on '\(volume.scope.name)' (\(volume.scope.mountPoint)) were not checked because its manifest could not be read.")
+        }
+
+        return notes
+    }
+
+    private static func sizeNote(_ sizeBytes: UInt64?) -> String {
+        guard let sizeBytes else { return "" }
+        return " (\(OutputFormatter.humanBytes(sizeBytes)))"
     }
 
     private func classifyLink(

@@ -584,6 +584,8 @@ public enum DoctorCode: String, Codable, Equatable, Sendable {
     case linkCircular = "link_circular"
     case linkRecordMismatch = "link_record_mismatch"
     case recordTargetMissing = "record_target_missing"
+    case recordSourceMissing = "record_source_missing"
+    case localDataDetected = "local_data_detected"
     case linkTargetUnverified = "link_target_unverified"
     case linkUnreadable = "link_unreadable"
     case applicationsUnreadable = "applications_unreadable"
@@ -600,6 +602,8 @@ public struct DoctorFinding: Codable, Equatable, Identifiable, Sendable {
     public let detail: String
     public let recommendation: String
     public let managed: Bool?
+    public let localSizeBytes: UInt64?
+    public let externalSizeBytes: UInt64?
 
     public var id: String { "\(code.rawValue)|\(paths.joined(separator: "|"))" }
 
@@ -611,7 +615,9 @@ public struct DoctorFinding: Codable, Equatable, Identifiable, Sendable {
         paths: [String],
         detail: String,
         recommendation: String,
-        managed: Bool? = nil
+        managed: Bool? = nil,
+        localSizeBytes: UInt64? = nil,
+        externalSizeBytes: UInt64? = nil
     ) {
         self.code = code
         self.status = status
@@ -621,6 +627,8 @@ public struct DoctorFinding: Codable, Equatable, Identifiable, Sendable {
         self.detail = detail
         self.recommendation = recommendation
         self.managed = managed
+        self.localSizeBytes = localSizeBytes
+        self.externalSizeBytes = externalSizeBytes
     }
 }
 
@@ -684,6 +692,7 @@ public struct DoctorReport: Codable, Equatable, Sendable {
     public let findings: [DoctorFinding]
     public let summary: DoctorSummary
     public let warnings: [String]
+    public let notes: [String]
 
     public var exitCode: Int32 {
         summary.needsAttention + summary.unableToVerify > 0 ? 1 : 0
@@ -694,13 +703,29 @@ public struct DoctorReport: Codable, Equatable, Sendable {
         volumes: [DoctorVolumeScope],
         findings: [DoctorFinding],
         summary: DoctorSummary,
-        warnings: [String]
+        warnings: [String],
+        notes: [String] = []
     ) {
         self.generatedAt = generatedAt
         self.volumes = volumes
         self.findings = findings
         self.summary = summary
         self.warnings = warnings
+        self.notes = notes
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case generatedAt, volumes, findings, summary, warnings, notes
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.generatedAt = try container.decode(String.self, forKey: .generatedAt)
+        self.volumes = try container.decodeIfPresent([DoctorVolumeScope].self, forKey: .volumes) ?? []
+        self.findings = try container.decodeIfPresent([DoctorFinding].self, forKey: .findings) ?? []
+        self.summary = try container.decode(DoctorSummary.self, forKey: .summary)
+        self.warnings = try container.decodeIfPresent([String].self, forKey: .warnings) ?? []
+        self.notes = try container.decodeIfPresent([String].self, forKey: .notes) ?? []
     }
 }
 
