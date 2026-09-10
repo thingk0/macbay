@@ -1,0 +1,34 @@
+# Swift & Xcode Build Artifacts
+.build/
+.swiftpm/
+DerivedData/
+xcuserdata/
+*.xcodeproj/project.xcworkspace/xcshareddata/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+*.dSYM/
+
+# macOS System & Metadata
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+
+# Local Secrets & Environment
+.env
+.env.*
+*.pem
+*.key
+*.cert
+*.p12
+
+# IDE & Editor Settings
+.vscode/
+.idea/
+
+# Agent / Tool Artifacts
+.gemini/
+scratch/
