@@ -102,7 +102,9 @@ public struct OutputFormatter {
     }
 
     public func scan(_ report: ScanReport) -> String {
-        var lines = [
+        var sections: [[String]] = []
+
+        var candidateLines = [
             style("MacBay scan", color: "36", bold: true),
             "Threshold: \(Self.humanBytes(report.minimumApplicationSizeBytes))",
             "Candidates: \(report.candidates.count)"
@@ -120,15 +122,45 @@ public struct OutputFormatter {
             case .none:
                 badge = ""
             }
-            lines.append(
+            candidateLines.append(
                 "  • [\(label)]\(badge) \(candidate.name) — \(Self.humanBytes(candidate.sizeBytes)) (\(candidate.path))"
             )
         }
-        if !report.warnings.isEmpty {
-            lines.append("Warnings:")
-            lines.append(contentsOf: report.warnings.map { "  • \($0)" })
+        sections.append(candidateLines)
+
+        if !report.externalApplications.isEmpty {
+            var externalLines = ["Already external · \(report.externalApplications.count)"]
+            for (index, app) in report.externalApplications.enumerated() {
+                if index > 0 {
+                    externalLines.append("")
+                }
+                let sizeString = app.sizeBytes.map { Self.humanBytes($0) } ?? "Unknown"
+                externalLines.append("  ↗ \(app.name) — \(sizeString) \(app.managementStatus.badge)")
+                externalLines.append("    \(app.sourcePath)")
+                externalLines.append("    → \(app.destinationPath)")
+            }
+            sections.append(externalLines)
         }
-        return lines.joined(separator: "\n")
+
+        if !report.unresolvedApplicationLinks.isEmpty {
+            var unresolvedLines = ["Unresolved links · \(report.unresolvedApplicationLinks.count)"]
+            for (index, link) in report.unresolvedApplicationLinks.enumerated() {
+                if index > 0 {
+                    unresolvedLines.append("")
+                }
+                unresolvedLines.append("  ? \(link.name) — \(link.reason)")
+                unresolvedLines.append("    → \(link.destinationPath)")
+            }
+            sections.append(unresolvedLines)
+        }
+
+        if !report.warnings.isEmpty {
+            var warningLines = ["Warnings:"]
+            warningLines.append(contentsOf: report.warnings.map { "  • \($0)" })
+            sections.append(warningLines)
+        }
+
+        return sections.map { $0.joined(separator: "\n") }.joined(separator: "\n\n")
     }
 
     public func migration(_ result: MigrationResult) -> String {

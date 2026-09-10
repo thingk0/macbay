@@ -276,11 +276,13 @@ final class MockDiskInfoProvider: DiskInfoProvider, @unchecked Sendable {
     }
 
     func diskInfo(for path: String) throws -> VolumeDiskInfo {
-        if let info = mapping[path] {
+        let stdPath = URL(fileURLWithPath: path).standardizedFileURL.path
+        if let info = mapping[path] ?? mapping[stdPath] {
             return info
         }
         for (key, val) in mapping {
-            if path.hasPrefix(key) {
+            let stdKey = URL(fileURLWithPath: key).standardizedFileURL.path
+            if path.hasPrefix(key) || stdPath.hasPrefix(stdKey) || path.hasPrefix(stdKey) || stdPath.hasPrefix(key) {
                 return val
             }
         }

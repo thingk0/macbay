@@ -93,6 +93,36 @@ final class CLIIntegrationTests: XCTestCase {
         XCTAssertNotNil(json["warnings"] as? [String])
     }
 
+    func testScanJsonSchema() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+
+        let result = try runCLI(arguments: ["scan", "--json"])
+        XCTAssertEqual(result.status, 0)
+        guard let data = result.stdout.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return XCTFail("stdout was not valid JSON: \(result.stdout)")
+        }
+
+        XCTAssertNotNil(json["generatedAt"] as? String)
+        XCTAssertNotNil(json["minimumApplicationSizeBytes"] as? NSNumber)
+        XCTAssertNotNil(json["candidates"] as? [[String: Any]])
+        XCTAssertNotNil(json["externalApplications"] as? [[String: Any]])
+        XCTAssertNotNil(json["unresolvedApplicationLinks"] as? [[String: Any]])
+        XCTAssertNotNil(json["warnings"] as? [String])
+    }
+
+    func testScanHelpMentionsExternalApps() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+
+        let result = try runCLI(arguments: ["scan", "--help"])
+        XCTAssertEqual(result.status, 0)
+        XCTAssertTrue(result.stdout.contains("externalized"))
+    }
+
     func testMutatingCommandJsonErrorEnvelope() throws {
         guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
             throw XCTSkip("Binary not found at \(binaryURL.path)")

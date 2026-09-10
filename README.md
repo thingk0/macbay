@@ -145,7 +145,7 @@ Warnings · 2
 
 ### 2. Discover Relocation Candidates
 
-Scan for large applications and developer caches with safety assessments:
+Scan for large applications, developer caches, already externalized applications, and broken links:
 
 ```sh
 mb scan
@@ -161,7 +161,27 @@ Candidates: 8
   • [app] ❌ BLOCKED OrbStack.app — 694.6 MB (/Applications/OrbStack.app)
   • [cache] CoreSimulator — 191.5 MB (/Users/.../Library/Developer/CoreSimulator)
   • [cache] npm cache — 124.2 MB (/Users/.../.npm)
+
+Already external · 2
+  ↗ Aside.app — 2.0 GB [MacBay]
+    /Applications/Aside.app
+    → /Volumes/KLEVV/MacBay/Applications/Aside.app
+
+  ↗ LegacyTool.app — 850.0 MB [Unmanaged]
+    /Applications/LegacyTool.app
+    → /Volumes/KLEVV/Applications/LegacyTool.app
+
+Unresolved links · 1
+  ? Offline.app — Target unavailable
+    → /Volumes/Backup/Applications/Offline.app
 ```
+
+- **Candidates**: Local apps (≥ 200 MB) and caches eligible for docking.
+- **Already external**: Applications already relocated to external storage as symlinks:
+  - `[MacBay]`: Registered and managed in the external volume's `manifest.json`.
+  - `[Unmanaged]`: Relocated manually or outside of MacBay.
+  - `[Unconfirmed]`: Target is on external storage, but manifest reading failed.
+- **Unresolved links**: Broken symlinks (`Target unavailable`), circular symlinks, or failed volume checks.
 
 ---
 
