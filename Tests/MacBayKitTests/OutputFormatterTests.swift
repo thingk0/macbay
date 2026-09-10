@@ -21,6 +21,7 @@ final class OutputFormatterTests: XCTestCase {
     private func makeReport(
         internalVolume: StorageVolume? = nil,
         externalVolumes: [StorageVolume] = [],
+        defaultVolume: StatusDefaultVolume? = nil,
         dockedItems: [DockedItem] = [],
         warnings: [String] = []
     ) -> StatusReport {
@@ -34,6 +35,7 @@ final class OutputFormatterTests: XCTestCase {
                 availableBytes: 100 * 1024 * 1024 * 1024
             ),
             externalVolumes: externalVolumes,
+            defaultVolume: defaultVolume,
             dockedItems: dockedItems,
             warnings: warnings
         )
@@ -610,5 +612,132 @@ final class OutputFormatterTests: XCTestCase {
         XCTAssertFalse(output.contains("\u{001B}"))
         XCTAssertEqual(makeDoctorReport(findings: [finding]).exitCode, 1)
         XCTAssertEqual(makeDoctorReport().exitCode, 0)
+    }
+
+    func testStatusShowsDefaultVolumeGroup() {
+        let formatter = OutputFormatter(useColor: false)
+        let report = makeReport(defaultVolume: StatusDefaultVolume(
+            name: "ExternalSSD",
+            path: "/Volumes/ExternalSSD",
+            uuid: "UUID-SSD",
+            mountedPath: "/Volumes/ExternalSSD"
+        ))
+
+        let output = formatter.status(report)
+
+        XCTAssertTrue(output.contains("Default volume · ExternalSSD"))
+        XCTAssertTrue(output.contains("  /Volumes/ExternalSSD"))
+        XCTAssertFalse(output.contains("Mounted at"))
+        XCTAssertFalse(output.contains("None (run 'mb init')"))
+    }
+
+    func testStatusShowsMovedDefaultVolumeMountPoint() {
+        let formatter = OutputFormatter(useColor: false)
+        let report = makeReport(defaultVolume: StatusDefaultVolume(
+            name: "ExternalSSD",
+            path: "/Volumes/ExternalSSD",
+            mountedPath: "/Volumes/ExternalSSD 1"
+        ))
+
+        let output = formatter.status(report)
+
+        XCTAssertTrue(output.contains("Default volume · ExternalSSD"))
+        XCTAssertTrue(output.contains("  Mounted at /Volumes/ExternalSSD 1"))
+    }
+
+    func testStatusShowsUnavailableDefaultVolume() {
+        let formatter = OutputFormatter(useColor: false)
+        let report = makeReport(defaultVolume: StatusDefaultVolume(
+            name: "OfflineSSD",
+            path: "/Volumes/OfflineSSD"
+        ))
+
+        let output = formatter.status(report)
+
+        XCTAssertTrue(output.contains("Default volume · OfflineSSD"))
+        XCTAssertTrue(output.contains("  /Volumes/OfflineSSD"))
+        XCTAssertFalse(output.contains("Mounted at"))
+    }
+
+    func testStatusWithoutDefaultVolumeSuggestsInit() {
+        let formatter = OutputFormatter(useColor: false)
+
+        let output = formatter.status(makeReport())
+
+        XCTAssertTrue(output.contains("Default volume · none"))
+        XCTAssertTrue(output.contains("  None (run 'mb init')"))
+    }
+
+    func testInitReportRendersSavedVolume() {
+        let formatter = OutputFormatter(useColor: false)
+        let report = InitReport(
+            volume: sampleVolume(totalBytes: 1_000, availableBytes: 500),
+            configPath: "/Users/test/.config/macbay/config.json",
+            replaced: false
+        )
+
+        let output = formatter.initReport(report)
+
+        XCTAssertTrue(output.contains("MacBay default volume"))
+        XCTAssertTrue(output.contains("  Saved: TestVolume (/Volumes/TestVolume)"))
+        XCTAssertTrue(output.contains("  Configuration: /Users/test/.config/macbay/config.json"))
+        XCTAssertFalse(output.contains("Previous:"))
+        XCTAssertFalse(output.contains("\u{001B}"))
+    }
+
+    func testInitReportShowsReplacedDefault() {
+        let formatter = OutputFormatter(useColor: false)
+        let report = InitReport(
+            volume: sampleVolume(totalBytes: 1_000, availableBytes: 500),
+            configPath: "/Users/test/.config/macbay/config.json",
+            previousDefault: DefaultVolume(
+                path: "/Volumes/OldSSD",
+                name: "OldSSD",
+                savedAt: "2026-09-01T12:00:00Z"
+            ),
+            replaced: true
+        )
+
+        let output = formatter.initReport(report)
+
+        XCTAssertTrue(output.contains("  Previous: OldSSD (/Volumes/OldSSD)"))
+    }
+
+    func testConfigReportRendersSavedAndRemovedDefaults() {
+        let formatter = OutputFormatter(useColor: false)
+        let entry = DefaultVolume(
+            path: "/Volumes/ExternalSSD",
+            name: "ExternalSSD",
+            uuid: "UUID-SSD",
+            savedAt: "2026-09-10T12:00:00Z"
+        )
+
+        let showOutput = formatter.configReport(ConfigReport(
+            configPath: "/Users/test/.config/macbay/config.json",
+            defaultVolume: entry
+        ))
+        XCTAssertTrue(showOutput.contains("MacBay configuration"))
+        XCTAssertTrue(showOutput.contains("  Configuration: /Users/test/.config/macbay/config.json"))
+        XCTAssertTrue(showOutput.contains("  Default volume: ExternalSSD (/Volumes/ExternalSSD)"))
+        XCTAssertTrue(showOutput.contains("  UUID: UUID-SSD"))
+        XCTAssertFalse(showOutput.contains("Removed default volume"))
+
+        let resetOutput = formatter.configReport(ConfigReport(
+            configPath: "/Users/test/.config/macbay/config.json",
+            removedVolume: entry
+        ))
+        XCTAssertTrue(resetOutput.contains("  Removed default volume: ExternalSSD (/Volumes/ExternalSSD)"))
+        XCTAssertTrue(resetOutput.contains("  Default volume: None (run 'mb init')"))
+    }
+
+    func testStatusWithColorDisabledHasNoAnsiForDefaultVolume() {
+        let formatter = OutputFormatter(useColor: false)
+        let report = makeReport(defaultVolume: StatusDefaultVolume(
+            name: "ExternalSSD",
+            path: "/Volumes/ExternalSSD",
+            mountedPath: "/Volumes/ExternalSSD"
+        ))
+
+        XCTAssertFalse(formatter.status(report).contains("\u{001B}"))
     }
 }

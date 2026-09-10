@@ -238,6 +238,26 @@ Healthy · 2
 
 ## 명령어 및 사용법
 
+### 기본 볼륨 선택 (`init`)
+
+`--volume`을 생략했을 때 변경 명령이 사용할 외장 볼륨을 저장합니다. `dock`, `undock`, `xcode`, `cache`가 항상 같은 드라이브를 대상으로 동작합니다:
+
+```sh
+# 적격 볼륨이 하나뿐이면 바로 저장하고, 터미널에서는 번호 목록으로 선택합니다
+mb init
+
+# 확인 없이 특정 볼륨을 기본값으로 저장
+mb init --volume /Volumes/ExternalSSD
+
+# 저장된 기본값 출력
+mb init --show
+
+# 저장된 기본값 삭제
+mb init --reset
+```
+
+기본값은 볼륨 UUID와 함께 `$XDG_CONFIG_HOME/macbay/config.json`(또는 `~/.config/macbay/config.json`)에 저장되므로, 드라이브가 다른 이름으로 마운트되어도 기본값을 찾을 수 있습니다. 저장된 볼륨이 연결되어 있지 않으면 변경 명령은 다른 드라이브로 조용히 넘어가지 않고 중단합니다. `mb status`와 `mb doctor`가 해당 상태를 보고하며, `mb init`을 다시 실행하면 확인 후 기본값을 교체합니다.
+
 ### 링크·기록 진단 (`doctor`)
 
 `/Applications`의 링크, 알려진 개발자 캐시 링크, 연결된 외장 볼륨(읽기 전용 포함)의 MacBay 기록을 검사합니다. 파일과 설정을 변경하지 않습니다:
@@ -283,8 +303,8 @@ mb dock Example.app
 Dry run: dock Example.app
   Size: 21.6 GB
   Source: /Applications/Example.app
-  Destination: /Volumes/KLEVV/MacBay/Applications/Example.app
-  Space: destination free 859.5 GB on /Volumes/KLEVV
+  Destination: /Volumes/ExternalSSD/MacBay/Applications/Example.app
+  Space: destination free 859.5 GB on /Volumes/ExternalSSD
   Space: estimated free after copy 837.9 GB
   Space: estimated internal space freed 21.6 GB (logical size estimate; APFS shared blocks and snapshots can change the actual amount)
   Dry run: no files were changed
@@ -369,8 +389,10 @@ mb cache --reset
 | **권한** | 쓰기 가능 (`WritableVolume == true`) | 읽기 전용 드라이브에는 애플리케이션 번들 호스팅 불가 |
 | **프로토콜** | `BusProtocol != "Disk Image"` | 임시 설치용 DMG 디스크 이미지 자동 제외 |
 
+- **선택 우선순위**: `--volume`(또는 `-v`)이 최우선이고, 그다음이 `mb init`으로 저장한 기본값, 마지막이 자동 감지입니다.
 - **자동 선택**: 마운트된 적격 외장 볼륨이 정확히 하나인 경우, MacBay가 이를 자동으로 선택합니다.
-- **복수 볼륨**: 두 개 이상의 적격 드라이브가 연결되어 있는 경우, 의도하지 않은 드라이브에 쓰는 것을 방지하기 위해 `--volume <path>`(또는 `-v`) 옵션 지정이 필수입니다.
+- **복수 볼륨**: 두 개 이상의 적격 드라이브가 연결되어 있는 경우, 의도하지 않은 드라이브에 쓰는 것을 방지하기 위해 `--volume <path>`(또는 `-v`) 옵션 지정이 필수입니다. `mb init`으로 기본값을 저장하면 매 명령마다 옵션을 붙이지 않아도 됩니다.
+- **저장된 기본값**: `mb init`은 적격 볼륨 하나를 `~/.config/macbay/config.json`(`$XDG_CONFIG_HOME` 존중)에 저장하며, 기본값을 사용할 수 없을 때 다른 드라이브로 조용히 전환하지 않습니다.
 
 ---
 

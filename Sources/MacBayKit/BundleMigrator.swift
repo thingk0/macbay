@@ -188,7 +188,12 @@ public struct BundleMigrator {
         )
     }
 
-    public func undock(appName: String, from volume: URL?, dryRun: Bool) throws -> MigrationResult {
+    public func undock(
+        appName: String,
+        from volume: URL?,
+        fallbackVolume: URL? = nil,
+        dryRun: Bool
+    ) throws -> MigrationResult {
         let source = MacBayPaths.applicationURL(named: appName)
         guard source.pathExtension.lowercased() == "app" else {
             throw MacBayError.invalidApplication(source.path)
@@ -270,7 +275,7 @@ public struct BundleMigrator {
         }
         try fileManager.removeItem(at: destination)
 
-        if let volume = volume ?? inferredVolume(for: destination) {
+        if let volume = volume ?? inferredVolume(for: destination) ?? fallbackVolume {
             try manifestStore.updating(on: volume) { manifest in
                 manifest.items.removeAll { $0.sourcePath == source.path || $0.externalPath == destination.path }
             }

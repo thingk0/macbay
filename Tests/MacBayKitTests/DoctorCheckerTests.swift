@@ -47,7 +47,8 @@ final class DoctorCheckerTests: XCTestCase {
     private func makeChecker(
         mountedPaths: [String]? = nil,
         fileManager: MockFileManager? = nil,
-        extraDiskInfo: [String: VolumeDiskInfo] = [:]
+        extraDiskInfo: [String: VolumeDiskInfo] = [:],
+        configStore: ConfigStore? = nil
     ) -> DoctorChecker {
         let mounted = mountedPaths ?? [volumeDir.path]
         var mapping: [String: VolumeDiskInfo] = [volumeDir.path: makeDiskInfo(mountPoint: volumeDir.path)]
@@ -63,8 +64,28 @@ final class DoctorCheckerTests: XCTestCase {
         return DoctorChecker(
             fileManager: mockFileManager,
             volumeManager: volumeManager,
-            manifestStore: ManifestStore(fileManager: mockFileManager)
+            manifestStore: ManifestStore(fileManager: mockFileManager),
+            configStore: configStore ?? makeConfigStore()
         )
+    }
+
+    private func makeConfigStore() -> ConfigStore {
+        ConfigStore(
+            environment: ["XDG_CONFIG_HOME": tempDir.appendingPathComponent("config").path],
+            homeDirectory: tempDir
+        )
+    }
+
+    @discardableResult
+    private func saveDefaultVolume(path: String, name: String, uuid: String? = nil) throws -> ConfigStore {
+        let store = makeConfigStore()
+        try store.save(MacBayConfig(defaultVolume: DefaultVolume(
+            path: path,
+            name: name,
+            uuid: uuid,
+            savedAt: "2026-09-10T12:00:00Z"
+        )))
+        return store
     }
 
     private func check(
@@ -663,6 +684,107 @@ final class DoctorCheckerTests: XCTestCase {
                 return XCTFail("Expected invalidVolume, got \(error)")
             }
         }
+    }
+
+    func testDefaultVolumeMountedIsHealthy() throws {
+        let store = try saveDefaultVolume(path: volumeDir.path, name: "ExternalSSD", uuid: "UUID-SSD")
+
+        let report = try check(makeChecker(configStore: store))
+
+        let finding = try XCTUnwrap(findings(report, code: .defaultVolumeMounted).first)
+        XCTAssertEqual(finding.status, .healthy)
+        XCTAssertEqual(finding.category, .volume)
+        XCTAssertEqual(finding.name, "ExternalSSD")
+        XCTAssertEqual(finding.paths, [volumeDir.path])
+        XCTAssertEqual(finding.recommendation, "")
+        XCTAssertTrue(finding.detail.contains("Default volume is mounted"))
+        XCTAssertEqual(report.exitCode, 0)
+    }
+
+    func testDefaultVolumeNotMountedNeedsAttention() throws {
+        let offline = volumesDir.appendingPathComponent("OfflineSSD")
+        let store = try saveDefaultVolume(path: offline.path, name: "OfflineSSD")
+
+        let report = try check(makeChecker(configStore: store))
+
+        let finding = try XCTUnwrap(findings(report, code: .defaultVolumeUnavailable).first)
+        XCTAssertEqual(finding.status, .needsAttention)
+        XCTAssertEqual(finding.category, .volume)
+        XCTAssertEqual(finding.paths, [offline.path])
+        XCTAssertEqual(finding.recommendation, "Run 'mb init' to update the default volume.")
+        XCTAssertEqual(report.exitCode, 1)
+    }
+
+    func testDefaultVolumeIneligibleNeedsAttention() throws {
+        let store = try saveDefaultVolume(path: volumeDir.path, name: "ExternalSSD")
+
+        let checker = makeChecker(
+            extraDiskInfo: [volumeDir.path: makeDiskInfo(mountPoint: volumeDir.path, isWritableVolume: false)],
+            configStore: store
+        )
+        let report = try check(checker)
+
+        let finding = try XCTUnwrap(findings(report, code: .defaultVolumeIneligible).first)
+        XCTAssertEqual(finding.status, .needsAttention)
+        XCTAssertEqual(finding.paths, [volumeDir.path])
+        XCTAssertTrue(finding.detail.contains("read-only"))
+        XCTAssertEqual(report.exitCode, 1)
+    }
+
+    func testDefaultVolumeFoundByUUIDAfterMountPathChange() throws {
+        let store = try saveDefaultVolume(
+            path: volumesDir.appendingPathComponent("ExternalSSD-OLD").path,
+            name: "ExternalSSD",
+            uuid: "UUID-SSD"
+        )
+        let mounted = makeDiskInfo(mountPoint: volumeDir.path)
+        let info = VolumeDiskInfo(
+            mountPoint: mounted.mountPoint,
+            isInternal: mounted.isInternal,
+            filesystemType: mounted.filesystemType,
+            isWritableVolume: mounted.isWritableVolume,
+            busProtocol: mounted.busProtocol,
+            volumeName: mounted.volumeName,
+            totalBytes: mounted.totalBytes,
+            availableBytes: mounted.availableBytes,
+            volumeUUID: "UUID-SSD"
+        )
+
+        let report = try check(makeChecker(extraDiskInfo: [volumeDir.path: info], configStore: store))
+
+        let finding = try XCTUnwrap(findings(report, code: .defaultVolumeMounted).first)
+        XCTAssertEqual(finding.status, .healthy)
+        XCTAssertTrue(finding.detail.contains("the saved path was"))
+        XCTAssertEqual(finding.paths, [volumeDir.path])
+        XCTAssertEqual(report.exitCode, 0)
+    }
+
+    func testUnreadableConfigIsUnverified() throws {
+        let store = makeConfigStore()
+        try FileManager.default.createDirectory(
+            at: store.configURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("INVALID_JSON{[[[".utf8).write(to: store.configURL)
+
+        let report = try check(makeChecker(configStore: store))
+
+        let finding = try XCTUnwrap(findings(report, code: .configUnreadable).first)
+        XCTAssertEqual(finding.status, .unableToVerify)
+        XCTAssertEqual(finding.category, .volume)
+        XCTAssertEqual(finding.paths, [store.configURL.path])
+        XCTAssertTrue(finding.recommendation.contains("mb init"))
+        XCTAssertEqual(report.exitCode, 1)
+    }
+
+    func testWithoutSavedDefaultVolumeNoConfigFindingIsAdded() throws {
+        let report = try check(makeChecker())
+
+        XCTAssertTrue(findings(report, code: .defaultVolumeMounted).isEmpty)
+        XCTAssertTrue(findings(report, code: .defaultVolumeUnavailable).isEmpty)
+        XCTAssertTrue(findings(report, code: .defaultVolumeIneligible).isEmpty)
+        XCTAssertTrue(findings(report, code: .configUnreadable).isEmpty)
+        XCTAssertEqual(report.exitCode, 0)
     }
 
     private func snapshot(of root: URL) throws -> [String] {

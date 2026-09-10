@@ -9,6 +9,7 @@ struct MacBay: ParsableCommand {
         abstract: "The developer-first storage externalizer for macOS.",
         version: "1.1.0",
         subcommands: [
+            InitCommand.self,
             StatusCommand.self,
             ScanCommand.self,
             DoctorCommand.self,
