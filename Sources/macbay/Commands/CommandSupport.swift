@@ -1,9 +1,16 @@
 import Foundation
 import MacBayKit
 
+import Darwin
+
 enum CommandSupport {
-    static func formatter(json: Bool) -> OutputFormatter {
-        OutputFormatter(useColor: !json)
+    static func formatter(
+        json: Bool,
+        isTTY: Bool = isatty(STDOUT_FILENO) != 0,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> OutputFormatter {
+        let color = !json && OutputFormatter.isColorSupported(isTTY: isTTY, environment: environment)
+        return OutputFormatter(useColor: color)
     }
 
     static func confirm(

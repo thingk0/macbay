@@ -119,6 +119,30 @@ mb --version
 mb status
 ```
 
+출력 예시:
+```text
+MacBay storage status
+
+Internal · Macintosh HD
+  /
+  ████████░░░░░░░░░░░░  42.2% used
+  Used: 96.3 GB / 228.3 GB
+  Free: 132.0 GB
+
+External · KLEVV
+  /Volumes/KLEVV
+  ██░░░░░░░░░░░░░░░░░░  7.6% used
+  Used: 70.9 GB / 931.3 GB
+  Free: 860.4 GB
+
+Docked items · 0
+  None
+
+Warnings · 2
+  • Excluded volume 'Antigravity' (/Volumes/Antigravity): Disk image volumes are not supported
+  • Excluded volume 'Grok Bot Installer' (/Volumes/Grok Bot Installer): Disk image volumes are not supported
+```
+
 ### 2. 외장화 대상 탐색
 
 안전성 평가 결과와 함께 대용량 애플리케이션 및 개발자 캐시를 검색합니다:

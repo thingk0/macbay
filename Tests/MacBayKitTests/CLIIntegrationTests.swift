@@ -15,10 +15,13 @@ final class CLIIntegrationTests: XCTestCase {
             .appendingPathComponent("mb")
     }
 
-    private func runCLI(arguments: [String]) throws -> (status: Int32, stdout: String, stderr: String) {
+    private func runCLI(arguments: [String], environment: [String: String]? = nil) throws -> (status: Int32, stdout: String, stderr: String) {
         let process = Process()
         process.executableURL = binaryURL
         process.arguments = arguments
+        if let environment = environment {
+            process.environment = environment
+        }
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
@@ -118,5 +121,42 @@ final class CLIIntegrationTests: XCTestCase {
         // --dry-run was removed from status in v0.2.0
         let result = try runCLI(arguments: ["status", "--dry-run"])
         XCTAssertNotEqual(result.status, 0)
+    }
+
+    func testStatusPipedOutputHasNoAnsi() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+
+        let result = try runCLI(arguments: ["status"])
+        XCTAssertEqual(result.status, 0)
+        XCTAssertTrue(result.stdout.contains("MacBay storage status"))
+        XCTAssertTrue(result.stdout.contains("Internal ·"))
+        // Piped subprocess should not have ANSI escape codes
+        XCTAssertFalse(result.stdout.contains("\u{001B}"))
+    }
+
+    func testStatusWithNoColorEnvHasNoAnsi() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+
+        var env = ProcessInfo.processInfo.environment
+        env["NO_COLOR"] = "1"
+        let result = try runCLI(arguments: ["status"], environment: env)
+        XCTAssertEqual(result.status, 0)
+        XCTAssertFalse(result.stdout.contains("\u{001B}"))
+    }
+
+    func testStatusWithTermDumbHasNoAnsi() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+
+        var env = ProcessInfo.processInfo.environment
+        env["TERM"] = "dumb"
+        let result = try runCLI(arguments: ["status"], environment: env)
+        XCTAssertEqual(result.status, 0)
+        XCTAssertFalse(result.stdout.contains("\u{001B}"))
     }
 }

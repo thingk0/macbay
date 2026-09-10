@@ -1,10 +1,22 @@
 import Foundation
 
+import Darwin
+
 public struct OutputFormatter {
     public let useColor: Bool
 
     public init(useColor: Bool = true) {
         self.useColor = useColor
+    }
+
+    public static func isColorSupported(
+        isTTY: Bool = isatty(STDOUT_FILENO) != 0,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        guard isTTY else { return false }
+        guard environment["NO_COLOR"] == nil else { return false }
+        guard environment["TERM"] != "dumb" else { return false }
+        return true
     }
 
     public func json<T: Encodable>(_ value: T) throws -> String {
@@ -14,38 +26,79 @@ public struct OutputFormatter {
     }
 
     public func status(_ report: StatusReport) -> String {
-        var lines = [
-            style("MacBay storage status", color: "36", bold: true),
-            "Internal: \(report.internalVolume.name) (\(report.internalVolume.path))",
-            "  Free: \(Self.humanBytes(report.internalVolume.availableBytes)) / \(Self.humanBytes(report.internalVolume.totalBytes)) (\(Self.percent(report.internalVolume.availablePercentage)) available)"
-        ]
+        var groups: [[String]] = []
+
+        groups.append([style("MacBay storage status", color: "36", bold: true)])
+        groups.append(formatVolume(label: "Internal", volume: report.internalVolume))
 
         if report.externalVolumes.isEmpty {
-            lines.append(style("External volumes: none detected", color: "33"))
+            groups.append([
+                style("External volumes · 0", color: "33"),
+                "  None detected"
+            ])
         } else {
-            lines.append("External volumes:")
             for volume in report.externalVolumes {
-                lines.append(
-                    "  • \(volume.name) (\(volume.path)) — \(Self.humanBytes(volume.availableBytes)) free"
-                )
+                groups.append(formatVolume(label: "External", volume: volume))
             }
         }
 
-        lines.append("Docked items:")
+        var dockedLines = ["Docked items · \(report.dockedItems.count)"]
         if report.dockedItems.isEmpty {
-            lines.append("  None")
+            dockedLines.append("  None")
         } else {
             for item in report.dockedItems.sorted(by: { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }) {
-                lines.append("  • \(item.name) — \(Self.humanBytes(item.sizeBytes)) (\(item.externalPath))")
+                dockedLines.append("  • \(item.name) — \(Self.humanBytes(item.sizeBytes)) (\(item.externalPath))")
             }
         }
+        groups.append(dockedLines)
+
         if !report.warnings.isEmpty {
-            lines.append("Warnings:")
+            var warningLines = ["Warnings · \(report.warnings.count)"]
             for warning in report.warnings {
-                lines.append("  • \(warning)")
+                warningLines.append("  • \(warning)")
             }
+            groups.append(warningLines)
         }
-        return lines.joined(separator: "\n")
+
+        return groups.map { $0.joined(separator: "\n") }.joined(separator: "\n\n")
+    }
+
+    private func formatVolume(label: String, volume: StorageVolume) -> [String] {
+        var lines = [
+            "\(label) · \(volume.name)",
+            "  \(volume.path)"
+        ]
+
+        let total = volume.totalBytes
+        let available = min(volume.availableBytes, total)
+        let used = total - available
+
+        if total == 0 {
+            lines.append("  Capacity unavailable")
+        } else {
+            let ratio = Double(used) / Double(total)
+            let percentage = ratio * 100.0
+            let filledBlocks = min(max(Int((ratio * 20.0).rounded()), 0), 20)
+            let emptyBlocks = 20 - filledBlocks
+            let bar = String(repeating: "█", count: filledBlocks) + String(repeating: "░", count: emptyBlocks)
+
+            let color: String
+            if percentage < 80.0 {
+                color = "36"
+            } else if percentage < 90.0 {
+                color = "33"
+            } else {
+                color = "31"
+            }
+
+            let styledBar = style(bar, color: color)
+            let percentString = String(format: "%.1f%% used", percentage)
+            lines.append("  \(styledBar)  \(percentString)")
+        }
+
+        lines.append("  Used: \(Self.humanBytes(used)) / \(Self.humanBytes(total))")
+        lines.append("  Free: \(Self.humanBytes(available))")
+        return lines
     }
 
     public func scan(_ report: ScanReport) -> String {
