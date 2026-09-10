@@ -224,8 +224,9 @@ Healthy · 2
 ```
 
 - `Healthy`：链接可正常解析，且与 MacBay 记录或既有目录结构一致。无记录的链接会作为 `unmanaged` 信息展示，而非问题。
-- `Needs attention`：链接断开、循环链接、实际目标与记录路径不一致，或记录中的外置副本已丢失。
+- `Needs attention`：链接断开、循环链接、实际目标与记录路径不一致、记录的外置副本或源路径丢失，以及在原本应为链接的位置出现了普通文件或目录。
 - `Unable to verify`：无法读取链接、链接所在卷或该卷的 `manifest.json`（例如权限错误或清单文件损坏）。
+- `Notes`：说明检查范围，包括手动迁移的条目没有 MacBay 历史记录因而不会被评估，以及记录无法读取的卷中的条目未被检查。
 - `Nothing to verify`（没有可检查的记录或链接）会与“未发现问题”分开报告。
 
 退出码：无异常 `0`，发现问题或存在无法验证项 `1`，诊断本身执行失败（例如 `--volume` 路径无法检查）`2`。
@@ -253,7 +254,10 @@ mb doctor --volume /Volumes/Archive
 1. **应用程序链接**：解析 `/Applications` 中的所有符号链接（包括相对链接、链式链接与循环链接）。
 2. **开发者缓存链接**：`~/Library/Developer/Xcode/iOS DeviceSupport`、`~/Library/Developer/CoreSimulator`、`~/.npm`、`~/.cache/uv`、`~/.gradle` 与 `~/.cache/huggingface`。
 3. **卷记录**：将已连接卷的 `MacBay/manifest.json` 与实际源路径和目标路径进行比对。
-4. **记录副本**：若源路径已不再是链接且外置副本也已丢失，则报告为记录与实际状态不一致。
+4. **本地数据**：记录中的源路径不再是链接、而是以普通文件或目录形式存在时，会报告为 `Local data detected`，并显示两个路径及其当前大小。若外置副本也已丢失，则不会归类为简单重复，而是报告记录与实际状态不一致。
+
+> [!NOTE]
+> `doctor` 不会删除、覆盖或重新迁移任何内容，也不会断言本地数据是“因更新而重新生成”或“两份副本完全相同”。手动迁移的条目没有 MacBay 历史记录，因此不参与本地数据检查；该范围会在 `notes` 中说明。
 
 **结果分组**：`Healthy`、`Needs attention`、`Unable to verify`，以及针对非 MacBay 创建的链接的 `unmanaged` 信息。所有问题在 `--json` 输出中都会附带稳定的诊断代码与建议操作。
 
@@ -402,7 +406,7 @@ mb cache --reset
 mb status --json
 ```
 
-`mb doctor --json` 会输出 `volumes`、`findings` 与 `summary`。每个条目都带有稳定的 `code`（例如 `link_target_unavailable`、`link_unmanaged`、`manifest_unreadable`）、`status`（`healthy`、`needs_attention`、`unable_to_verify`）、相关路径以及建议操作。
+`mb doctor --json` 会输出 `volumes`、`findings`、`summary`、`warnings` 与 `notes`。每个条目都带有稳定的 `code`（例如 `link_target_unavailable`、`link_unmanaged`、`local_data_detected`、`record_source_missing`、`manifest_unreadable`）、`status`（`healthy`、`needs_attention`、`unable_to_verify`）、相关路径、适用时的大小以及建议操作。
 
 当发生错误时，MacBay 会向 `stderr` 输出结构化的错误信封（Envelope）并以非零状态码退出：
 

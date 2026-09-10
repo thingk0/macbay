@@ -466,6 +466,14 @@ public struct OutputFormatter {
             }
         }
 
+        if !report.notes.isEmpty {
+            var noteLines = [bold("Notes · \(report.notes.count)")]
+            for note in report.notes {
+                noteLines.append("  • " + note)
+            }
+            sections.append(noteLines)
+        }
+
         if !report.warnings.isEmpty {
             var warningLines = [bold("Warnings · \(report.warnings.count)")]
             for warning in report.warnings {

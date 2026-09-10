@@ -353,7 +353,155 @@ final class DoctorCheckerTests: XCTestCase {
         XCTAssertEqual(missing.category, .record)
         XCTAssertEqual(missing.paths.count, 2)
         XCTAssertTrue(missing.detail.contains("Recorded external copy is missing"))
+        XCTAssertTrue(missing.detail.contains("local data is present"))
+        XCTAssertNotNil(missing.localSizeBytes)
+        XCTAssertNil(missing.externalSizeBytes)
         XCTAssertEqual(report.exitCode, 1)
+    }
+
+    func testLocalDataDetectedWhenBothCopiesExist() throws {
+        let localApp = appsDir.appendingPathComponent("Regrown.app")
+        try createDirectory(at: localApp)
+        let externalApp = volumeDir.appendingPathComponent("MacBay/Applications/Regrown.app")
+        try createDirectory(at: externalApp)
+
+        try saveManifest(items: [makeItem(
+            name: "Regrown.app",
+            sourcePath: localApp.standardizedFileURL.path,
+            externalPath: externalApp.standardizedFileURL.path
+        )])
+
+        let report = try check(makeChecker())
+
+        let localData = try XCTUnwrap(findings(report, code: .localDataDetected).first)
+        XCTAssertEqual(localData.status, .needsAttention)
+        XCTAssertEqual(localData.category, .record)
+        XCTAssertEqual(localData.paths.map(standardPath), [
+            standardPath(localApp.path),
+            standardPath(externalApp.path)
+        ])
+        XCTAssertTrue(localData.detail.contains("Local data detected at"))
+        XCTAssertTrue(localData.detail.contains("recorded copy exists at"))
+        XCTAssertNotNil(localData.localSizeBytes)
+        XCTAssertNotNil(localData.externalSizeBytes)
+        XCTAssertTrue(localData.recommendation.contains("does not delete, overwrite, or re-move"))
+        XCTAssertEqual(report.summary.needsAttention, 1)
+        XCTAssertEqual(report.exitCode, 1)
+    }
+
+    func testLocalDataDetectionDoesNotClaimRegeneration() throws {
+        let localApp = appsDir.appendingPathComponent("Same.app")
+        try createDirectory(at: localApp)
+        let externalApp = volumeDir.appendingPathComponent("MacBay/Applications/Same.app")
+        try createDirectory(at: externalApp)
+
+        try saveManifest(items: [makeItem(
+            name: "Same.app",
+            sourcePath: localApp.standardizedFileURL.path,
+            externalPath: externalApp.standardizedFileURL.path
+        )])
+
+        let report = try check(makeChecker())
+        let finding = try XCTUnwrap(findings(report, code: .localDataDetected).first)
+
+        let text = (finding.detail + " " + finding.recommendation).lowercased()
+        for claim in ["update", "regenerated", "recreated", "identical", "duplicate", "same content"] {
+            XCTAssertFalse(text.contains(claim), "Finding must not assert '\(claim)': \(text)")
+        }
+    }
+
+    func testRecordedSourceMissingNeedsAttention() throws {
+        let externalApp = volumeDir.appendingPathComponent("MacBay/Applications/Orphan.app")
+        try createDirectory(at: externalApp)
+        try saveManifest(items: [makeItem(
+            name: "Orphan.app",
+            sourcePath: appsDir.appendingPathComponent("Orphan.app").standardizedFileURL.path,
+            externalPath: externalApp.standardizedFileURL.path
+        )])
+
+        let report = try check(makeChecker())
+
+        let orphan = try XCTUnwrap(findings(report, code: .recordSourceMissing).first)
+        XCTAssertEqual(orphan.status, .needsAttention)
+        XCTAssertEqual(orphan.category, .record)
+        XCTAssertTrue(orphan.detail.contains("Recorded source path is missing"))
+        XCTAssertNotNil(orphan.externalSizeBytes)
+        XCTAssertNil(orphan.localSizeBytes)
+        XCTAssertTrue(orphan.recommendation.contains("does not change records automatically"))
+        XCTAssertEqual(report.exitCode, 1)
+    }
+
+    func testRecordWithBothPathsMissingIsNotReportedAsDuplication() throws {
+        try saveManifest(items: [makeItem(
+            name: "Gone.app",
+            sourcePath: appsDir.appendingPathComponent("Gone.app").standardizedFileURL.path,
+            externalPath: volumeDir.appendingPathComponent("MacBay/Applications/Gone.app").path
+        )])
+
+        let report = try check(makeChecker())
+
+        XCTAssertTrue(findings(report, code: .localDataDetected).isEmpty)
+        let missing = try XCTUnwrap(findings(report, code: .recordTargetMissing).first)
+        XCTAssertTrue(missing.detail.contains("the recorded source path is also missing"))
+        XCTAssertNil(missing.localSizeBytes)
+        XCTAssertEqual(report.exitCode, 1)
+    }
+
+    func testNotesExplainScopeAndUnreadableManifests() throws {
+        let manifestURL = MacBayPaths.manifestURL(on: volumeDir)
+        try FileManager.default.createDirectory(
+            at: manifestURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("INVALID_JSON{[[[".utf8).write(to: manifestURL)
+
+        let report = try check(makeChecker())
+
+        XCTAssertTrue(report.notes.contains { $0.contains("manually relocated items have no MacBay history") })
+        XCTAssertTrue(report.notes.contains { $0.contains("were not checked because its manifest could not be read") })
+    }
+
+    func testNotesWhenNoVolumesAreConsulted() throws {
+        let report = try check(makeChecker(mountedPaths: []))
+
+        XCTAssertEqual(report.notes.count, 1)
+        XCTAssertTrue(report.notes[0].contains("No external volumes were consulted"))
+    }
+
+    func testLocalDataCheckSkipsRecordedLinks() throws {
+        let externalApp = volumeDir.appendingPathComponent("MacBay/Applications/Linked.app")
+        try createDirectory(at: externalApp)
+        let link = appsDir.appendingPathComponent("Linked.app")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: externalApp)
+        try saveManifest(items: [makeItem(
+            name: "Linked.app",
+            sourcePath: link.standardizedFileURL.path,
+            externalPath: externalApp.standardizedFileURL.path
+        )])
+
+        let report = try check(makeChecker())
+
+        XCTAssertEqual(findings(report, code: .linkManagedRecord).count, 1)
+        XCTAssertTrue(findings(report, code: .localDataDetected).isEmpty)
+        XCTAssertTrue(findings(report, code: .recordTargetMissing).isEmpty)
+        XCTAssertTrue(findings(report, code: .recordSourceMissing).isEmpty)
+        XCTAssertEqual(report.exitCode, 0)
+    }
+
+    func testDoctorReportDecodesWithoutNotesField() throws {
+        let legacyJSON = """
+        {
+          "generatedAt": "2026-09-10T12:00:00Z",
+          "volumes": [],
+          "findings": [],
+          "summary": {"checked": 0, "healthy": 0, "unmanaged": 0, "needsAttention": 0, "unableToVerify": 0},
+          "warnings": []
+        }
+        """
+        let report = try JSONDecoder().decode(DoctorReport.self, from: Data(legacyJSON.utf8))
+
+        XCTAssertTrue(report.notes.isEmpty)
+        XCTAssertEqual(report.exitCode, 0)
     }
 
     func testRecordTargetCheckSkipsRecordedLinks() throws {

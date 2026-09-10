@@ -224,8 +224,9 @@ Healthy · 2
 ```
 
 - `Healthy`: 링크가 정상적으로 해석되고 MacBay 기록 또는 기대 레이아웃과 일치합니다. 기록이 없는 링크는 문제가 아니라 `unmanaged` 정보로 표시합니다.
-- `Needs attention`: 끊어진 링크, 순환 링크, 기록된 대상 경로와 실제 대상이 다른 경우, 기록된 외장 복사본이 사라진 경우.
+- `Needs attention`: 끊어진 링크, 순환 링크, 기록된 대상 경로와 실제 대상이 다른 경우, 기록된 복사본이나 원본 경로가 사라진 경우, 링크여야 할 자리에 일반 파일·디렉터리가 생긴 경우.
 - `Unable to verify`: 링크, 링크 대상 볼륨, 볼륨의 `manifest.json`을 읽지 못한 경우(권한 오류, 매니페스트 오류 등).
+- `Notes`: 검사 범위를 안내합니다. 수동 이동 항목은 MacBay 이력이 없어 평가하지 않으며, 기록을 읽지 못한 볼륨의 항목은 검사하지 않았다는 점을 명시합니다.
 - `Nothing to verify`(검사할 기록·링크가 없음)는 "문제 없음"과 구분해서 표시합니다.
 
 종료 코드: 문제 없음 `0`, 문제 또는 검증 불가 항목 발견 `1`, 진단 자체 실패(예: `--volume` 경로 확인 불가) `2`.
@@ -253,7 +254,10 @@ mb doctor --volume /Volumes/Archive
 1. **애플리케이션 링크**: `/Applications`의 모든 심볼릭 링크를 해석합니다(상대·연쇄·순환 링크 포함).
 2. **개발자 캐시 링크**: `~/Library/Developer/Xcode/iOS DeviceSupport`, `~/Library/Developer/CoreSimulator`, `~/.npm`, `~/.cache/uv`, `~/.gradle`, `~/.cache/huggingface`.
 3. **볼륨 기록**: 연결된 볼륨의 `MacBay/manifest.json`과 실제 원본·대상 경로를 대조합니다.
-4. **기록된 복사본**: 원본이 더 이상 링크가 아니고 외장 복사본도 존재하지 않으면 기록과 실제 상태가 다름으로 보고합니다.
+4. **내부 데이터**: 기록된 원본 경로가 링크가 아니라 일반 파일·디렉터리로 존재하면 `Local data detected`로 보고하고 두 경로와 현재 크기를 표시합니다. 외장 복사본까지 사라졌다면 단순 중복으로 분류하지 않고 기록과 실제 상태가 다름으로 보고합니다.
+
+> [!NOTE]
+> `doctor`는 삭제·덮어쓰기·재이동을 수행하지 않으며, "업데이트 때문에 재생성됐다"거나 "두 복사본이 동일하다"고 단정하지 않습니다. 수동 이동 항목은 MacBay 이력이 없어 내부 데이터 검사에서 제외되며, 이 범위는 `notes`에 명시됩니다.
 
 **결과 그룹**: `Healthy`, `Needs attention`, `Unable to verify`와 MacBay가 만들지 않은 링크를 위한 `unmanaged` 정보. 모든 문제는 `--json` 출력에서 안정적인 진단 코드와 권장 행동을 함께 제공합니다.
 
@@ -402,7 +406,7 @@ mb cache --reset
 mb status --json
 ```
 
-`mb doctor --json`은 `volumes`, `findings`, `summary`를 보고합니다. 각 항목에는 안정적인 `code`(예: `link_target_unavailable`, `link_unmanaged`, `manifest_unreadable`), `status`(`healthy`, `needs_attention`, `unable_to_verify`), 관련 경로와 권장 행동이 포함됩니다.
+`mb doctor --json`은 `volumes`, `findings`, `summary`, `warnings`, `notes`를 보고합니다. 각 항목에는 안정적인 `code`(예: `link_target_unavailable`, `link_unmanaged`, `local_data_detected`, `record_source_missing`, `manifest_unreadable`), `status`(`healthy`, `needs_attention`, `unable_to_verify`), 관련 경로와 크기(해당되는 경우), 권장 행동이 포함됩니다.
 
 오류 발생 시 MacBay는 `stderr`로 구조화된 에러 봉투(envelope)를 출력하고 0이 아닌 종료 상태 코드를 반환합니다:
 

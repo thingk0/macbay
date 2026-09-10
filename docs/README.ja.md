@@ -224,8 +224,9 @@ Healthy · 2
 ```
 
 - `Healthy`: リンクが正しく解決され、MacBay の記録または想定されたレイアウトと一致しています。記録のないリンクは問題ではなく `unmanaged` 情報として表示します。
-- `Needs attention`: リンク切れ、循環リンク、記録されたリンク先と実際のリンク先の不一致、記録された外部コピーの消失。
+- `Needs attention`: リンク切れ、循環リンク、記録されたリンク先と実際のリンク先の不一致、記録された外部コピーやソースパスの消失、リンクであるべき場所に通常のファイルやディレクトリが現れた場合。
 - `Unable to verify`: リンク、リンク先のボリューム、ボリュームの `manifest.json` を読み取れなかった場合（権限エラーやマニフェスト破損など）。
+- `Notes`: 検査範囲を示します。手動で移動した項目は MacBay の履歴がないため評価対象外であり、記録を読み取れなかったボリュームの項目は検査していないことを明記します。
 - `Nothing to verify`（検査対象の記録・リンクが存在しない）は「問題なし」とは区別して表示します。
 
 終了コード: 問題なし `0`、問題または検証不能な項目の検出 `1`、診断自体の失敗（例: `--volume` パスを検査できない）`2`。
@@ -253,7 +254,10 @@ mb doctor --volume /Volumes/Archive
 1. **アプリケーションリンク**: `/Applications` 内のすべてのシンボリックリンクを解決します（相対リンク、多段リンク、循環リンクを含む）。
 2. **開発者キャッシュリンク**: `~/Library/Developer/Xcode/iOS DeviceSupport`、`~/Library/Developer/CoreSimulator`、`~/.npm`、`~/.cache/uv`、`~/.gradle`、`~/.cache/huggingface`。
 3. **ボリューム記録**: 接続中のボリュームの `MacBay/manifest.json` と実際のソース／リンク先パスを照合します。
-4. **記録されたコピー**: ソースがリンクではなくなっており、外部コピーも存在しない場合は、記録と実際の状態の不一致として報告します。
+4. **ローカルデータ**: 記録されたソースパスがリンクではなく通常のファイルやディレクトリとして存在する場合、`Local data detected` として報告し、両方のパスと現在のサイズを表示します。外部コピーも失われている場合は単純な重複とは分類せず、記録と実際の状態の不一致として報告します。
+
+> [!NOTE]
+> `doctor` は削除・上書き・再移動を行わず、「アップデートによって再生成された」とか「2つのコピーが同一である」とは断定しません。手動で移動した項目は MacBay の履歴がないためローカルデータ検査の対象外であり、その範囲は `notes` に明記されます。
 
 **結果グループ**: `Healthy`、`Needs attention`、`Unable to verify`、および MacBay が作成していないリンクの `unmanaged` 情報。すべての問題には `--json` 出力で安定した診断コードと推奨される次の操作が付与されます。
 
@@ -402,7 +406,7 @@ mb cache --reset
 mb status --json
 ```
 
-`mb doctor --json` は `volumes`、`findings`、`summary` を出力します。各項目には安定した `code`（例: `link_target_unavailable`、`link_unmanaged`、`manifest_unreadable`）、`status`（`healthy`、`needs_attention`、`unable_to_verify`）、関連パス、推奨される次の操作が含まれます。
+`mb doctor --json` は `volumes`、`findings`、`summary`、`warnings`、`notes` を出力します。各項目には安定した `code`（例: `link_target_unavailable`、`link_unmanaged`、`local_data_detected`、`record_source_missing`、`manifest_unreadable`）、`status`（`healthy`、`needs_attention`、`unable_to_verify`）、関連パス、該当する場合はサイズ、推奨される次の操作が含まれます。
 
 エラー発生時、MacBayは構造化されたエラーエンベロープを `stderr` に出力し、非ゼロのステータスコードで終了します:
 

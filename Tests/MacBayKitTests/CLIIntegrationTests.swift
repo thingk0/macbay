@@ -233,6 +233,7 @@ final class CLIIntegrationTests: XCTestCase {
         XCTAssertNotNil(json["findings"] as? [[String: Any]])
         XCTAssertNotNil(json["summary"] as? [String: Any])
         XCTAssertNotNil(json["warnings"] as? [String])
+        XCTAssertNotNil(json["notes"] as? [String])
         XCTAssertNil(json["exitCode"])
     }
 
