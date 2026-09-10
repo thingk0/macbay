@@ -16,15 +16,21 @@ public struct AppScanner {
     private let fileManager: FileManager
     private let sizeCalculator: FileSizeCalculator
     private let appInspector: AppInspector
+    private let diskInfoProvider: any DiskInfoProvider
+    private let manifestStore: ManifestStore
 
     public init(
         fileManager: FileManager = .default,
         commandRunner: any CommandRunner = SystemCommandRunner(),
-        appInspector: AppInspector? = nil
+        appInspector: AppInspector? = nil,
+        diskInfoProvider: (any DiskInfoProvider)? = nil,
+        manifestStore: ManifestStore? = nil
     ) {
         self.fileManager = fileManager
         self.sizeCalculator = FileSizeCalculator(fileManager: fileManager)
         self.appInspector = appInspector ?? AppInspector(fileManager: fileManager, commandRunner: commandRunner)
+        self.diskInfoProvider = diskInfoProvider ?? SystemDiskInfoProvider(commandRunner: commandRunner)
+        self.manifestStore = manifestStore ?? ManifestStore(fileManager: fileManager)
     }
 
     public func scan(
@@ -33,6 +39,11 @@ public struct AppScanner {
         developerCacheTargets: [DeveloperCacheTarget] = AppScanner.defaultDeveloperCacheTargets()
     ) -> ScanReport {
         var candidates: [AppCandidate] = []
+        var externalApplications: [ExternalApplication] = []
+        var unresolvedApplicationLinks: [UnresolvedApplicationLink] = []
+        var seenExternalSources: Set<String> = []
+        var seenUnresolvedSources: Set<String> = []
+        var manifestsByVolume: [String: Result<DockManifest, Error>] = [:]
         var warnings: [String] = []
 
         for directory in applicationDirectories {
@@ -53,22 +64,126 @@ public struct AppScanner {
             }
 
             for entry in entries where entry.pathExtension.lowercased() == "app" {
-                do {
-                    let values = try entry.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
-                    guard values.isDirectory == true, values.isSymbolicLink != true else { continue }
-                    let sizeBytes = try sizeCalculator.size(of: entry)
-                    if sizeBytes >= minimumApplicationSizeBytes {
-                        let compatibility = appInspector.assess(bundleURL: entry)
-                        candidates.append(AppCandidate(
-                            name: entry.lastPathComponent,
-                            path: entry.path,
-                            sizeBytes: sizeBytes,
-                            kind: .application,
-                            compatibility: compatibility
-                        ))
+                let isSymlink: Bool
+                let isDir: Bool
+                if let values = try? entry.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]) {
+                    isSymlink = values.isSymbolicLink == true
+                    isDir = values.isDirectory == true
+                } else if let attrs = try? fileManager.attributesOfItem(atPath: entry.path) {
+                    isSymlink = attrs[.type] as? FileAttributeType == .typeSymbolicLink
+                    isDir = attrs[.type] as? FileAttributeType == .typeDirectory
+                } else {
+                    warnings.append("Unable to inspect \(entry.path)")
+                    continue
+                }
+
+                if isSymlink {
+                    let sourcePath = entry.path
+                    let sourceKey = entry.standardizedFileURL.path
+
+                    switch resolveSymlink(at: entry) {
+                    case .circular(let targetPath):
+                        if !seenUnresolvedSources.contains(sourceKey) {
+                            seenUnresolvedSources.insert(sourceKey)
+                            unresolvedApplicationLinks.append(UnresolvedApplicationLink(
+                                name: entry.lastPathComponent,
+                                sourcePath: sourcePath,
+                                destinationPath: targetPath,
+                                reason: "Circular link detected"
+                            ))
+                        }
+                    case .broken(let targetPath):
+                        if !seenUnresolvedSources.contains(sourceKey) {
+                            seenUnresolvedSources.insert(sourceKey)
+                            unresolvedApplicationLinks.append(UnresolvedApplicationLink(
+                                name: entry.lastPathComponent,
+                                sourcePath: sourcePath,
+                                destinationPath: targetPath,
+                                reason: "Target unavailable"
+                            ))
+                        }
+                    case .resolved(let resolvedURL):
+                        let diskInfo: VolumeDiskInfo
+                        do {
+                            diskInfo = try diskInfoProvider.diskInfo(for: resolvedURL.path)
+                        } catch {
+                            if !seenUnresolvedSources.contains(sourceKey) {
+                                seenUnresolvedSources.insert(sourceKey)
+                                unresolvedApplicationLinks.append(UnresolvedApplicationLink(
+                                    name: entry.lastPathComponent,
+                                    sourcePath: sourcePath,
+                                    destinationPath: resolvedURL.path,
+                                    reason: "Volume check failed"
+                                ))
+                            }
+                            continue
+                        }
+
+                        let isDiskImage = diskInfo.busProtocol.caseInsensitiveCompare("Disk Image") == .orderedSame
+                        if diskInfo.isInternal || isDiskImage {
+                            continue
+                        }
+
+                        if !seenExternalSources.contains(sourceKey) {
+                            seenExternalSources.insert(sourceKey)
+                            let targetSize = try? sizeCalculator.size(of: resolvedURL)
+                            let volumeURL = URL(fileURLWithPath: diskInfo.mountPoint)
+
+                            let manifestResult: Result<DockManifest, Error>
+                            if let cached = manifestsByVolume[volumeURL.path] {
+                                manifestResult = cached
+                            } else {
+                                do {
+                                    let loaded = try manifestStore.load(on: volumeURL)
+                                    manifestResult = .success(loaded)
+                                } catch {
+                                    manifestResult = .failure(error)
+                                }
+                                manifestsByVolume[volumeURL.path] = manifestResult
+                            }
+
+                            let managementStatus: ExternalAppManagementStatus
+                            switch manifestResult {
+                            case .success(let manifest):
+                                let isManaged = manifest.items.contains { item in
+                                    guard item.kind == .application else { return false }
+                                    let itemSource = URL(fileURLWithPath: item.sourcePath).standardizedFileURL.path
+                                    let symlinkSource = entry.standardizedFileURL.path
+                                    let itemExternal = URL(fileURLWithPath: item.externalPath).standardizedFileURL.path
+                                    let resolvedTarget = resolvedURL.standardizedFileURL.path
+                                    return itemSource.caseInsensitiveCompare(symlinkSource) == .orderedSame &&
+                                           itemExternal.caseInsensitiveCompare(resolvedTarget) == .orderedSame
+                                }
+                                managementStatus = isManaged ? .macBay : .unmanaged
+                            case .failure:
+                                managementStatus = .unconfirmed
+                            }
+
+                            externalApplications.append(ExternalApplication(
+                                name: entry.lastPathComponent,
+                                sourcePath: sourcePath,
+                                destinationPath: resolvedURL.path,
+                                sizeBytes: targetSize,
+                                managementStatus: managementStatus
+                            ))
+                        }
                     }
-                } catch {
-                    warnings.append("Unable to size \(entry.path): \(error.localizedDescription)")
+                } else if isDir {
+                    do {
+                        let sizeBytes = try sizeCalculator.size(of: entry)
+                        if sizeBytes >= minimumApplicationSizeBytes {
+                            let compatibility = appInspector.assess(bundleURL: entry)
+                            candidates.append(AppCandidate(
+                                name: entry.lastPathComponent,
+                                path: entry.path,
+                                sizeBytes: sizeBytes,
+                                kind: .application,
+                                compatibility: compatibility
+                            ))
+                        }
+                    } catch {
+                        warnings.append("Unable to size \(entry.path): \(error.localizedDescription)")
+                    }
                 }
             }
         }
@@ -97,12 +212,72 @@ public struct AppScanner {
             return $0.sizeBytes > $1.sizeBytes
         }
 
+        externalApplications.sort {
+            let cmp = $0.name.localizedCaseInsensitiveCompare($1.name)
+            if cmp == .orderedSame {
+                return $0.sourcePath.localizedCaseInsensitiveCompare($1.sourcePath) == .orderedAscending
+            }
+            return cmp == .orderedAscending
+        }
+
+        unresolvedApplicationLinks.sort {
+            let cmp = $0.name.localizedCaseInsensitiveCompare($1.name)
+            if cmp == .orderedSame {
+                return $0.sourcePath.localizedCaseInsensitiveCompare($1.sourcePath) == .orderedAscending
+            }
+            return cmp == .orderedAscending
+        }
+
         return ScanReport(
             generatedAt: macBayTimestamp(),
             minimumApplicationSizeBytes: minimumApplicationSizeBytes,
             candidates: candidates,
+            externalApplications: externalApplications,
+            unresolvedApplicationLinks: unresolvedApplicationLinks,
             warnings: warnings
         )
+    }
+
+    private enum LinkResolutionResult {
+        case resolved(URL)
+        case broken(targetPath: String)
+        case circular(targetPath: String)
+    }
+
+    private func resolveSymlink(at url: URL, maxHops: Int = 32) -> LinkResolutionResult {
+        var currentURL = url
+        var visitedPaths: Set<String> = [url.standardizedFileURL.path]
+        var hops = 0
+
+        while hops < maxHops {
+            hops += 1
+            let destination: String
+            do {
+                destination = try fileManager.destinationOfSymbolicLink(atPath: currentURL.path)
+            } catch {
+                var isDirectory: ObjCBool = false
+                if fileManager.fileExists(atPath: currentURL.path, isDirectory: &isDirectory) {
+                    return .resolved(currentURL.standardizedFileURL)
+                } else {
+                    return .broken(targetPath: currentURL.standardizedFileURL.path)
+                }
+            }
+
+            let nextURL: URL
+            if destination.hasPrefix("/") {
+                nextURL = URL(fileURLWithPath: destination).standardizedFileURL
+            } else {
+                nextURL = URL(fileURLWithPath: destination, relativeTo: currentURL.deletingLastPathComponent()).standardizedFileURL
+            }
+
+            if visitedPaths.contains(nextURL.path) {
+                return .circular(targetPath: nextURL.path)
+            }
+            visitedPaths.insert(nextURL.path)
+            currentURL = nextURL
+        }
+
+        return .circular(targetPath: currentURL.standardizedFileURL.path)
     }
 
     public static func defaultDeveloperCacheTargets(

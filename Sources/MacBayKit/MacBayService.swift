@@ -19,7 +19,12 @@ public struct MacBayService {
             diskInfoProvider: SystemDiskInfoProvider(commandRunner: commandRunner)
         )
         self.manifestStore = ManifestStore(fileManager: fileManager)
-        self.scanner = AppScanner(fileManager: fileManager, commandRunner: commandRunner)
+        self.scanner = AppScanner(
+            fileManager: fileManager,
+            commandRunner: commandRunner,
+            diskInfoProvider: self.volumeManager.diskInfoProvider,
+            manifestStore: self.manifestStore
+        )
         self.bundleMigrator = BundleMigrator(
             fileManager: fileManager,
             commandRunner: commandRunner,
@@ -69,8 +74,16 @@ public struct MacBayService {
         )
     }
 
-    public func scan() -> ScanReport {
-        scanner.scan()
+    public func scan(
+        minimumApplicationSizeBytes: UInt64 = AppScanner.defaultMinimumApplicationSizeBytes,
+        applicationDirectories: [URL] = [URL(fileURLWithPath: "/Applications")],
+        developerCacheTargets: [DeveloperCacheTarget] = AppScanner.defaultDeveloperCacheTargets()
+    ) -> ScanReport {
+        scanner.scan(
+            minimumApplicationSizeBytes: minimumApplicationSizeBytes,
+            applicationDirectories: applicationDirectories,
+            developerCacheTargets: developerCacheTargets
+        )
     }
 
     public func dock(

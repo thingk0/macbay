@@ -151,22 +151,118 @@ public struct StatusReport: Codable, Equatable, Sendable {
     }
 }
 
+public enum ExternalAppManagementStatus: String, Codable, Equatable, Sendable {
+    case macBay
+    case unmanaged
+    case unconfirmed
+
+    public var badge: String {
+        switch self {
+        case .macBay: return "[MacBay]"
+        case .unmanaged: return "[Unmanaged]"
+        case .unconfirmed: return "[Unconfirmed]"
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(String.self)
+        if raw.lowercased() == "macbay" {
+            self = .macBay
+        } else if raw.lowercased() == "unmanaged" {
+            self = .unmanaged
+        } else {
+            self = .unconfirmed
+        }
+    }
+}
+
+public struct ExternalApplication: Codable, Equatable, Identifiable, Sendable {
+    public let name: String
+    public let sourcePath: String
+    public let destinationPath: String
+    public let sizeBytes: UInt64?
+    public let managementStatus: ExternalAppManagementStatus
+
+    public var id: String { sourcePath }
+
+    public init(
+        name: String,
+        sourcePath: String,
+        destinationPath: String,
+        sizeBytes: UInt64?,
+        managementStatus: ExternalAppManagementStatus
+    ) {
+        self.name = name
+        self.sourcePath = sourcePath
+        self.destinationPath = destinationPath
+        self.sizeBytes = sizeBytes
+        self.managementStatus = managementStatus
+    }
+}
+
+public struct UnresolvedApplicationLink: Codable, Equatable, Identifiable, Sendable {
+    public let name: String
+    public let sourcePath: String
+    public let destinationPath: String
+    public let reason: String
+
+    public var id: String { sourcePath }
+
+    public init(
+        name: String,
+        sourcePath: String,
+        destinationPath: String,
+        reason: String
+    ) {
+        self.name = name
+        self.sourcePath = sourcePath
+        self.destinationPath = destinationPath
+        self.reason = reason
+    }
+}
+
 public struct ScanReport: Codable, Equatable, Sendable {
     public let generatedAt: String
     public let minimumApplicationSizeBytes: UInt64
     public let candidates: [AppCandidate]
+    public let externalApplications: [ExternalApplication]
+    public let unresolvedApplicationLinks: [UnresolvedApplicationLink]
     public let warnings: [String]
 
     public init(
         generatedAt: String,
         minimumApplicationSizeBytes: UInt64,
         candidates: [AppCandidate],
-        warnings: [String]
+        externalApplications: [ExternalApplication] = [],
+        unresolvedApplicationLinks: [UnresolvedApplicationLink] = [],
+        warnings: [String] = []
     ) {
         self.generatedAt = generatedAt
         self.minimumApplicationSizeBytes = minimumApplicationSizeBytes
         self.candidates = candidates
+        self.externalApplications = externalApplications
+        self.unresolvedApplicationLinks = unresolvedApplicationLinks
         self.warnings = warnings
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case generatedAt
+        case minimumApplicationSizeBytes
+        case candidates
+        case externalApplications
+        case unresolvedApplicationLinks
+        case warnings
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.generatedAt = try container.decode(String.self, forKey: .generatedAt)
+        self.minimumApplicationSizeBytes = try container.decode(UInt64.self, forKey: .minimumApplicationSizeBytes)
+        self.candidates = try container.decode([AppCandidate].self, forKey: .candidates)
+        self.externalApplications = try container.decodeIfPresent([ExternalApplication].self, forKey: .externalApplications) ?? []
+        self.unresolvedApplicationLinks = try container.decodeIfPresent([UnresolvedApplicationLink].self, forKey: .unresolvedApplicationLinks) ?? []
+        self.warnings = try container.decodeIfPresent([String].self, forKey: .warnings) ?? []
     }
 }
 
