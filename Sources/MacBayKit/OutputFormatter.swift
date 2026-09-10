@@ -543,6 +543,11 @@ public struct OutputFormatter {
         return String(format: "%.1f %@", value, units[index])
     }
 
+    static func humanSignedBytes(_ bytes: Int64) -> String {
+        guard bytes < 0 else { return humanBytes(UInt64(bytes)) }
+        return "-" + humanBytes(bytes.magnitude)
+    }
+
     private static func percent(_ value: Double) -> String {
         String(format: "%.1f%%", value)
     }

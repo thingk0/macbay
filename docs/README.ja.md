@@ -274,6 +274,20 @@ mb dock Example.app --dry-run
 mb dock Example.app
 ```
 
+プレビュー出力例:
+```text
+Dry run: dock Example.app
+  Size: 21.6 GB
+  Source: /Applications/Example.app
+  Destination: /Volumes/KLEVV/MacBay/Applications/Example.app
+  Space: destination free 859.5 GB on /Volumes/KLEVV
+  Space: estimated free after copy 837.9 GB
+  Space: estimated internal space freed 21.6 GB (logical size estimate; APFS shared blocks and snapshots can change the actual amount)
+  Dry run: no files were changed
+```
+
+プレビューでは、移動先ボリュームの空き容量、コピー後の推定空き容量、内蔵ディスクで確保されると見込まれる容量、移動先が不足している場合の不足量も表示します。これらは論理ファイルサイズに基づく保守的な推定値であり、APFSの共有ブロックやスナップショットにより実際の確保量は変わり得ます。実行時には空き容量を再確認し、不足している場合や確認できない場合はコピー前に中止します。容量が十分という推定は移行の成功を保証しません。
+
 **動作の仕組み**:
 1. **事前検証**: バンドルの整合性、実行中プロセス（`lsof`）、SQLiteロックファイル（`-wal`, `-shm`）をチェックします。
 2. **互換性検査**: コード署名のエンタイトルメントや自己移動マーカーを検証します。
@@ -298,6 +312,8 @@ mb undock Example.app --dry-run
 # 内蔵ディスクへの復元を実行
 mb undock Example.app
 ```
+
+復元時も必要な容量をプレビューします: 内蔵ボリュームの空き容量、コピー後の推定空き容量、不足量です。実行時には内蔵ボリュームを再確認し、容量が不足している場合や確認できない場合はコピー前に中止します。
 
 ### Xcodeのメンテナンス（`xcode`）
 

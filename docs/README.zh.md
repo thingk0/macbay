@@ -274,6 +274,20 @@ mb dock Example.app --dry-run
 mb dock Example.app
 ```
 
+预览输出示例：
+```text
+Dry run: dock Example.app
+  Size: 21.6 GB
+  Source: /Applications/Example.app
+  Destination: /Volumes/KLEVV/MacBay/Applications/Example.app
+  Space: destination free 859.5 GB on /Volumes/KLEVV
+  Space: estimated free after copy 837.9 GB
+  Space: estimated internal space freed 21.6 GB (logical size estimate; APFS shared blocks and snapshots can change the actual amount)
+  Dry run: no files were changed
+```
+
+预览还会显示目标卷的剩余空间、复制后的预计剩余空间、预计可在内置磁盘释放的空间，以及目标空间不足时的缺口容量。这些数值基于逻辑文件大小的保守估算，APFS 共享块与快照可能使实际释放量有所不同。实际执行时会重新检查剩余空间，若空间不足或无法确认，将在复制前中止；空间充足仅表示估算通过，并不保证迁移一定成功。
+
 **工作流程**：
 1. **预检验证**：检查应用程序包完整性、活跃进程（`lsof`）和 SQLite 锁（`-wal`、`-shm`）。
 2. **兼容性检查**：分析代码签名授权（Entitlements）和重定位特征标记。
@@ -298,6 +312,8 @@ mb undock Example.app --dry-run
 # 恢复至内置磁盘
 mb undock Example.app
 ```
+
+恢复时同样会预览空间需求：内置卷的剩余空间、复制后的预计剩余空间以及缺口容量。实际执行时会重新检查内置卷，若空间不足或无法确认，将在复制前中止。
 
 ### Xcode 维护管理 (`xcode`)
 

@@ -15,10 +15,11 @@ Use the `mb` CLI (or its alias `macbay`) for storage-aware Mac maintenance. Pref
    - 🟢 **SAFE**: Safe to dock.
    - ⚠️ **POPUP_RISK**: Contains relocation signals or privileged helper tools. Never dock without informing the user and providing the `--force` flag.
    - ❌ **BLOCKED**: Has hypervisor/virtualization entitlements, kernel/system/driver extensions, or corrupted bundles. Never attempt to dock a blocked app.
-4. **Always Dry-Run First**: Use `--dry-run` before any mutating command (`dock`, `undock`, `xcode`, `cache`). Note: `status`, `scan`, and `doctor` are read-only and do not accept `--dry-run` or `--yes`.
-5. **Locks & Process Safety**: Do not bypass process or SQLite lock errors. Ask the user to quit the reported process and retry.
-6. **Confirmation Prompts**: Preserve user confirmation prompts unless the user explicitly requested unattended execution with `--yes`.
-7. **Structured Errors**: In `--json` mode, failures output a standard JSON error envelope to `stderr` with a non-zero exit code:
+4. **Always Dry-Run First**: Use `--dry-run` before any mutating command (`dock`, `undock`, `xcode`, `cache`). The preview for `dock` and `undock` includes source size, destination free space, estimated free space after the copy, expected internal space freed, and any shortfall. Report those numbers to the user. Note: `status`, `scan`, and `doctor` are read-only and do not accept `--dry-run` or `--yes`.
+5. **Space Safety**: Real runs re-check free space and abort with `insufficient_space` (retryable) or `space_check_failed` (execution) before copying or replacing anything. Never work around these errors — ask the user to free space or reconnect the volume, and never claim a migration will succeed just because the dry-run estimate was sufficient.
+6. **Locks & Process Safety**: Do not bypass process or SQLite lock errors. Ask the user to quit the reported process and retry.
+7. **Confirmation Prompts**: Preserve user confirmation prompts unless the user explicitly requested unattended execution with `--yes`.
+8. **Structured Errors**: In `--json` mode, failures output a standard JSON error envelope to `stderr` with a non-zero exit code:
    ```json
    {
      "error": {
