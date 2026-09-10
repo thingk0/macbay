@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="Assets/macbay-icon-concept.png" width="140" alt="MacBay logo">
+  <img src="../Assets/macbay-icon-concept.png" width="140" alt="MacBay logo">
 </p>
 
 <h1 align="center">MacBay</h1>
 
 <p align="center">
-  <a href="README.md">English</a> •
+  <a href="../README.md">English</a> •
   <a href="README.ko.md">한국어</a> •
   <a href="README.zh.md">简体中文</a> •
   <a href="README.ja.md">日本語</a>
@@ -14,7 +14,7 @@
 MacBay는 Apple Silicon Mac을 위해 설계된 개발자 중심의 스토리지 외장화 도구입니다. 대용량 애플리케이션, Xcode DeviceSupport 데이터, 개발자 캐시를 외장 APFS 드라이브로 안전하게 이전하면서도 터미널 CLI, LaunchAgent, macOS Dock에서 사용할 수 있도록 기존 경로를 투명하게 유지합니다.
 
 [![CI](https://github.com/thingk0/macbay/actions/workflows/ci.yml/badge.svg)](https://github.com/thingk0/macbay/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](../LICENSE)
 [![macOS 13+](https://img.shields.io/badge/macOS-13%2B-black.svg?logo=apple)](https://www.apple.com/macos/)
 [![Apple Silicon](https://img.shields.io/badge/Architecture-Apple%20Silicon-orange.svg)](https://en.wikipedia.org/wiki/Apple_silicon)
 
@@ -283,10 +283,10 @@ mb status --json
 
 ## 기여하기
 
-기여는 언제나 환영합니다! 행동 강령, 하드웨어 독립적인 테스트 환경 구축, 기여 절차에 대한 자세한 내용은 [CONTRIBUTING.md](CONTRIBUTING.md)를 참조해 주세요.
+기여는 언제나 환영합니다! 행동 강령, 하드웨어 독립적인 테스트 환경 구축, 기여 절차에 대한 자세한 내용은 [CONTRIBUTING.md](../CONTRIBUTING.md)를 참조해 주세요.
 
 ---
 
 ## 라이선스
 
-MacBay는 [MIT 라이선스](LICENSE) 하에 배포되는 오픈 소스 소프트웨어입니다. Copyright © 2026 thingk0.
+MacBay는 [MIT 라이선스](../LICENSE) 하에 배포되는 오픈 소스 소프트웨어입니다. Copyright © 2026 thingk0.
