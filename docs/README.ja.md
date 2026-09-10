@@ -154,33 +154,48 @@ mb scan
 出力例:
 ```text
 MacBay scan
-Threshold: 200.0 MB
-Candidates: 8
-  • [app] 🟢 SAFE Aside.app — 2.0 GB (/Applications/Aside.app)
-  • [app] ⚠️ POPUP_RISK Claude.app — 825.2 MB (/Applications/Claude.app)
-  • [app] ❌ BLOCKED OrbStack.app — 694.6 MB (/Applications/OrbStack.app)
-  • [cache] CoreSimulator — 191.5 MB (/Users/.../Library/Developer/CoreSimulator)
-  • [cache] npm cache — 124.2 MB (/Users/.../.npm)
+8 apps · 2 caches · 2 external
+App threshold: 200.0 MB
+
+Applications · 8
+  NAME                  SIZE  STATUS
+  Aside.app           2.0 GB  Review
+  Claude.app        825.2 MB  Blocked
+  OrbStack.app      694.6 MB  Blocked
+  Antigravity.app   435.4 MB  Safe
+  Google Drive.app  345.4 MB  Safe
+  Grok Bot.app      311.4 MB  Review
+  cmux.app          310.2 MB  Blocked
+  KakaoTalk.app     240.2 MB  Safe
+
+  Safe: no relocation signals detected
+  Review: check compatibility details before using --force
+  Blocked: migration not allowed
+
+Developer caches · 2
+  CoreSimulator  191.5 MB
+  npm cache      124.2 MB
 
 Already external · 2
-  ↗ Aside.app — 2.0 GB [MacBay]
-    /Applications/Aside.app
-    → /Volumes/KLEVV/MacBay/Applications/Aside.app
+  ChatGPT.app   1.3 GB  Unmanaged
+    → /Volumes/KLEVV/Applications/ChatGPT.app
+  Kiro CLI.app  1.8 GB  Unmanaged
+    → /Volumes/KLEVV/Applications/Kiro CLI.app
 
-  ↗ LegacyTool.app — 850.0 MB [Unmanaged]
-    /Applications/LegacyTool.app
-    → /Volumes/KLEVV/Applications/LegacyTool.app
-
-Unresolved links · 1
-  ? Offline.app — Target unavailable
-    → /Volumes/Backup/Applications/Offline.app
+  Unmanaged: no matching MacBay migration record
 ```
 
-- **移行候補（Candidates）**: 内蔵ディスク上にあり、外部化可能な大容量アプリ（200 MB以上）およびキャッシュ。
-- **外部化済みアプリ（Already external）**: シンボリックリンクによりすでに外部ストレージに配置されているアプリ:
-  - `[MacBay]`: 外部ボリュームの `manifest.json` に記録され、MacBay によって管理されているアプリ。
-  - `[Unmanaged]`: 手動または他のツールで外部へ移動され、MacBay の記録にない未管理アプリ。
-  - `[Unconfirmed]`: 外部ボリューム上にあるものの、マニフェスト読み取りに失敗した状態。
+完全なアプリケーションパスや互換性評価の根拠・証拠を確認するには:
+```sh
+mb scan --verbose
+```
+
+- **対象アプリ（Applications）**: 内蔵ディスク上の大容量アプリ（200 MB以上）と互換性ステータス（`Safe`、`Review`、`Blocked`）。
+- **開発者キャッシュ（Developer caches）**: 大容量の開発ツールキャッシュ（CoreSimulator、npm cacheなど）。
+- **外部化済みアプリ（Already external）**: すでに外部ストレージへ移行済みのアプリケーション:
+  - `MacBay`: 外部ボリュームの `manifest.json` に記録され、MacBay が管理しているアプリ。
+  - `Unmanaged`: 手動または他のツールで移動され、MacBay の記録にない未管理アプリ。
+  - `Unconfirmed`: 外部ボリューム上にあるものの、マニフェスト読み取りに失敗した状態。
 - **未解決リンク（Unresolved links）**: リンク先が存在しない（`Target unavailable`）、循環リンク、ボリューム確認エラーなどの異常なリンク。
 
 ---
@@ -207,7 +222,7 @@ mb dock Example.app
 5. **システムの更新**: アイコンが汎用の白アイコンになるのを防ぐため、LaunchServicesの登録を再構築（`lsregister -f`）し、Dockを再起動します。
 
 > [!NOTE]
-> アプリケーションが ⚠️ **POPUP_RISK** と判定されている場合は、潜在的なリスクを確認した上で `--force` オプションを指定して実行してください:
+> アプリケーションが ⚠️ **Review**（JSONの `POPUP_RISK`）と判定されている場合は、潜在的なリスクを確認した上で `--force` オプションを指定して実行してください:
 > ```sh
 > mb dock Claude.app --force --dry-run
 > ```
@@ -283,9 +298,9 @@ mb cache --reset
 
 バンドルを移行する前に、`AppInspector` がアプリケーションを以下のティアに判定・分類します:
 
-- 🟢 **SAFE**: 自己移動フックや仮想化要件を含まない標準的なバンドル構造です。通常の外部化を安全に行えます。
-- ⚠️ **POPUP_RISK**: 自己移動チェック（Mach-OやASAR内の `moveToApplicationsFolder`、`PFMoveToApplicationsFolder` など）や特権ヘルパーツール（`SMPrivilegedExecutables`）が含まれています。移行するには `-f, --force` フラグが必要です。
-- ❌ **BLOCKED**: ハイパーバイザ／仮想化エンタイトルメント（`com.apple.security.virtualization`）を要求する、ドライバ／システム／カーネル拡張機能を含む、あるいはコード署名が破損しているアプリケーションです。**システムの不安定化を防ぐため、移行はブロックされます。**
+- 🟢 **Safe**（JSONの `SAFE`）: 自己移動フックや仮想化要件を含まない標準的なバンドル構造です。通常の外部化を安全に行えます。
+- ⚠️ **Review**（JSONの `POPUP_RISK`）: 自己移動チェック（Mach-OやASAR内の `moveToApplicationsFolder`、`PFMoveToApplicationsFolder` など）や特権ヘルパーツール（`SMPrivilegedExecutables`）が含まれています。移行するには `-f, --force` フラグが必要です。
+- ❌ **Blocked**（JSONの `BLOCKED`）: ハイパーバイザ／仮想化エンタイトルメント（`com.apple.security.virtualization`）を要求する、ドライバ／システム／カーネル拡張機能を含む、あるいはコード署名が破損しているアプリケーションです。**システムの不安定化を防ぐため、移行はブロックされます。**
 
 ---
 

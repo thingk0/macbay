@@ -101,62 +101,287 @@ public struct OutputFormatter {
         return lines
     }
 
-    public func scan(_ report: ScanReport) -> String {
+    public func scan(
+        _ report: ScanReport,
+        verbose: Bool = false,
+        terminalWidth: Int? = nil
+    ) -> String {
+        let termWidth = terminalWidth ?? Self.terminalWidth()
+
+        let apps = report.candidates.filter { $0.kind == .application }
+        let caches = report.candidates.filter { $0.kind == .developerCache }
+        let external = report.externalApplications
+        let unresolved = report.unresolvedApplicationLinks
+        let warnings = report.warnings
+
+        let isEmpty = apps.isEmpty && caches.isEmpty && external.isEmpty && unresolved.isEmpty && warnings.isEmpty
+
         var sections: [[String]] = []
 
-        var candidateLines = [
+        let appCount = apps.count
+        let cacheCount = caches.count
+        let extCount = external.count
+
+        let appWord = appCount == 1 ? "app" : "apps"
+        let cacheWord = cacheCount == 1 ? "cache" : "caches"
+        let summaryLine = "\(appCount) \(appWord) · \(cacheCount) \(cacheWord) · \(extCount) external"
+
+        let headerLines = [
             style("MacBay scan", color: "36", bold: true),
-            "Threshold: \(Self.humanBytes(report.minimumApplicationSizeBytes))",
-            "Candidates: \(report.candidates.count)"
+            summaryLine,
+            "App threshold: \(Self.humanBytes(report.minimumApplicationSizeBytes))"
         ]
-        for candidate in report.candidates {
-            let label = candidate.kind == .application ? "app" : "cache"
-            let badge: String
-            switch candidate.compatibility?.grade {
-            case .safe:
-                badge = " 🟢 SAFE"
-            case .popupRisk:
-                badge = " ⚠️ POPUP_RISK"
-            case .blocked:
-                badge = " ❌ BLOCKED"
-            case .none:
-                badge = ""
-            }
-            candidateLines.append(
-                "  • [\(label)]\(badge) \(candidate.name) — \(Self.humanBytes(candidate.sizeBytes)) (\(candidate.path))"
-            )
-        }
-        sections.append(candidateLines)
+        sections.append(headerLines)
 
-        if !report.externalApplications.isEmpty {
-            var externalLines = ["Already external · \(report.externalApplications.count)"]
-            for (index, app) in report.externalApplications.enumerated() {
-                if index > 0 {
-                    externalLines.append("")
-                }
-                let sizeString = app.sizeBytes.map { Self.humanBytes($0) } ?? "Unknown"
-                externalLines.append("  ↗ \(app.name) — \(sizeString) \(app.managementStatus.badge)")
-                externalLines.append("    \(app.sourcePath)")
-                externalLines.append("    → \(app.destinationPath)")
-            }
-            sections.append(externalLines)
+        if isEmpty {
+            sections.append(["No relocation candidates or external applications found."])
+            return sections.map { $0.joined(separator: "\n") }.joined(separator: "\n\n")
         }
 
-        if !report.unresolvedApplicationLinks.isEmpty {
-            var unresolvedLines = ["Unresolved links · \(report.unresolvedApplicationLinks.count)"]
-            for (index, link) in report.unresolvedApplicationLinks.enumerated() {
-                if index > 0 {
-                    unresolvedLines.append("")
+        // 1. Applications section
+        if !apps.isEmpty {
+            var appLines = [bold("Applications · \(appCount)")]
+
+            struct AppRow {
+                let candidate: AppCandidate
+                let name: String
+                let sizeString: String
+                let statusText: String
+                let statusColor: String
+            }
+
+            let appRows: [AppRow] = apps.map { app in
+                let statusText: String
+                let statusColor: String
+                switch app.compatibility?.grade {
+                case .safe:
+                    statusText = "Safe"
+                    statusColor = "36"
+                case .popupRisk:
+                    statusText = "Review"
+                    statusColor = "33"
+                case .blocked:
+                    statusText = "Blocked"
+                    statusColor = "31"
+                case .none:
+                    statusText = "Unknown"
+                    statusColor = "90"
                 }
-                unresolvedLines.append("  ? \(link.name) — \(link.reason)")
-                unresolvedLines.append("    → \(link.destinationPath)")
+                return AppRow(
+                    candidate: app,
+                    name: app.name,
+                    sizeString: Self.humanBytes(app.sizeBytes),
+                    statusText: statusText,
+                    statusColor: statusColor
+                )
+            }
+
+            let maxSizeWidth = max(appRows.map { Self.displayWidth(of: $0.sizeString) }.max() ?? 4, 4)
+            let maxStatusWidth = max(appRows.map { Self.displayWidth(of: $0.statusText) }.max() ?? 6, 6)
+            let fixedColumnsWidth = 2 + 2 + maxSizeWidth + 2 + maxStatusWidth
+            let maxAllowedNameWidth = termWidth - fixedColumnsWidth
+
+            let fittingRows = appRows.filter { Self.displayWidth(of: $0.name) <= maxAllowedNameWidth }
+            let nameColWidth = max(fittingRows.map { Self.displayWidth(of: $0.name) }.max() ?? 4, 4)
+
+            if maxAllowedNameWidth >= 4 && !fittingRows.isEmpty {
+                let h1 = "  " + padRight("NAME", rawText: "NAME", toDisplayWidth: nameColWidth)
+                let h2 = "  " + padLeft("SIZE", rawText: "SIZE", toDisplayWidth: maxSizeWidth)
+                let h3 = "  STATUS"
+                appLines.append(dim(h1 + h2 + h3))
+            }
+
+            for row in appRows {
+                let nameWidth = Self.displayWidth(of: row.name)
+                let styledName = bold(row.name)
+                let styledStatus = style(row.statusText, color: row.statusColor)
+
+                if nameWidth <= maxAllowedNameWidth {
+                    let c1 = "  " + padRight(styledName, rawText: row.name, toDisplayWidth: nameColWidth)
+                    let c2 = "  " + padLeft(row.sizeString, rawText: row.sizeString, toDisplayWidth: maxSizeWidth)
+                    let c3 = "  " + styledStatus
+                    appLines.append(c1 + c2 + c3)
+                } else {
+                    appLines.append("  " + styledName)
+                    appLines.append("    " + padLeft(row.sizeString, rawText: row.sizeString, toDisplayWidth: maxSizeWidth) + "  " + styledStatus)
+                }
+
+                if verbose {
+                    appLines.append("    " + dim(row.candidate.path))
+                    if let assessment = row.candidate.compatibility {
+                        for reason in assessment.reasons {
+                            appLines.append("    • " + dim(reason))
+                        }
+                        for evidence in assessment.evidence {
+                            appLines.append("      " + dim("Evidence: \(evidence)"))
+                        }
+                    }
+                }
+            }
+
+            var legendLines: [String] = []
+            let hasSafe = apps.contains { $0.compatibility?.grade == .safe }
+            let hasReview = apps.contains { $0.compatibility?.grade == .popupRisk }
+            let hasBlocked = apps.contains { $0.compatibility?.grade == .blocked }
+
+            if hasSafe {
+                legendLines.append("  " + style("Safe", color: "36") + dim(": no relocation signals detected"))
+            }
+            if hasReview {
+                legendLines.append("  " + style("Review", color: "33") + dim(": check compatibility details before using --force"))
+            }
+            if hasBlocked {
+                legendLines.append("  " + style("Blocked", color: "31") + dim(": migration not allowed"))
+            }
+
+            if !legendLines.isEmpty {
+                appLines.append("")
+                appLines.append(contentsOf: legendLines)
+            }
+
+            sections.append(appLines)
+        }
+
+        // 2. Developer caches section
+        if !caches.isEmpty {
+            var cacheLines = [bold("Developer caches · \(cacheCount)")]
+
+            let cacheSizes = caches.map { (cache: $0, sizeString: Self.humanBytes($0.sizeBytes)) }
+            let maxSizeWidth = max(cacheSizes.map { Self.displayWidth(of: $0.sizeString) }.max() ?? 4, 4)
+            let fixedColumnsWidth = 2 + 2 + maxSizeWidth
+            let maxAllowedNameWidth = termWidth - fixedColumnsWidth
+
+            let fittingCaches = cacheSizes.filter { Self.displayWidth(of: $0.cache.name) <= maxAllowedNameWidth }
+            let nameColWidth = max(fittingCaches.map { Self.displayWidth(of: $0.cache.name) }.max() ?? 4, 4)
+
+            for item in cacheSizes {
+                let nameWidth = Self.displayWidth(of: item.cache.name)
+                let styledName = bold(item.cache.name)
+
+                if nameWidth <= maxAllowedNameWidth {
+                    let c1 = "  " + padRight(styledName, rawText: item.cache.name, toDisplayWidth: nameColWidth)
+                    let c2 = "  " + padLeft(item.sizeString, rawText: item.sizeString, toDisplayWidth: maxSizeWidth)
+                    cacheLines.append(c1 + c2)
+                } else {
+                    cacheLines.append("  " + styledName)
+                    cacheLines.append("    " + padLeft(item.sizeString, rawText: item.sizeString, toDisplayWidth: maxSizeWidth))
+                }
+
+                if verbose {
+                    cacheLines.append("    " + dim(item.cache.path))
+                }
+            }
+
+            sections.append(cacheLines)
+        }
+
+        // 3. Already external section
+        if !external.isEmpty {
+            var extLines = [bold("Already external · \(extCount)")]
+
+            struct ExtRow {
+                let app: ExternalApplication
+                let name: String
+                let sizeString: String
+                let statusText: String
+                let statusColor: String
+            }
+
+            let extRows: [ExtRow] = external.map { app in
+                let statusText: String
+                let statusColor: String
+                switch app.managementStatus {
+                case .macBay:
+                    statusText = "MacBay"
+                    statusColor = "36"
+                case .unmanaged:
+                    statusText = "Unmanaged"
+                    statusColor = "33"
+                case .unconfirmed:
+                    statusText = "Unconfirmed"
+                    statusColor = "31"
+                }
+                let sizeStr = app.sizeBytes.map { Self.humanBytes($0) } ?? "Unknown"
+                return ExtRow(
+                    app: app,
+                    name: app.name,
+                    sizeString: sizeStr,
+                    statusText: statusText,
+                    statusColor: statusColor
+                )
+            }
+
+            let maxSizeWidth = max(extRows.map { Self.displayWidth(of: $0.sizeString) }.max() ?? 4, 4)
+            let maxStatusWidth = max(extRows.map { Self.displayWidth(of: $0.statusText) }.max() ?? 6, 6)
+            let fixedColumnsWidth = 2 + 2 + maxSizeWidth + 2 + maxStatusWidth
+            let maxAllowedNameWidth = termWidth - fixedColumnsWidth
+
+            let fittingRows = extRows.filter { Self.displayWidth(of: $0.name) <= maxAllowedNameWidth }
+            let nameColWidth = max(fittingRows.map { Self.displayWidth(of: $0.name) }.max() ?? 4, 4)
+
+            for row in extRows {
+                let nameWidth = Self.displayWidth(of: row.name)
+                let styledName = bold(row.name)
+                let styledStatus = style(row.statusText, color: row.statusColor)
+
+                if nameWidth <= maxAllowedNameWidth {
+                    let c1 = "  " + padRight(styledName, rawText: row.name, toDisplayWidth: nameColWidth)
+                    let c2 = "  " + padLeft(row.sizeString, rawText: row.sizeString, toDisplayWidth: maxSizeWidth)
+                    let c3 = "  " + styledStatus
+                    extLines.append(c1 + c2 + c3)
+                } else {
+                    extLines.append("  " + styledName)
+                    extLines.append("    " + padLeft(row.sizeString, rawText: row.sizeString, toDisplayWidth: maxSizeWidth) + "  " + styledStatus)
+                }
+
+                if verbose {
+                    extLines.append("    " + dim(row.app.sourcePath))
+                }
+                extLines.append("    → " + dim(row.app.destinationPath))
+            }
+
+            var legendLines: [String] = []
+            let hasMacBay = external.contains { $0.managementStatus == .macBay }
+            let hasUnmanaged = external.contains { $0.managementStatus == .unmanaged }
+            let hasUnconfirmed = external.contains { $0.managementStatus == .unconfirmed }
+
+            if hasMacBay {
+                legendLines.append("  " + style("MacBay", color: "36") + dim(": recorded in volume manifest"))
+            }
+            if hasUnmanaged {
+                legendLines.append("  " + style("Unmanaged", color: "33") + dim(": no matching MacBay migration record"))
+            }
+            if hasUnconfirmed {
+                legendLines.append("  " + style("Unconfirmed", color: "31") + dim(": volume manifest read error"))
+            }
+
+            if !legendLines.isEmpty {
+                extLines.append("")
+                extLines.append(contentsOf: legendLines)
+            }
+
+            sections.append(extLines)
+        }
+
+        // 4. Unresolved links section
+        if !unresolved.isEmpty {
+            var unresolvedLines = [bold("Unresolved links · \(unresolved.count)")]
+            for link in unresolved {
+                unresolvedLines.append("  " + bold(link.name) + " — " + style(link.reason, color: "31"))
+                if verbose {
+                    unresolvedLines.append("    " + dim(link.sourcePath))
+                }
+                unresolvedLines.append("    → " + dim(link.destinationPath))
             }
             sections.append(unresolvedLines)
         }
 
-        if !report.warnings.isEmpty {
-            var warningLines = ["Warnings:"]
-            warningLines.append(contentsOf: report.warnings.map { "  • \($0)" })
+        // 5. Warnings section
+        if !warnings.isEmpty {
+            var warningLines = [bold("Warnings · \(warnings.count)")]
+            for warning in warnings {
+                warningLines.append("  • " + warning)
+            }
             sections.append(warningLines)
         }
 
@@ -221,5 +446,130 @@ public struct OutputFormatter {
         guard useColor else { return value }
         let emphasis = bold ? "1;" : ""
         return "\u{001B}[\(emphasis)\(color)m\(value)\u{001B}[0m"
+    }
+
+    private func bold(_ value: String) -> String {
+        guard useColor else { return value }
+        return "\u{001B}[1m\(value)\u{001B}[0m"
+    }
+
+    private func dim(_ value: String) -> String {
+        guard useColor else { return value }
+        return "\u{001B}[90m\(value)\u{001B}[0m"
+    }
+
+    private func padRight(_ styledText: String, rawText: String, toDisplayWidth: Int) -> String {
+        let width = Self.displayWidth(of: rawText)
+        let pad = max(toDisplayWidth - width, 0)
+        return styledText + String(repeating: " ", count: pad)
+    }
+
+    private func padLeft(_ styledText: String, rawText: String, toDisplayWidth: Int) -> String {
+        let width = Self.displayWidth(of: rawText)
+        let pad = max(toDisplayWidth - width, 0)
+        return String(repeating: " ", count: pad) + styledText
+    }
+
+    public static func displayWidth(of text: String) -> Int {
+        let stripped: String
+        if text.contains("\u{001B}") {
+            stripped = text.replacingOccurrences(
+                of: "\u{001B}\\[[0-9;]*[a-zA-Z]",
+                with: "",
+                options: .regularExpression
+            )
+        } else {
+            stripped = text
+        }
+
+        var width = 0
+        for scalar in stripped.unicodeScalars {
+            let val = scalar.value
+            if (val >= 0 && val <= 31) || (val >= 127 && val <= 159) {
+                continue
+            }
+            if (val >= 0x0300 && val <= 0x036F) ||
+               (val >= 0x1AB0 && val <= 0x1AFF) ||
+               (val >= 0x1DC0 && val <= 0x1DFF) ||
+               (val >= 0x200B && val <= 0x200F) ||
+               (val >= 0x202A && val <= 0x202E) ||
+               (val >= 0x2060 && val <= 0x206F) ||
+               (val >= 0xFE00 && val <= 0xFE0F) ||
+               (val >= 0xFEFF && val <= 0xFEFF) ||
+               (val >= 0xE0100 && val <= 0xE01EF) {
+                continue
+            }
+            if isWide(val) {
+                width += 2
+            } else {
+                width += 1
+            }
+        }
+        return width
+    }
+
+    private static func isWide(_ val: UInt32) -> Bool {
+        if (val >= 0x1100 && val <= 0x115F) ||
+           (val >= 0x11A3 && val <= 0x11A7) ||
+           (val >= 0x11FA && val <= 0x11FF) {
+            return true
+        }
+        if (val >= 0x2E80 && val <= 0x2FD5) || (val >= 0x2FF0 && val <= 0x2FFF) {
+            return true
+        }
+        if val >= 0x3000 && val <= 0x33FF {
+            return true
+        }
+        if val >= 0x3400 && val <= 0x4DBF {
+            return true
+        }
+        if val >= 0x4E00 && val <= 0x9FFF {
+            return true
+        }
+        if val >= 0xA000 && val <= 0xA4CF {
+            return true
+        }
+        if val >= 0xAC00 && val <= 0xD7AF {
+            return true
+        }
+        if val >= 0xF900 && val <= 0xFAFF {
+            return true
+        }
+        if val >= 0xFE30 && val <= 0xFE4F {
+            return true
+        }
+        if (val >= 0xFF01 && val <= 0xFF60) || (val >= 0xFFE0 && val <= 0xFFE6) {
+            return true
+        }
+        if val >= 0x2600 && val <= 0x27BF {
+            return true
+        }
+        if val >= 0x2B00 && val <= 0x2BFF {
+            return true
+        }
+        if val >= 0x20000 && val <= 0x2FA1F {
+            return true
+        }
+        if val >= 0x1F000 && val <= 0x1FAFF {
+            return true
+        }
+        return false
+    }
+
+    public static func terminalWidth(
+        isTTY: Bool = isatty(STDOUT_FILENO) != 0,
+        fileDescriptor: Int32 = STDOUT_FILENO,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Int {
+        if let envCols = environment["COLUMNS"], let cols = Int(envCols), cols > 0 {
+            return cols
+        }
+        if isTTY {
+            var w = winsize()
+            if ioctl(fileDescriptor, TIOCGWINSZ, &w) == 0 && w.ws_col > 0 {
+                return Int(w.ws_col)
+            }
+        }
+        return 80
     }
 }

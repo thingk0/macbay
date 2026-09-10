@@ -12,6 +12,8 @@ struct ScanCommand: ParsableCommand {
 
     func run() throws {
         let report = MacBayService().scan()
-        try CommandSupport.printValue(report, json: options.json) { $0.scan(report) }
+        try CommandSupport.printValue(report, json: options.json) { formatter in
+            formatter.scan(report, verbose: options.verbose)
+        }
     }
 }

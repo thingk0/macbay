@@ -154,34 +154,49 @@ mb scan
 출력 예시:
 ```text
 MacBay scan
-Threshold: 200.0 MB
-Candidates: 8
-  • [app] 🟢 SAFE Aside.app — 2.0 GB (/Applications/Aside.app)
-  • [app] ⚠️ POPUP_RISK Claude.app — 825.2 MB (/Applications/Claude.app)
-  • [app] ❌ BLOCKED OrbStack.app — 694.6 MB (/Applications/OrbStack.app)
-  • [cache] CoreSimulator — 191.5 MB (/Users/.../Library/Developer/CoreSimulator)
-  • [cache] npm cache — 124.2 MB (/Users/.../.npm)
+8 apps · 2 caches · 2 external
+App threshold: 200.0 MB
+
+Applications · 8
+  NAME                  SIZE  STATUS
+  Aside.app           2.0 GB  Review
+  Claude.app        825.2 MB  Blocked
+  OrbStack.app      694.6 MB  Blocked
+  Antigravity.app   435.4 MB  Safe
+  Google Drive.app  345.4 MB  Safe
+  Grok Bot.app      311.4 MB  Review
+  cmux.app          310.2 MB  Blocked
+  KakaoTalk.app     240.2 MB  Safe
+
+  Safe: no relocation signals detected
+  Review: check compatibility details before using --force
+  Blocked: migration not allowed
+
+Developer caches · 2
+  CoreSimulator  191.5 MB
+  npm cache      124.2 MB
 
 Already external · 2
-  ↗ Aside.app — 2.0 GB [MacBay]
-    /Applications/Aside.app
-    → /Volumes/KLEVV/MacBay/Applications/Aside.app
+  ChatGPT.app   1.3 GB  Unmanaged
+    → /Volumes/KLEVV/Applications/ChatGPT.app
+  Kiro CLI.app  1.8 GB  Unmanaged
+    → /Volumes/KLEVV/Applications/Kiro CLI.app
 
-  ↗ LegacyTool.app — 850.0 MB [Unmanaged]
-    /Applications/LegacyTool.app
-    → /Volumes/KLEVV/Applications/LegacyTool.app
-
-Unresolved links · 1
-  ? Offline.app — Target unavailable
-    → /Volumes/Backup/Applications/Offline.app
+  Unmanaged: no matching MacBay migration record
 ```
 
-- **이동 후보 (Candidates)**: 내장 디스크에 위치하며 이전 가능한 대용량 앱(200 MB 이상) 및 캐시입니다.
-- **이미 외장화된 앱 (Already external)**: 심볼릭 링크로 외장 디스크를 가리키는 애플리케이션입니다:
-  - `[MacBay]`: 외장 볼륨의 `manifest.json`에 기록되어 MacBay가 관리 중인 앱.
-  - `[Unmanaged]`: 수동 또는 다른 도구로 외장에 이전되어 MacBay 기록이 없는 앱.
-  - `[Unconfirmed]`: 외장 볼륨에 있으나 매니페스트 확인 중 오류가 발생한 상태.
-- **연결 끊긴 링크 (Unresolved links)**: 대상이 없거나(`Target unavailable`), 순환 링크, 볼륨 확인 실패 등의 비정상 링크입니다.
+전체 애플리케이션 경로 및 호환성 분석 상세 근거/이유를 확인하려면:
+```sh
+mb scan --verbose
+```
+
+- **애플리케이션 (Applications)**: 내장 디스크에 위치한 대용량 앱(200 MB 이상)과 호환성 등급(`Safe`, `Review`, `Blocked`).
+- **개발자 캐시 (Developer caches)**: 대용량 개발 도구 캐시(예: CoreSimulator, npm cache).
+- **이미 외장화된 앱 (Already external)**: 이미 외장 스토리지로 이전된 애플리케이션:
+  - `MacBay`: 외장 볼륨의 `manifest.json`에 기록되어 MacBay가 관리 중인 앱.
+  - `Unmanaged`: 수동 또는 다른 도구로 외장에 이전되어 MacBay 기록이 없는 앱.
+  - `Unconfirmed`: 외장 볼륨에 있으나 매니페스트 확인 중 오류가 발생한 상태.
+- **연결 끊긴 링크 (Unresolved links)**: 대상이 없거나(`Target unavailable`), 순환 링크, 볼륨 확인 실패 등의 비정상 링크.
 
 ---
 
@@ -207,7 +222,7 @@ mb dock Example.app
 5. **시스템 갱신**: 흰색 기본 아이콘이 표시되지 않도록 LaunchServices 등록 정보(`lsregister -f`)를 갱신하고 Dock 프로세스를 재시작합니다.
 
 > [!NOTE]
-> 애플리케이션이 ⚠️ **POPUP_RISK** 등급으로 분류된 경우, 잠재적 위험 요소를 검토한 후 `--force` 플래그를 추가하여 진행할 수 있습니다:
+> 애플리케이션이 ⚠️ **Review** (JSON의 `POPUP_RISK`) 등급으로 분류된 경우, 잠재적 위험 요소를 검토한 후 `--force` 플래그를 추가하여 진행할 수 있습니다:
 > ```sh
 > mb dock Claude.app --force --dry-run
 > ```
@@ -283,9 +298,9 @@ mb cache --reset
 
 번들을 마이그레이션하기 전에 `AppInspector`가 애플리케이션을 분석하여 등급을 매깁니다:
 
-- 🟢 **SAFE**: 재배치 훅이나 가상화 요구 조건이 없는 깔끔한 번들 구조입니다. 표준 이전 작업이 안전하게 가능합니다.
-- ⚠️ **POPUP_RISK**: 애플리케이션에 자체 재배치 검사 로직(예: Mach-O/ASAR 내 `moveToApplicationsFolder`, `PFMoveToApplicationsFolder`)이나 권한 상승 헬퍼 도구(`SMPrivilegedExecutables`)가 포함되어 있습니다. 이전하려면 `-f, --force` 플래그가 필요합니다.
-- ❌ **BLOCKED**: 하이퍼바이저/가상화 권한(`com.apple.security.virtualization`)이 필요하거나, Driver/System/Kernel Extension을 포함하고 있거나, 코드 서명이 손상된 애플리케이션입니다. **시스템 불안정을 방지하기 위해 마이그레이션이 차단됩니다.**
+- 🟢 **Safe** (JSON의 `SAFE`): 재배치 훅이나 가상화 요구 조건이 없는 깔끔한 번들 구조입니다. 표준 이전 작업이 안전하게 가능합니다.
+- ⚠️ **Review** (JSON의 `POPUP_RISK`): 애플리케이션에 자체 재배치 검사 로직(예: Mach-O/ASAR 내 `moveToApplicationsFolder`, `PFMoveToApplicationsFolder`)이나 권한 상승 헬퍼 도구(`SMPrivilegedExecutables`)가 포함되어 있습니다. 이전하려면 `-f, --force` 플래그가 필요합니다.
+- ❌ **Blocked** (JSON의 `BLOCKED`): 하이퍼바이저/가상화 권한(`com.apple.security.virtualization`)이 필요하거나, Driver/System/Kernel Extension을 포함하고 있거나, 코드 서명이 손상된 애플리케이션입니다. **시스템 불안정을 방지하기 위해 마이그레이션이 차단됩니다.**
 
 ---
 

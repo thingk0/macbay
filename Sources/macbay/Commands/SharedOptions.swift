@@ -32,6 +32,9 @@ struct StatusOptions: ParsableArguments {
 }
 
 struct ScanOptions: ParsableArguments {
+    @Flag(name: .long, help: "Show detailed paths and compatibility evidence (ignored when --json is specified).")
+    var verbose = false
+
     @Flag(name: .long, help: "Output machine-readable JSON.")
     var json = false
 }
