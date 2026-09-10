@@ -28,9 +28,50 @@ MacBay is a developer-first storage externalizer designed for Apple Silicon Macs
 
 ---
 
-## Installation & Build
+## Installation
 
-### Building from Source
+### Method 1: Homebrew (Recommended)
+
+Install MacBay using Homebrew:
+
+```sh
+brew install thingk0/tap/macbay
+mb --help
+```
+
+Homebrew builds the binary directly from the tagged source release for Apple Silicon (macOS 13+). Both `mb` and the `macbay` alias are installed into your Homebrew `bin` directory.
+
+#### Updating via Homebrew
+
+```sh
+brew update
+brew upgrade macbay
+```
+
+#### Uninstalling via Homebrew
+
+> [!CAUTION]
+> `brew uninstall macbay` only removes the CLI executables (`mb` and `macbay`). It **does not** automatically restore relocated applications from external storage or reset `~/.zshrc` cache redirections.
+>
+> **Before uninstalling MacBay**, perform the following cleanup steps:
+> 1. Restore any docked applications back to internal storage:
+>    ```sh
+>    mb undock <AppName>.app
+>    ```
+> 2. Reset the cache environment variables in `~/.zshrc`:
+>    ```sh
+>    mb cache --reset
+>    ```
+> 3. Now safely uninstall the formula:
+>    ```sh
+>    brew uninstall macbay
+>    ```
+
+---
+
+### Method 2: Building from Source
+
+Requirements: macOS 13 or newer, Apple Silicon, and Xcode Command Line Tools or Xcode 15.3+ (providing Swift 5.10 or newer).
 
 ```sh
 # Clone the repository
@@ -42,13 +83,8 @@ swift build -c release
 
 # Run tests
 swift test
-```
 
-### Global Installation
-
-Copy the release executable to `/usr/local/bin` and create the `macbay` alias:
-
-```sh
+# Copy to /usr/local/bin (optional)
 sudo cp .build/release/mb /usr/local/bin/mb
 sudo ln -sf /usr/local/bin/mb /usr/local/bin/macbay
 ```
