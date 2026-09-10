@@ -68,7 +68,15 @@ swift test
 
 ### Branch Strategy
 
-All development is done via feature branches branched off `main`. Use kebab-case with the following standard prefixes:
+MacBay uses two long-lived branches:
+
+| Branch | Contains |
+|--------|----------|
+| `main` | Released code only. Every release is tagged here. Never commit to it directly. |
+| `develop` | The default branch and the integration point for day-to-day work. |
+
+Everything else is short-lived. Branch off `develop`, use kebab-case, and use the
+prefix that matches the change:
 
 | Branch Prefix | Purpose |
 |---------------|---------|
@@ -84,8 +92,46 @@ All development is done via feature branches branched off `main`. Use kebab-case
 
 Example:
 ```sh
+git checkout develop
+git pull
 git checkout -b feat/support-custom-cache-path
 ```
+
+### Releasing
+
+A release moves `develop` into `main` and tags it. Homebrew builds from the tagged
+source, so the tag is what users install.
+
+```sh
+git checkout -b release/1.2.0 develop
+# bump the version in Sources/macbay/main.swift, update docs, commit
+```
+
+Open a pull request from `release/1.2.0` into `main`. Once it merges, tag the merge
+commit on `main`:
+
+```sh
+git checkout main && git pull
+git tag v1.2.0 && git push origin v1.2.0
+```
+
+The tag starts the `Release` workflow, which builds the optimized binaries, checks
+that the tag matches the version the CLI reports, and publishes the GitHub release.
+
+**Then merge `main` back into `develop`.** The release branch carries the version
+bump, and `develop` needs it before the next feature lands.
+
+### Hotfixes
+
+An urgent fix to a released version branches off `main`, not `develop`:
+
+```sh
+git checkout -b hotfix/1.2.1 main
+```
+
+Open a pull request into `main`, tag it as above, then **merge `main` back into
+`develop`**. Skipping that back-merge is the most common way a hotfix is lost: the
+next release ships from `develop` without it.
 
 ### Conventional Commits
 
@@ -126,7 +172,7 @@ MacBay strictly follows the [Conventional Commits 1.0.0](https://www.conventiona
 
 ## Pull Request & Review Process
 
-1. **Branch off `main`**: Ensure your branch is based on the latest `origin/main`.
+1. **Branch off `develop`**: Ensure your branch is based on the latest `origin/develop`. Release and hotfix branches are the only ones that target `main`.
 2. **Verify locally**:
    ```sh
    swift build -c release
@@ -139,6 +185,8 @@ MacBay strictly follows the [Conventional Commits 1.0.0](https://www.conventiona
    - `Build and Test (macOS)`: Builds the package and test targets, then runs the full test suite on macOS.
    - `Release Build (macOS)`: Builds the optimized binaries in parallel with the test job.
    - `Validate PR Title`: Verifies the PR title adheres to Conventional Commits.
+   - `Release`: Runs only on a `v*` tag. Builds the optimized binaries, verifies the tag matches the
+     reported version, and publishes the GitHub release.
    - CI is skipped while a pull request is a draft, and for changes that only touch Markdown or `docs/`.
      A new push to the same branch cancels the run it supersedes.
 5. **Merge Policy**:
