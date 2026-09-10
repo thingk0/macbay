@@ -15,6 +15,33 @@ final class CLIIntegrationTests: XCTestCase {
             .appendingPathComponent("mb")
     }
 
+    private var fixtureDirectories: [URL] = []
+
+    override func tearDownWithError() throws {
+        for url in fixtureDirectories {
+            try? FileManager.default.removeItem(at: url)
+        }
+        fixtureDirectories.removeAll()
+    }
+
+    /// A throwaway applications directory holding one small bundle.
+    ///
+    /// The scan tests used to walk the real /Applications. On a machine with large
+    /// bundles installed that took about a minute per test, which dominated the
+    /// whole suite; a fixture keeps the same code path but makes the walk trivial.
+    private func makeApplicationsFixture() throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("macbay-scan-fixture-\(UUID().uuidString)", isDirectory: true)
+        let executables = root
+            .appendingPathComponent("Fixture.app", isDirectory: true)
+            .appendingPathComponent("Contents", isDirectory: true)
+            .appendingPathComponent("MacOS", isDirectory: true)
+        try FileManager.default.createDirectory(at: executables, withIntermediateDirectories: true)
+        try Data(repeating: 0, count: 1024).write(to: executables.appendingPathComponent("Fixture"))
+        fixtureDirectories.append(root)
+        return root
+    }
+
     private func runCLI(arguments: [String], environment: [String: String]? = nil) throws -> (status: Int32, stdout: String, stderr: String) {
         let process = Process()
         process.executableURL = binaryURL
@@ -99,7 +126,8 @@ final class CLIIntegrationTests: XCTestCase {
             throw XCTSkip("Binary not found at \(binaryURL.path)")
         }
 
-        let result = try runCLI(arguments: ["scan", "--json"])
+        let applications = try makeApplicationsFixture()
+        let result = try runCLI(arguments: ["scan", "--json", "--applications-dir", applications.path])
         XCTAssertEqual(result.status, 0)
         guard let data = result.stdout.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -196,7 +224,8 @@ final class CLIIntegrationTests: XCTestCase {
             throw XCTSkip("Binary not found at \(binaryURL.path)")
         }
 
-        let result = try runCLI(arguments: ["scan", "--verbose"])
+        let applications = try makeApplicationsFixture()
+        let result = try runCLI(arguments: ["scan", "--verbose", "--applications-dir", applications.path])
         XCTAssertEqual(result.status, 0)
         XCTAssertTrue(result.stdout.contains("MacBay scan"))
     }
@@ -206,7 +235,8 @@ final class CLIIntegrationTests: XCTestCase {
             throw XCTSkip("Binary not found at \(binaryURL.path)")
         }
 
-        let result = try runCLI(arguments: ["scan", "--json", "--verbose"])
+        let applications = try makeApplicationsFixture()
+        let result = try runCLI(arguments: ["scan", "--json", "--verbose", "--applications-dir", applications.path])
         XCTAssertEqual(result.status, 0)
         guard let data = result.stdout.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
