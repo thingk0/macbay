@@ -91,13 +91,14 @@ public struct CacheManager {
 
     public func reset(dryRun: Bool) throws -> CacheReport {
         let shellConfigurationURL = homeDirectory.appendingPathComponent(".zshrc")
-        if !dryRun, fileManager.fileExists(atPath: shellConfigurationURL.path) {
-            let contents = try String(contentsOf: shellConfigurationURL, encoding: .utf8)
+        let resolvedURL = shellConfigurationURL.resolvingSymlinksInPath()
+        if !dryRun, fileManager.fileExists(atPath: resolvedURL.path) {
+            let contents = try String(contentsOf: resolvedURL, encoding: .utf8)
             let updated = Self.removingManagedBlock(from: contents)
             guard let data = updated.data(using: .utf8) else {
-                throw MacBayError.unsupportedOperation("Unable to encode \(shellConfigurationURL.path)")
+                throw MacBayError.unsupportedOperation("Unable to encode \(resolvedURL.path)")
             }
-            try data.write(to: shellConfigurationURL, options: .atomic)
+            try data.write(to: resolvedURL, options: .atomic)
         }
         return CacheReport(
             enabled: false,
@@ -142,7 +143,23 @@ public struct CacheManager {
         targets: [Target],
         externalRoot: URL
     ) throws {
-        let existing = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        // ~/.zshrc가 dotfiles 저장소 등으로 향하는 심볼릭 링크인 경우, 원자적 쓰기는 링크 자체를
+        // 일반 파일로 교체해 버린다. 실제 파일을 따라가서 그 파일을 수정한다.
+        let url = url.resolvingSymlinksInPath()
+        // 파일이 없을 때만 빈 내용으로 시작한다. 읽기·인코딩 실패를 빈 문자열로 취급하면
+        // 사용자의 기존 설정을 통째로 덮어쓸 수 있으므로 반드시 중단한다.
+        let existing: String
+        if fileManager.fileExists(atPath: url.path) {
+            do {
+                existing = try String(contentsOf: url, encoding: .utf8)
+            } catch {
+                throw MacBayError.unsupportedOperation(
+                    "Unable to read \(url.path) as UTF-8; refusing to overwrite it (\(error.localizedDescription))"
+                )
+            }
+        } else {
+            existing = ""
+        }
         let block = Self.managedBlock(targets: targets, externalRoot: externalRoot)
         let withoutBlock = Self.removingManagedBlock(from: existing)
         let separator = withoutBlock.isEmpty || withoutBlock.hasSuffix("\n") ? "" : "\n"
@@ -160,10 +177,15 @@ public struct CacheManager {
         var lines = [beginMarker]
         for target in targets {
             let path = externalRoot.appendingPathComponent(target.externalDirectoryName).path
-            lines.append("export \(target.environmentVariable)=\"\(path)\"")
+            lines.append("export \(target.environmentVariable)=\(shellQuoted(path))")
         }
         lines.append(endMarker)
         return lines.joined(separator: "\n")
+    }
+
+    /// 경로를 작은따옴표로 감싸 셸이 `$()`, 백틱, `$VAR` 등을 해석하지 않도록 한다.
+    static func shellQuoted(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     private static func removingManagedBlock(from contents: String) -> String {
