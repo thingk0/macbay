@@ -538,6 +538,160 @@ public struct MacBayErrorPayload: Codable, Equatable, Sendable {
     }
 }
 
+public enum DoctorStatus: String, Codable, Equatable, Sendable {
+    case healthy
+    case needsAttention = "needs_attention"
+    case unableToVerify = "unable_to_verify"
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(String.self)
+        switch raw.lowercased() {
+        case "healthy":
+            self = .healthy
+        case "needs_attention":
+            self = .needsAttention
+        default:
+            self = .unableToVerify
+        }
+    }
+}
+
+public enum DoctorCategory: String, Codable, Equatable, Sendable {
+    case applicationLink = "application_link"
+    case developerDataLink = "developer_data_link"
+    case record
+    case volume
+}
+
+public enum DoctorCode: String, Codable, Equatable, Sendable {
+    case linkManagedRecord = "link_managed_record"
+    case linkManagedLayout = "link_managed_layout"
+    case linkUnmanaged = "link_unmanaged"
+    case linkTargetUnavailable = "link_target_unavailable"
+    case linkCircular = "link_circular"
+    case linkRecordMismatch = "link_record_mismatch"
+    case recordTargetMissing = "record_target_missing"
+    case linkTargetUnverified = "link_target_unverified"
+    case linkUnreadable = "link_unreadable"
+    case applicationsUnreadable = "applications_unreadable"
+    case manifestUnreadable = "manifest_unreadable"
+    case manifestVersionUnsupported = "manifest_version_unsupported"
+}
+
+public struct DoctorFinding: Codable, Equatable, Identifiable, Sendable {
+    public let code: DoctorCode
+    public let status: DoctorStatus
+    public let category: DoctorCategory
+    public let name: String
+    public let paths: [String]
+    public let detail: String
+    public let recommendation: String
+    public let managed: Bool?
+
+    public var id: String { "\(code.rawValue)|\(paths.joined(separator: "|"))" }
+
+    public init(
+        code: DoctorCode,
+        status: DoctorStatus,
+        category: DoctorCategory,
+        name: String,
+        paths: [String],
+        detail: String,
+        recommendation: String,
+        managed: Bool? = nil
+    ) {
+        self.code = code
+        self.status = status
+        self.category = category
+        self.name = name
+        self.paths = paths
+        self.detail = detail
+        self.recommendation = recommendation
+        self.managed = managed
+    }
+}
+
+public enum DoctorManifestStatus: String, Codable, Equatable, Sendable {
+    case loaded
+    case missing
+    case unreadable
+    case unsupportedVersion = "unsupported_version"
+}
+
+public struct DoctorVolumeScope: Codable, Equatable, Sendable {
+    public let name: String
+    public let mountPoint: String
+    public let manifestPath: String
+    public let isReadOnly: Bool
+    public let manifestStatus: DoctorManifestStatus
+    public let recordCount: Int
+
+    public init(
+        name: String,
+        mountPoint: String,
+        manifestPath: String,
+        isReadOnly: Bool,
+        manifestStatus: DoctorManifestStatus,
+        recordCount: Int
+    ) {
+        self.name = name
+        self.mountPoint = mountPoint
+        self.manifestPath = manifestPath
+        self.isReadOnly = isReadOnly
+        self.manifestStatus = manifestStatus
+        self.recordCount = recordCount
+    }
+}
+
+public struct DoctorSummary: Codable, Equatable, Sendable {
+    public let checked: Int
+    public let healthy: Int
+    public let unmanaged: Int
+    public let needsAttention: Int
+    public let unableToVerify: Int
+
+    public init(
+        checked: Int,
+        healthy: Int,
+        unmanaged: Int,
+        needsAttention: Int,
+        unableToVerify: Int
+    ) {
+        self.checked = checked
+        self.healthy = healthy
+        self.unmanaged = unmanaged
+        self.needsAttention = needsAttention
+        self.unableToVerify = unableToVerify
+    }
+}
+
+public struct DoctorReport: Codable, Equatable, Sendable {
+    public let generatedAt: String
+    public let volumes: [DoctorVolumeScope]
+    public let findings: [DoctorFinding]
+    public let summary: DoctorSummary
+    public let warnings: [String]
+
+    public var exitCode: Int32 {
+        summary.needsAttention + summary.unableToVerify > 0 ? 1 : 0
+    }
+
+    public init(
+        generatedAt: String,
+        volumes: [DoctorVolumeScope],
+        findings: [DoctorFinding],
+        summary: DoctorSummary,
+        warnings: [String]
+    ) {
+        self.generatedAt = generatedAt
+        self.volumes = volumes
+        self.findings = findings
+        self.summary = summary
+        self.warnings = warnings
+    }
+}
+
 public func macBayTimestamp() -> String {
     ISO8601DateFormatter().string(from: Date())
 }

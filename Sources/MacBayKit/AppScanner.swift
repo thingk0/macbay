@@ -18,6 +18,7 @@ public struct AppScanner {
     private let appInspector: AppInspector
     private let diskInfoProvider: any DiskInfoProvider
     private let manifestStore: ManifestStore
+    private let symlinkResolver: SymlinkResolver
 
     public init(
         fileManager: FileManager = .default,
@@ -31,6 +32,7 @@ public struct AppScanner {
         self.appInspector = appInspector ?? AppInspector(fileManager: fileManager, commandRunner: commandRunner)
         self.diskInfoProvider = diskInfoProvider ?? SystemDiskInfoProvider(commandRunner: commandRunner)
         self.manifestStore = manifestStore ?? ManifestStore(fileManager: fileManager)
+        self.symlinkResolver = SymlinkResolver(fileManager: fileManager)
     }
 
     public func scan(
@@ -81,8 +83,8 @@ public struct AppScanner {
                     let sourcePath = entry.path
                     let sourceKey = entry.standardizedFileURL.path
 
-                    switch resolveSymlink(at: entry) {
-                    case .circular(let targetPath):
+                    switch symlinkResolver.resolve(at: entry) {
+                    case .circular(let targetPath, _):
                         if !seenUnresolvedSources.contains(sourceKey) {
                             seenUnresolvedSources.insert(sourceKey)
                             unresolvedApplicationLinks.append(UnresolvedApplicationLink(
@@ -92,7 +94,7 @@ public struct AppScanner {
                                 reason: "Circular link detected"
                             ))
                         }
-                    case .broken(let targetPath):
+                    case .broken(let targetPath, _):
                         if !seenUnresolvedSources.contains(sourceKey) {
                             seenUnresolvedSources.insert(sourceKey)
                             unresolvedApplicationLinks.append(UnresolvedApplicationLink(
@@ -102,7 +104,7 @@ public struct AppScanner {
                                 reason: "Target unavailable"
                             ))
                         }
-                    case .resolved(let resolvedURL):
+                    case .resolved(let resolvedURL, _, _):
                         let diskInfo: VolumeDiskInfo
                         do {
                             diskInfo = try diskInfoProvider.diskInfo(for: resolvedURL.path)
@@ -236,48 +238,6 @@ public struct AppScanner {
             unresolvedApplicationLinks: unresolvedApplicationLinks,
             warnings: warnings
         )
-    }
-
-    private enum LinkResolutionResult {
-        case resolved(URL)
-        case broken(targetPath: String)
-        case circular(targetPath: String)
-    }
-
-    private func resolveSymlink(at url: URL, maxHops: Int = 32) -> LinkResolutionResult {
-        var currentURL = url
-        var visitedPaths: Set<String> = [url.standardizedFileURL.path]
-        var hops = 0
-
-        while hops < maxHops {
-            hops += 1
-            let destination: String
-            do {
-                destination = try fileManager.destinationOfSymbolicLink(atPath: currentURL.path)
-            } catch {
-                var isDirectory: ObjCBool = false
-                if fileManager.fileExists(atPath: currentURL.path, isDirectory: &isDirectory) {
-                    return .resolved(currentURL.standardizedFileURL)
-                } else {
-                    return .broken(targetPath: currentURL.standardizedFileURL.path)
-                }
-            }
-
-            let nextURL: URL
-            if destination.hasPrefix("/") {
-                nextURL = URL(fileURLWithPath: destination).standardizedFileURL
-            } else {
-                nextURL = URL(fileURLWithPath: destination, relativeTo: currentURL.deletingLastPathComponent()).standardizedFileURL
-            }
-
-            if visitedPaths.contains(nextURL.path) {
-                return .circular(targetPath: nextURL.path)
-            }
-            visitedPaths.insert(nextURL.path)
-            currentURL = nextURL
-        }
-
-        return .circular(targetPath: currentURL.standardizedFileURL.path)
     }
 
     public static func defaultDeveloperCacheTargets(

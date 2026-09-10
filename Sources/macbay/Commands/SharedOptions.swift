@@ -38,3 +38,14 @@ struct ScanOptions: ParsableArguments {
     @Flag(name: .long, help: "Output machine-readable JSON.")
     var json = false
 }
+
+struct DoctorOptions: ParsableArguments {
+    @Option(
+        name: [.customShort("v"), .long],
+        help: "External volume mount path to inspect in addition to the mounted volumes under /Volumes."
+    )
+    var volume: String?
+
+    @Flag(name: .long, help: "Output machine-readable JSON.")
+    var json = false
+}

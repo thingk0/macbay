@@ -2,6 +2,7 @@ import Foundation
 
 public struct MacBayService {
     private let fileManager: FileManager
+    private let commandRunner: any CommandRunner
     private let volumeManager: VolumeManager
     private let manifestStore: ManifestStore
     private let scanner: AppScanner
@@ -14,6 +15,7 @@ public struct MacBayService {
         commandRunner: any CommandRunner = SystemCommandRunner()
     ) {
         self.fileManager = fileManager
+        self.commandRunner = commandRunner
         self.volumeManager = VolumeManager(
             fileManager: fileManager,
             diskInfoProvider: SystemDiskInfoProvider(commandRunner: commandRunner)
@@ -84,6 +86,16 @@ public struct MacBayService {
             applicationDirectories: applicationDirectories,
             developerCacheTargets: developerCacheTargets
         )
+    }
+
+    public func doctor(volumePath: String? = nil) throws -> DoctorReport {
+        let checker = DoctorChecker(
+            fileManager: fileManager,
+            commandRunner: commandRunner,
+            volumeManager: volumeManager,
+            manifestStore: manifestStore
+        )
+        return try checker.check(volumePath: volumePath)
     }
 
     public func dock(

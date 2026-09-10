@@ -7,7 +7,7 @@ struct UndockCommand: ParsableCommand {
         abstract: "Restore an application to internal /Applications."
     )
 
-    @Argument(help: "Application name, such as Claude.app, or an application path.")
+    @Argument(help: "Application name, such as Example.app, or an application path.")
     var app: String
 
     @OptionGroup var options: MutatingOptions

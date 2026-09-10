@@ -485,4 +485,130 @@ final class OutputFormatterTests: XCTestCase {
         let output = formatter.scan(report, verbose: true)
         XCTAssertFalse(output.contains("\u{001B}"))
     }
+
+    private func makeDoctorReport(
+        volumes: [DoctorVolumeScope] = [],
+        findings: [DoctorFinding] = [],
+        warnings: [String] = []
+    ) -> DoctorReport {
+        DoctorReport(
+            generatedAt: "2026-09-10T12:00:00Z",
+            volumes: volumes,
+            findings: findings,
+            summary: DoctorSummary(
+                checked: findings.count,
+                healthy: findings.filter { $0.status == .healthy }.count,
+                unmanaged: findings.filter { $0.status == .healthy && $0.managed == false }.count,
+                needsAttention: findings.filter { $0.status == .needsAttention }.count,
+                unableToVerify: findings.filter { $0.status == .unableToVerify }.count
+            ),
+            warnings: warnings
+        )
+    }
+
+    func testDoctorRendersSections() {
+        let formatter = OutputFormatter(useColor: false)
+        let scope = DoctorVolumeScope(
+            name: "ExternalSSD",
+            mountPoint: "/Volumes/ExternalSSD",
+            manifestPath: "/Volumes/ExternalSSD/MacBay/manifest.json",
+            isReadOnly: false,
+            manifestStatus: .loaded,
+            recordCount: 2
+        )
+        let report = makeDoctorReport(
+            volumes: [scope],
+            findings: [
+                DoctorFinding(
+                    code: .linkTargetUnavailable,
+                    status: .needsAttention,
+                    category: .applicationLink,
+                    name: "Offline.app",
+                    paths: ["/Applications/Offline.app", "/Volumes/Gone/Offline.app"],
+                    detail: "Target unavailable: /Volumes/Gone/Offline.app",
+                    recommendation: "Reconnect the volume or confirm the path exists, then run 'mb doctor' again."
+                ),
+                DoctorFinding(
+                    code: .manifestUnreadable,
+                    status: .unableToVerify,
+                    category: .volume,
+                    name: "ExternalSSD",
+                    paths: ["/Volumes/ExternalSSD/MacBay/manifest.json"],
+                    detail: "Manifest could not be read: data is corrupted",
+                    recommendation: "Inspect or restore the manifest."
+                ),
+                DoctorFinding(
+                    code: .linkManagedRecord,
+                    status: .healthy,
+                    category: .applicationLink,
+                    name: "Aside.app",
+                    paths: ["/Applications/Aside.app", "/Volumes/ExternalSSD/MacBay/Applications/Aside.app"],
+                    detail: "Managed by MacBay, record matches",
+                    recommendation: "",
+                    managed: true
+                ),
+                DoctorFinding(
+                    code: .linkUnmanaged,
+                    status: .healthy,
+                    category: .applicationLink,
+                    name: "ChatGPT.app",
+                    paths: ["/Applications/ChatGPT.app", "/Volumes/ExternalSSD/Manual/ChatGPT.app"],
+                    detail: "No MacBay record for this link",
+                    recommendation: "",
+                    managed: false
+                )
+            ],
+            warnings: ["A warning"]
+        )
+
+        let output = formatter.doctor(report)
+
+        XCTAssertTrue(output.contains("MacBay doctor"))
+        XCTAssertTrue(output.contains("Volumes consulted · 1"))
+        XCTAssertTrue(output.contains("ExternalSSD (/Volumes/ExternalSSD) — 2 records"))
+        XCTAssertTrue(output.contains("Needs attention · 1"))
+        XCTAssertTrue(output.contains("Unable to verify · 1"))
+        XCTAssertTrue(output.contains("Healthy · 2"))
+        XCTAssertTrue(output.contains("Next: Reconnect the volume"))
+        XCTAssertTrue(output.contains("[MacBay]"))
+        XCTAssertTrue(output.contains("[unmanaged]"))
+        XCTAssertTrue(output.contains("Warnings · 1"))
+    }
+
+    func testDoctorRendersReadOnlyAndEmptyScope() {
+        let formatter = OutputFormatter(useColor: false)
+        let scope = DoctorVolumeScope(
+            name: "Archive",
+            mountPoint: "/Volumes/Archive",
+            manifestPath: "/Volumes/Archive/MacBay/manifest.json",
+            isReadOnly: true,
+            manifestStatus: .missing,
+            recordCount: 0
+        )
+
+        let output = formatter.doctor(makeDoctorReport(volumes: [scope]))
+
+        XCTAssertTrue(output.contains("Archive (/Volumes/Archive) — no MacBay records (read-only)"))
+        XCTAssertTrue(output.contains("Nothing to verify"))
+        XCTAssertTrue(output.contains("No MacBay records and no relocated links were found"))
+    }
+
+    func testDoctorWithColorDisabledHasNoAnsi() {
+        let formatter = OutputFormatter(useColor: false)
+        let finding = DoctorFinding(
+            code: .linkCircular,
+            status: .needsAttention,
+            category: .applicationLink,
+            name: "Loop.app",
+            paths: ["/Applications/Loop.app", "/Applications/Loop.app"],
+            detail: "Circular link detected: /Applications/Loop.app",
+            recommendation: "Repoint the link to the external copy or remove it manually."
+        )
+
+        let output = formatter.doctor(makeDoctorReport(findings: [finding], warnings: ["warning"]))
+
+        XCTAssertFalse(output.contains("\u{001B}"))
+        XCTAssertEqual(makeDoctorReport(findings: [finding]).exitCode, 1)
+        XCTAssertEqual(makeDoctorReport().exitCode, 0)
+    }
 }

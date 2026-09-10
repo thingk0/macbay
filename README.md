@@ -104,7 +104,7 @@ Verify installation:
 
 ```sh
 mb --version
-# Output: 1.0.0
+# Output: 1.1.0
 ```
 
 ---
@@ -129,18 +129,18 @@ Internal · Macintosh HD
   Used: 96.3 GB / 228.3 GB
   Free: 132.0 GB
 
-External · KLEVV
-  /Volumes/KLEVV
-  ██░░░░░░░░░░░░░░░░░░  7.6% used
-  Used: 70.9 GB / 931.3 GB
-  Free: 860.4 GB
+External · ExternalSSD
+  /Volumes/ExternalSSD
+  ████░░░░░░░░░░░░░░░░  20.5% used
+  Used: 205.0 GB / 1000.0 GB
+  Free: 795.0 GB
 
 Docked items · 0
   None
 
 Warnings · 2
-  • Excluded volume 'Antigravity' (/Volumes/Antigravity): Disk image volumes are not supported
-  • Excluded volume 'Grok Bot Installer' (/Volumes/Grok Bot Installer): Disk image volumes are not supported
+  • Excluded volume 'InstallerImage' (/Volumes/InstallerImage): Disk image volumes are not supported
+  • Excluded volume 'ToolInstaller' (/Volumes/ToolInstaller): Disk image volumes are not supported
 ```
 
 ### 2. Discover Relocation Candidates
@@ -158,15 +158,15 @@ MacBay scan
 App threshold: 200.0 MB
 
 Applications · 8
-  NAME                  SIZE  STATUS
-  Aside.app           2.0 GB  Review
-  Claude.app        825.2 MB  Blocked
-  OrbStack.app      694.6 MB  Blocked
-  Antigravity.app   435.4 MB  Safe
-  Google Drive.app  345.4 MB  Safe
-  Grok Bot.app      311.4 MB  Review
-  cmux.app          310.2 MB  Blocked
-  KakaoTalk.app     240.2 MB  Safe
+  NAME                    SIZE  STATUS
+  HeavyStudio.app       2.1 GB  Review
+  VirtualMachine.app    1.8 GB  Blocked
+  ContainerRuntime.app  1.2 GB  Blocked
+  DeveloperIDE.app    850.0 MB  Safe
+  CloudStorage.app    620.4 MB  Safe
+  SystemHelper.app    410.2 MB  Review
+  DriverDaemon.app    320.0 MB  Blocked
+  Messenger.app       240.5 MB  Safe
 
   Safe: no relocation signals detected
   Review: check compatibility details before using --force
@@ -177,11 +177,12 @@ Developer caches · 2
   npm cache      124.2 MB
 
 Already external · 2
-  ChatGPT.app   1.3 GB  Unmanaged
-    → /Volumes/KLEVV/Applications/ChatGPT.app
-  Kiro CLI.app  1.8 GB  Unmanaged
-    → /Volumes/KLEVV/Applications/Kiro CLI.app
+  DesignKit.app    1.5 GB  Unmanaged
+    → /Volumes/ExternalSSD/Applications/DesignKit.app
+  AudioEngine.app  1.2 GB  MacBay
+    → /Volumes/ExternalSSD/MacBay/Applications/AudioEngine.app
 
+  MacBay: recorded in volume manifest
   Unmanaged: no matching MacBay migration record
 ```
 
@@ -198,9 +199,68 @@ mb scan --verbose
   - `Unconfirmed`: Target is on external storage, but manifest reading failed.
 - **Unresolved links**: Broken symlinks (`Target unavailable`), circular symlinks, or failed volume checks.
 
+### 3. Diagnose Links and Records
+
+Verify that application links, developer cache links, and the MacBay records on connected volumes still agree. `doctor` is read-only and never changes files:
+
+```sh
+mb doctor
+```
+
+Output example:
+```text
+MacBay doctor
+
+Volumes consulted · 1
+  • ExternalSSD (/Volumes/ExternalSSD) — 2 records
+
+Needs attention · 1
+  ! OfflineApp.app — Target unavailable: /Volumes/ExternalSSD/MacBay/Applications/OfflineApp.app
+    Next: Reconnect the volume or confirm the path exists, then run 'mb doctor' again.
+
+Healthy · 2
+  • AudioEngine.app → /Volumes/ExternalSSD/MacBay/Applications/AudioEngine.app [MacBay]
+  • LegacyTool.app → /Volumes/Backup/LegacyTool.app [unmanaged]
+```
+
+- `Healthy`: The link resolves and matches its MacBay record or the MacBay layout. Links without a record are shown as `unmanaged` information, not as problems.
+- `Needs attention`: Broken links, circular links, records that disagree with the actual target path, or recorded external copies that are missing.
+- `Unable to verify`: The link, the link target volume, or a volume's `manifest.json` could not be read (for example permission or manifest errors).
+- `Nothing to verify` (no records or relocated links were found) is reported separately from "no problems found".
+
+Exit codes: `0` when nothing needs attention, `1` when problems or unverifiable items were found, `2` when the check itself failed (for example an unreadable `--volume` path).
+
+> [!NOTE]
+> MacBay only reads records from connected external volumes, so a detached drive cannot be verified. Diagnostics report the scope that was actually checked and do not assume that a missing target was ejected or deleted.
+
 ---
 
 ## Commands & Usage
+
+### Diagnosing Links and Records (`doctor`)
+
+Inspects `/Applications` links, known developer cache links, and the MacBay records on connected external volumes (including read-only volumes). It never writes files or configuration:
+
+```sh
+# Diagnose the connected volumes and local links
+mb doctor
+
+# Inspect an additional volume that is not mounted under /Volumes
+mb doctor --volume /Volumes/Archive
+```
+
+**What it checks**:
+1. **Application links**: Every symlink in `/Applications` is resolved (relative, chained, and circular links included).
+2. **Developer cache links**: `~/Library/Developer/Xcode/iOS DeviceSupport`, `~/Library/Developer/CoreSimulator`, `~/.npm`, `~/.cache/uv`, `~/.gradle`, and `~/.cache/huggingface`.
+3. **Volume records**: Each connected volume's `MacBay/manifest.json` is compared against the real source and target paths.
+4. **Recorded copies**: Records whose source is no longer a link and whose external copy is gone are reported as a mismatch between records and reality.
+
+**Result groups**: `Healthy`, `Needs attention`, `Unable to verify`, plus `unmanaged` information for links that MacBay never created. Every problem includes a stable diagnostic code in `--json` output and a suggested next action.
+
+**Exit codes**: `0` healthy, `1` problems or unverifiable items found, `2` the check itself failed.
+
+> [!IMPORTANT]
+> `doctor` is read-only. It does not delete, move, or repair anything, and it does not keep records on the internal drive, so a detached external volume cannot be verified until it is reconnected.
 
 ### Moving an Application (`dock`)
 
@@ -224,7 +284,7 @@ mb dock Example.app
 > [!NOTE]
 > If an application is flagged with ⚠️ **Review** (`POPUP_RISK` in JSON), pass `--force` to proceed after reviewing potential risks:
 > ```sh
-> mb dock Claude.app --force --dry-run
+> mb dock HeavyStudio.app --force --dry-run
 > ```
 
 ### Restoring an Application (`undock`)
@@ -326,13 +386,15 @@ Every command supports the `--json` flag for integration with scripts, CI, and a
 mb status --json
 ```
 
+`mb doctor --json` reports `volumes`, `findings`, and `summary`. Each finding carries a stable `code` (for example `link_target_unavailable`, `link_unmanaged`, `manifest_unreadable`) with its `status` (`healthy`, `needs_attention`, `unable_to_verify`), related paths, and a recommended action.
+
 On errors, MacBay outputs a structured error envelope to `stderr` and exits with a non-zero status:
 
 ```json
 {
   "error": {
     "code": "configuration_error | retryable_error | execution_error",
-    "message": "Application is blocked from migration (/Applications/OrbStack.app)",
+    "message": "Application is blocked from migration (/Applications/VirtualMachine.app)",
     "details": "com.apple.security.virtualization=true in codesign entitlements"
   }
 }
