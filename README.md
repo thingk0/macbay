@@ -104,7 +104,7 @@ Verify installation:
 
 ```sh
 mb --version
-# Output: 1.0.0
+# Output: 1.1.0
 ```
 
 ---

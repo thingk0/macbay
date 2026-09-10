@@ -104,7 +104,7 @@ sudo ln -sf /usr/local/bin/mb /usr/local/bin/macbay
 
 ```sh
 mb --version
-# 출력: 1.0.0
+# 출력: 1.1.0
 ```
 
 ---

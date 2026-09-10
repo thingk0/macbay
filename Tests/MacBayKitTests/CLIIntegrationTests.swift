@@ -47,7 +47,7 @@ final class CLIIntegrationTests: XCTestCase {
 
         let result = try runCLI(arguments: ["--version"])
         XCTAssertEqual(result.status, 0)
-        XCTAssertTrue(result.stdout.contains("1.0.0"))
+        XCTAssertTrue(result.stdout.contains("1.1.0"))
     }
 
     func testHelpOutputMentionsSubcommands() throws {
