@@ -9,6 +9,7 @@ public struct VolumeDiskInfo: Codable, Equatable, Sendable {
     public let volumeName: String
     public let totalBytes: UInt64
     public let availableBytes: UInt64
+    public let volumeUUID: String?
 
     public init(
         mountPoint: String,
@@ -18,7 +19,8 @@ public struct VolumeDiskInfo: Codable, Equatable, Sendable {
         busProtocol: String,
         volumeName: String,
         totalBytes: UInt64,
-        availableBytes: UInt64
+        availableBytes: UInt64,
+        volumeUUID: String? = nil
     ) {
         self.mountPoint = mountPoint
         self.isInternal = isInternal
@@ -28,6 +30,7 @@ public struct VolumeDiskInfo: Codable, Equatable, Sendable {
         self.volumeName = volumeName
         self.totalBytes = totalBytes
         self.availableBytes = availableBytes
+        self.volumeUUID = volumeUUID
     }
 }
 
@@ -93,6 +96,7 @@ public struct SystemDiskInfoProvider: DiskInfoProvider {
         let availableBytes = (plist["APFSContainerFree"] as? NSNumber)?.uint64Value
             ?? (plist["FreeSpace"] as? NSNumber)?.uint64Value
             ?? 0
+        let volumeUUID = plist["VolumeUUID"] as? String
 
         return VolumeDiskInfo(
             mountPoint: mountPoint,
@@ -102,9 +106,38 @@ public struct SystemDiskInfoProvider: DiskInfoProvider {
             busProtocol: busProtocol,
             volumeName: volumeName,
             totalBytes: totalSize,
-            availableBytes: availableBytes
+            availableBytes: availableBytes,
+            volumeUUID: volumeUUID
         )
     }
+}
+
+public enum VolumeSelectionSource: String, Equatable, Sendable {
+    case explicit
+    case configured
+    case autoDetected = "auto_detected"
+}
+
+public struct VolumeSelection: Equatable, Sendable {
+    public let volume: StorageVolume
+    public let source: VolumeSelectionSource
+    public let warnings: [String]
+
+    public init(
+        volume: StorageVolume,
+        source: VolumeSelectionSource,
+        warnings: [String] = []
+    ) {
+        self.volume = volume
+        self.source = source
+        self.warnings = warnings
+    }
+}
+
+public enum DefaultVolumeAvailability: Equatable, Sendable {
+    case mounted(StorageVolume, pathChanged: Bool)
+    case notMounted
+    case ineligible(mountPoint: String, reason: String)
 }
 
 public struct VolumeManager {
@@ -235,34 +268,122 @@ public struct VolumeManager {
 
     public func resolveExternalVolume(path: String?) throws -> StorageVolume {
         if let path {
-            let standardizedPath = MacBayPaths.expandedURL(path).path
-            let info = try diskInfoProvider.diskInfo(for: standardizedPath)
-            let check = eligibilityCheck(for: info)
-            guard check.isEligible else {
-                if info.isInternal {
-                    throw MacBayError.externalVolumeRequired("Volume is internal: \(standardizedPath)")
-                } else {
-                    throw MacBayError.invalidVolume("\(check.reason ?? "Volume is not eligible"): \(standardizedPath)")
-                }
-            }
-            return StorageVolume(
-                name: info.volumeName,
-                path: info.mountPoint,
-                isInternal: info.isInternal,
-                totalBytes: info.totalBytes,
-                availableBytes: info.availableBytes
-            )
+            return try explicitVolume(path: path)
+        }
+        return try autoDetectedExternalVolume()
+    }
+
+    public func resolveExternalVolume(
+        path: String?,
+        configuredDefault: DefaultVolume?
+    ) throws -> VolumeSelection {
+        if let path {
+            return VolumeSelection(volume: try explicitVolume(path: path), source: .explicit)
         }
 
+        guard let configuredDefault else {
+            return VolumeSelection(volume: try autoDetectedExternalVolume(), source: .autoDetected)
+        }
+
+        switch availability(of: configuredDefault) {
+        case let .mounted(volume, pathChanged):
+            let warnings = pathChanged
+                ? ["Default volume '\(configuredDefault.name)' is mounted at \(volume.path) instead of the saved path \(configuredDefault.path)."]
+                : []
+            return VolumeSelection(volume: volume, source: .configured, warnings: warnings)
+        case .notMounted:
+            throw MacBayError.invalidVolume(
+                "Configured default volume '\(configuredDefault.name)' (\(configuredDefault.path)) is not mounted. Connect it, pass --volume, or run 'mb init'."
+            )
+        case let .ineligible(mountPoint, reason):
+            throw MacBayError.invalidVolume(
+                "Configured default volume '\(configuredDefault.name)' (\(mountPoint)) is not eligible: \(reason). Run 'mb init' to choose another volume."
+            )
+        }
+    }
+
+    public func availability(of defaultVolume: DefaultVolume) -> DefaultVolumeAvailability {
+        let infos = mountedVolumeInfos()
+        let configuredPath = standardizedPath(defaultVolume.path)
+        let pathMatch = infos.first { standardizedPath($0.mountPoint).caseInsensitiveCompare(configuredPath) == .orderedSame }
+        let uuidMatch = pathMatch == nil ? uuidMatch(for: defaultVolume, in: infos) : nil
+
+        guard let info = pathMatch ?? uuidMatch else {
+            return .notMounted
+        }
+
+        let check = eligibilityCheck(for: info)
+        guard check.isEligible else {
+            return .ineligible(mountPoint: info.mountPoint, reason: check.reason ?? "Volume is not eligible")
+        }
+        return .mounted(storageVolume(from: info), pathChanged: pathMatch == nil)
+    }
+
+    private func standardizedPath(_ path: String) -> String {
+        URL(fileURLWithPath: path).standardizedFileURL.path
+    }
+
+    private func explicitVolume(path: String) throws -> StorageVolume {
+        let standardizedPath = MacBayPaths.expandedURL(path).path
+        let info = try diskInfoProvider.diskInfo(for: standardizedPath)
+        let check = eligibilityCheck(for: info)
+        guard check.isEligible else {
+            if info.isInternal {
+                throw MacBayError.externalVolumeRequired("Volume is internal: \(standardizedPath)")
+            } else {
+                throw MacBayError.invalidVolume("\(check.reason ?? "Volume is not eligible"): \(standardizedPath)")
+            }
+        }
+        return storageVolume(from: info)
+    }
+
+    private func autoDetectedExternalVolume() throws -> StorageVolume {
         let eligibleVolumes = try externalVolumes()
         if eligibleVolumes.isEmpty {
             throw MacBayError.invalidVolume("No eligible external APFS volume was found under /Volumes")
         }
         if eligibleVolumes.count > 1 {
             let names = eligibleVolumes.map { "\($0.name) (\($0.path))" }.joined(separator: ", ")
-            throw MacBayError.invalidVolume("Multiple eligible external volumes found: \(names). Specify an external volume with --volume <path>.")
+            throw MacBayError.invalidVolume(
+                "Multiple eligible external volumes found: \(names). Specify an external volume with --volume <path>, or run 'mb init' to save a default."
+            )
         }
         return eligibleVolumes[0]
+    }
+
+    private func uuidMatch(for defaultVolume: DefaultVolume, in infos: [VolumeDiskInfo]) -> VolumeDiskInfo? {
+        guard let uuid = defaultVolume.uuid, !uuid.isEmpty else { return nil }
+        return infos.first { info in
+            guard let mountedUUID = info.volumeUUID, !mountedUUID.isEmpty else { return false }
+            return mountedUUID.caseInsensitiveCompare(uuid) == .orderedSame
+        }
+    }
+
+    private func mountedVolumeInfos() -> [VolumeDiskInfo] {
+        let mounted = fileManager.mountedVolumeURLs(
+            includingResourceValuesForKeys: nil,
+            options: [.skipHiddenVolumes]
+        ) ?? []
+
+        var infos: [VolumeDiskInfo] = []
+        for url in mounted {
+            let path = url.standardizedFileURL.path
+            if path == "/" { continue }
+            if let info = try? diskInfoProvider.diskInfo(for: path) {
+                infos.append(info)
+            }
+        }
+        return infos
+    }
+
+    private func storageVolume(from info: VolumeDiskInfo) -> StorageVolume {
+        StorageVolume(
+            name: info.volumeName,
+            path: info.mountPoint,
+            isInternal: info.isInternal,
+            totalBytes: info.totalBytes,
+            availableBytes: info.availableBytes
+        )
     }
 
     public func volume(at url: URL) throws -> StorageVolume {

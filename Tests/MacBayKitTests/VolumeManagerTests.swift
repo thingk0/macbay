@@ -20,6 +20,8 @@ final class VolumeManagerTests: XCTestCase {
         <string>PCI-Express</string>
         <key>VolumeName</key>
         <string>ExternalSSD</string>
+        <key>VolumeUUID</key>
+        <string>E1B2C3D4-0000-1111-2222-333344445555</string>
         <key>TotalSize</key>
         <integer>999995129856</integer>
         <key>APFSContainerFree</key>
@@ -145,6 +147,8 @@ final class VolumeManagerTests: XCTestCase {
         <string>USB</string>
         <key>VolumeName</key>
         <string>SamsungT7</string>
+        <key>VolumeUUID</key>
+        <string>A1B2C3D4-9999-8888-7777-666655554444</string>
         <key>TotalSize</key>
         <integer>1000000000000</integer>
         <key>APFSContainerFree</key>
@@ -265,6 +269,214 @@ final class VolumeManagerTests: XCTestCase {
             }
             XCTAssertTrue(message.contains("internal"))
         }
+    }
+
+    func testVolumeUUIDIsParsedFromDiskInfo() throws {
+        let info = try SystemDiskInfoProvider.parsePlist(
+            Self.eligibleExternalVolumePlist,
+            fallbackPath: "/Volumes/ExternalSSD"
+        )
+        XCTAssertEqual(info.volumeUUID, "E1B2C3D4-0000-1111-2222-333344445555")
+
+        let withoutUUID = try SystemDiskInfoProvider.parsePlist(
+            Self.nonApfsPlist,
+            fallbackPath: "/Volumes/ExFATDrive"
+        )
+        XCTAssertNil(withoutUUID.volumeUUID)
+    }
+
+    func testExplicitPathTakesPriorityOverConfiguredDefault() throws {
+        let manager = makeManager(
+            mountedPaths: ["/Volumes/ExternalSSD", "/Volumes/SamsungT7"],
+            infos: [
+                try SystemDiskInfoProvider.parsePlist(Self.eligibleExternalVolumePlist, fallbackPath: "/Volumes/ExternalSSD"),
+                try SystemDiskInfoProvider.parsePlist(Self.samsungT7Plist, fallbackPath: "/Volumes/SamsungT7")
+            ]
+        )
+
+        let selection = try manager.resolveExternalVolume(
+            path: "/Volumes/SamsungT7",
+            configuredDefault: makeDefaultVolume()
+        )
+
+        XCTAssertEqual(selection.volume.path, "/Volumes/SamsungT7")
+        XCTAssertEqual(selection.source, .explicit)
+        XCTAssertTrue(selection.warnings.isEmpty)
+    }
+
+    func testConfiguredDefaultMatchingSavedPathIsUsed() throws {
+        let manager = makeManager(
+            mountedPaths: ["/Volumes/ExternalSSD", "/Volumes/SamsungT7"],
+            infos: [
+                try SystemDiskInfoProvider.parsePlist(Self.eligibleExternalVolumePlist, fallbackPath: "/Volumes/ExternalSSD"),
+                try SystemDiskInfoProvider.parsePlist(Self.samsungT7Plist, fallbackPath: "/Volumes/SamsungT7")
+            ]
+        )
+
+        let selection = try manager.resolveExternalVolume(path: nil, configuredDefault: makeDefaultVolume())
+
+        XCTAssertEqual(selection.volume.path, "/Volumes/ExternalSSD")
+        XCTAssertEqual(selection.volume.name, "ExternalSSD")
+        XCTAssertEqual(selection.source, .configured)
+        XCTAssertTrue(selection.warnings.isEmpty)
+    }
+
+    func testConfiguredDefaultIsFoundByUUIDWhenMountPathChanged() throws {
+        let renamed = VolumeDiskInfo(
+            mountPoint: "/Volumes/ExternalSSD 1",
+            isInternal: false,
+            filesystemType: "apfs",
+            isWritableVolume: true,
+            busProtocol: "PCI-Express",
+            volumeName: "ExternalSSD 1",
+            totalBytes: 999_995_129_856,
+            availableBytes: 923_864_829_952,
+            volumeUUID: "E1B2C3D4-0000-1111-2222-333344445555"
+        )
+        let manager = makeManager(mountedPaths: [renamed.mountPoint], infos: [renamed])
+
+        let selection = try manager.resolveExternalVolume(path: nil, configuredDefault: makeDefaultVolume())
+
+        XCTAssertEqual(selection.volume.path, "/Volumes/ExternalSSD 1")
+        XCTAssertEqual(selection.source, .configured)
+        XCTAssertEqual(selection.warnings.count, 1)
+        XCTAssertTrue(selection.warnings[0].contains("mounted at /Volumes/ExternalSSD 1"))
+        XCTAssertTrue(selection.warnings[0].contains("/Volumes/ExternalSSD"))
+    }
+
+    func testConfiguredDefaultNotMountedThrows() throws {
+        let manager = makeManager(
+            mountedPaths: ["/Volumes/SamsungT7"],
+            infos: [try SystemDiskInfoProvider.parsePlist(Self.samsungT7Plist, fallbackPath: "/Volumes/SamsungT7")]
+        )
+
+        XCTAssertThrowsError(try manager.resolveExternalVolume(path: nil, configuredDefault: makeDefaultVolume())) { error in
+            guard case let MacBayError.invalidVolume(message) = error else {
+                return XCTFail("Expected invalidVolume error, got \(error)")
+            }
+            XCTAssertTrue(message.contains("is not mounted"))
+            XCTAssertTrue(message.contains("/Volumes/ExternalSSD"))
+            XCTAssertTrue(message.contains("mb init"))
+        }
+    }
+
+    func testConfiguredDefaultIsNotSilentlyReplacedByAnotherVolume() throws {
+        let manager = makeManager(
+            mountedPaths: ["/Volumes/SamsungT7"],
+            infos: [try SystemDiskInfoProvider.parsePlist(Self.samsungT7Plist, fallbackPath: "/Volumes/SamsungT7")]
+        )
+
+        XCTAssertEqual(manager.availability(of: makeDefaultVolume()), .notMounted)
+        XCTAssertThrowsError(try manager.resolveExternalVolume(path: nil, configuredDefault: makeDefaultVolume()))
+    }
+
+    func testConfiguredDefaultIneligibleThrows() throws {
+        let manager = makeManager(
+            mountedPaths: ["/Volumes/ReadOnlyAPFS"],
+            infos: [try SystemDiskInfoProvider.parsePlist(Self.readOnlyPlist, fallbackPath: "/Volumes/ReadOnlyAPFS")]
+        )
+
+        let configured = makeDefaultVolume(path: "/Volumes/ReadOnlyAPFS", name: "ReadOnlyAPFS", uuid: nil)
+        XCTAssertThrowsError(try manager.resolveExternalVolume(path: nil, configuredDefault: configured)) { error in
+            guard case let MacBayError.invalidVolume(message) = error else {
+                return XCTFail("Expected invalidVolume error, got \(error)")
+            }
+            XCTAssertTrue(message.contains("is not eligible"))
+            XCTAssertTrue(message.contains("read-only"))
+            XCTAssertTrue(message.contains("mb init"))
+        }
+    }
+
+    func testAvailabilityDistinguishesMountedStates() throws {
+        let manager = makeManager(
+            mountedPaths: ["/Volumes/ExFATDrive"],
+            infos: [try SystemDiskInfoProvider.parsePlist(Self.nonApfsPlist, fallbackPath: "/Volumes/ExFATDrive")]
+        )
+
+        let availability = manager.availability(
+            of: makeDefaultVolume(path: "/Volumes/ExFATDrive", name: "ExFATDrive", uuid: nil)
+        )
+        guard case let .ineligible(mountPoint, reason) = availability else {
+            return XCTFail("Expected ineligible, got \(availability)")
+        }
+        XCTAssertEqual(mountPoint, "/Volumes/ExFATDrive")
+        XCTAssertTrue(reason.contains("not apfs"))
+
+        XCTAssertEqual(manager.availability(of: makeDefaultVolume()), .notMounted)
+    }
+
+    func testAvailabilityReportsMountedConfiguredVolume() throws {
+        let manager = makeManager(
+            mountedPaths: ["/Volumes/ExternalSSD"],
+            infos: [try SystemDiskInfoProvider.parsePlist(Self.eligibleExternalVolumePlist, fallbackPath: "/Volumes/ExternalSSD")]
+        )
+
+        let availability = manager.availability(of: makeDefaultVolume())
+        guard case let .mounted(volume, pathChanged) = availability else {
+            return XCTFail("Expected mounted, got \(availability)")
+        }
+        XCTAssertEqual(volume.path, "/Volumes/ExternalSSD")
+        XCTAssertFalse(pathChanged)
+    }
+
+    func testConfiguredVolumeHasPriorityOverAutoDetection() throws {
+        let manager = makeManager(
+            mountedPaths: ["/Volumes/ExternalSSD"],
+            infos: [try SystemDiskInfoProvider.parsePlist(Self.eligibleExternalVolumePlist, fallbackPath: "/Volumes/ExternalSSD")]
+        )
+
+        XCTAssertEqual(
+            try manager.resolveExternalVolume(path: nil, configuredDefault: nil).source,
+            .autoDetected
+        )
+        XCTAssertEqual(
+            try manager.resolveExternalVolume(path: nil, configuredDefault: makeDefaultVolume()).source,
+            .configured
+        )
+    }
+
+    func testMultipleVolumesWithoutConfiguredDefaultSuggestsInit() throws {
+        let manager = makeManager(
+            mountedPaths: ["/Volumes/ExternalSSD", "/Volumes/SamsungT7"],
+            infos: [
+                try SystemDiskInfoProvider.parsePlist(Self.eligibleExternalVolumePlist, fallbackPath: "/Volumes/ExternalSSD"),
+                try SystemDiskInfoProvider.parsePlist(Self.samsungT7Plist, fallbackPath: "/Volumes/SamsungT7")
+            ]
+        )
+
+        XCTAssertThrowsError(try manager.resolveExternalVolume(path: nil, configuredDefault: nil)) { error in
+            guard case let MacBayError.invalidVolume(message) = error else {
+                return XCTFail("Expected invalidVolume error, got \(error)")
+            }
+            XCTAssertTrue(message.contains("Multiple eligible external volumes"))
+            XCTAssertTrue(message.contains("mb init"))
+        }
+    }
+
+    func testConfiguredDefaultWithUnknownUUIDIsNotMounted() throws {
+        let manager = makeManager(
+            mountedPaths: ["/Volumes/SamsungT7"],
+            infos: [try SystemDiskInfoProvider.parsePlist(Self.samsungT7Plist, fallbackPath: "/Volumes/SamsungT7")]
+        )
+
+        let stale = makeDefaultVolume(uuid: "00000000-0000-0000-0000-000000000000")
+        XCTAssertEqual(manager.availability(of: stale), .notMounted)
+    }
+
+    private func makeDefaultVolume(
+        path: String = "/Volumes/ExternalSSD",
+        name: String = "ExternalSSD",
+        uuid: String? = "E1B2C3D4-0000-1111-2222-333344445555"
+    ) -> DefaultVolume {
+        DefaultVolume(path: path, name: name, uuid: uuid, savedAt: "2026-09-10T12:00:00Z")
+    }
+
+    private func makeManager(mountedPaths: [String], infos: [VolumeDiskInfo]) -> VolumeManager {
+        let mapping = Dictionary(uniqueKeysWithValues: infos.map { ($0.mountPoint, $0) })
+        return VolumeManager(
+            fileManager: MockFileManager(mountedPaths: mountedPaths),
+            diskInfoProvider: MockDiskInfoProvider(mapping)
+        )
     }
 }
 

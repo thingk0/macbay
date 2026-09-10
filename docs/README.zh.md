@@ -238,6 +238,26 @@ Healthy · 2
 
 ## 命令与用法
 
+### 选择默认卷 (`init`)
+
+保存省略 `--volume` 时变更类命令所使用的默认外置卷，使 `dock`、`undock`、`xcode` 与 `cache` 始终作用于同一块驱动器：
+
+```sh
+# 仅有一个符合条件的卷时直接保存，在终端中则通过编号列表选择
+mb init
+
+# 无需确认，直接将指定卷保存为默认值
+mb init --volume /Volumes/ExternalSSD
+
+# 打印已保存的默认卷
+mb init --show
+
+# 删除已保存的默认卷
+mb init --reset
+```
+
+默认卷会连同卷 UUID 一起写入 `$XDG_CONFIG_HOME/macbay/config.json`（或 `~/.config/macbay/config.json`），因此即使驱动器以其他名称挂载也能被识别。若已保存的卷未连接，变更类命令会直接中止，而不会静默写入其他驱动器；`mb status` 与 `mb doctor` 会报告该状态，再次运行 `mb init` 可在确认后替换默认卷。
+
 ### 链接与记录诊断 (`doctor`)
 
 检查 `/Applications` 中的链接、已知的开发者缓存链接，以及已连接外置卷（含只读卷）中的 MacBay 记录。该命令不会修改任何文件或配置：
@@ -283,8 +303,8 @@ mb dock Example.app
 Dry run: dock Example.app
   Size: 21.6 GB
   Source: /Applications/Example.app
-  Destination: /Volumes/KLEVV/MacBay/Applications/Example.app
-  Space: destination free 859.5 GB on /Volumes/KLEVV
+  Destination: /Volumes/ExternalSSD/MacBay/Applications/Example.app
+  Space: destination free 859.5 GB on /Volumes/ExternalSSD
   Space: estimated free after copy 837.9 GB
   Space: estimated internal space freed 21.6 GB (logical size estimate; APFS shared blocks and snapshots can change the actual amount)
   Dry run: no files were changed
@@ -369,8 +389,10 @@ mb cache --reset
 | **权限** | 支持写入 (`WritableVolume == true`) | 只读驱动器无法承载应用程序包 |
 | **总线协议** | `BusProtocol != "Disk Image"` | 自动拒绝临时安装器 DMG 磁盘映像 |
 
+- **选择优先级**：`--volume`（或 `-v`）优先，其次是 `mb init` 保存的默认卷，最后才是自动检测。
 - **自动选择**：当仅挂载了一个符合条件的外置卷时，MacBay 会自动选择该卷。
-- **多卷环境**：当连接了两个或更多符合条件的驱动器时，必须使用 `--volume <path>`（或 `-v`）显式指定目标卷，以防止误写入其他驱动器。
+- **多卷环境**：当连接了两个或更多符合条件的驱动器时，必须使用 `--volume <path>`（或 `-v`）显式指定目标卷，以防止误写入其他驱动器。通过 `mb init` 保存默认卷后，无需在每条命令中重复指定。
+- **已保存的默认卷**：`mb init` 会将一个符合条件的卷保存到 `~/.config/macbay/config.json`（遵循 `$XDG_CONFIG_HOME`），且在默认卷不可用时不会静默切换到其他驱动器。
 
 ---
 

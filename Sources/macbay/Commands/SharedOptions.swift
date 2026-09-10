@@ -3,7 +3,7 @@ import ArgumentParser
 struct MutatingOptions: ParsableArguments {
     @Option(
         name: [.customShort("v"), .long],
-        help: "External volume mount path (default: auto-detected under /Volumes)."
+        help: "External volume mount path (default: the volume saved by 'mb init', otherwise auto-detected under /Volumes)."
     )
     var volume: String?
 
@@ -23,7 +23,7 @@ struct MutatingOptions: ParsableArguments {
 struct StatusOptions: ParsableArguments {
     @Option(
         name: [.customShort("v"), .long],
-        help: "External volume mount path (default: auto-detected under /Volumes)."
+        help: "External volume mount path (default: the volume saved by 'mb init', otherwise auto-detected under /Volumes)."
     )
     var volume: String?
 

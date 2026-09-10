@@ -129,10 +129,56 @@ public struct DockManifest: Codable, Equatable, Sendable {
     }
 }
 
+public struct DefaultVolume: Codable, Equatable, Sendable {
+    public let path: String
+    public let name: String
+    public let uuid: String?
+    public let savedAt: String
+
+    public init(path: String, name: String, uuid: String? = nil, savedAt: String) {
+        self.path = path
+        self.name = name
+        self.uuid = uuid
+        self.savedAt = savedAt
+    }
+}
+
+public struct MacBayConfig: Codable, Equatable, Sendable {
+    public static let currentVersion = 1
+
+    public let version: Int
+    public var defaultVolume: DefaultVolume?
+
+    public init(version: Int = MacBayConfig.currentVersion, defaultVolume: DefaultVolume? = nil) {
+        self.version = version
+        self.defaultVolume = defaultVolume
+    }
+}
+
+public struct StatusDefaultVolume: Codable, Equatable, Sendable {
+    public let name: String
+    public let path: String
+    public let uuid: String?
+    public let mountedPath: String?
+
+    public init(
+        name: String,
+        path: String,
+        uuid: String? = nil,
+        mountedPath: String? = nil
+    ) {
+        self.name = name
+        self.path = path
+        self.uuid = uuid
+        self.mountedPath = mountedPath
+    }
+}
+
 public struct StatusReport: Codable, Equatable, Sendable {
     public let generatedAt: String
     public let internalVolume: StorageVolume
     public let externalVolumes: [StorageVolume]
+    public let defaultVolume: StatusDefaultVolume?
     public let dockedItems: [DockedItem]
     public let warnings: [String]
 
@@ -140,14 +186,51 @@ public struct StatusReport: Codable, Equatable, Sendable {
         generatedAt: String,
         internalVolume: StorageVolume,
         externalVolumes: [StorageVolume],
+        defaultVolume: StatusDefaultVolume? = nil,
         dockedItems: [DockedItem],
         warnings: [String] = []
     ) {
         self.generatedAt = generatedAt
         self.internalVolume = internalVolume
         self.externalVolumes = externalVolumes
+        self.defaultVolume = defaultVolume
         self.dockedItems = dockedItems
         self.warnings = warnings
+    }
+}
+
+public struct InitReport: Codable, Equatable, Sendable {
+    public let volume: StorageVolume
+    public let configPath: String
+    public let previousDefault: DefaultVolume?
+    public let replaced: Bool
+
+    public init(
+        volume: StorageVolume,
+        configPath: String,
+        previousDefault: DefaultVolume? = nil,
+        replaced: Bool
+    ) {
+        self.volume = volume
+        self.configPath = configPath
+        self.previousDefault = previousDefault
+        self.replaced = replaced
+    }
+}
+
+public struct ConfigReport: Codable, Equatable, Sendable {
+    public let configPath: String
+    public let defaultVolume: DefaultVolume?
+    public let removedVolume: DefaultVolume?
+
+    public init(
+        configPath: String,
+        defaultVolume: DefaultVolume? = nil,
+        removedVolume: DefaultVolume? = nil
+    ) {
+        self.configPath = configPath
+        self.defaultVolume = defaultVolume
+        self.removedVolume = removedVolume
     }
 }
 
@@ -407,6 +490,7 @@ public enum MacBayError: Error, Equatable, LocalizedError, Sendable {
     case signatureVerificationFailed(path: String, details: String)
     case commandFailed(executable: String, status: Int32, details: String)
     case manifestFailed(path: String, details: String)
+    case configFailed(path: String, details: String)
     case unsupportedOperation(String)
     case compatibilityBlocked(path: String, assessment: CompatibilityAssessment)
     case forceRequired(path: String, assessment: CompatibilityAssessment)
@@ -423,6 +507,7 @@ public enum MacBayError: Error, Equatable, LocalizedError, Sendable {
              .applicationAlreadyDocked,
              .destinationExists,
              .pathMissing,
+             .configFailed,
              .unsupportedOperation:
             return "configuration_error"
         case .activeProcesses,
@@ -456,6 +541,8 @@ public enum MacBayError: Error, Equatable, LocalizedError, Sendable {
         case let .commandFailed(_, _, details):
             return details
         case let .manifestFailed(_, details):
+            return details
+        case let .configFailed(_, details):
             return details
         case let .insufficientSpace(_, neededBytes, availableBytes):
             return "Need \(OutputFormatter.humanBytes(neededBytes)), available \(OutputFormatter.humanBytes(availableBytes))"
@@ -498,6 +585,8 @@ public enum MacBayError: Error, Equatable, LocalizedError, Sendable {
             return "Command failed (\(status)): \(executable)\(details.isEmpty ? "" : " — \(details)")"
         case let .manifestFailed(path, details):
             return "Manifest error at \(path): \(details)"
+        case let .configFailed(path, details):
+            return "Configuration error at \(path): \(details). Run 'mb init --reset' to remove the saved configuration."
         case let .unsupportedOperation(message):
             return message
         case let .compatibilityBlocked(path, assessment):
@@ -591,6 +680,10 @@ public enum DoctorCode: String, Codable, Equatable, Sendable {
     case applicationsUnreadable = "applications_unreadable"
     case manifestUnreadable = "manifest_unreadable"
     case manifestVersionUnsupported = "manifest_version_unsupported"
+    case defaultVolumeMounted = "default_volume_mounted"
+    case defaultVolumeUnavailable = "default_volume_unavailable"
+    case defaultVolumeIneligible = "default_volume_ineligible"
+    case configUnreadable = "config_unreadable"
 }
 
 public struct DoctorFinding: Codable, Equatable, Identifiable, Sendable {

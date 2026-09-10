@@ -26,6 +26,20 @@ enum CommandSupport {
         }
     }
 
+    static func promptChoice(title: String, options: [String]) throws -> Int {
+        print(title)
+        for (index, option) in options.enumerated() {
+            print("  \(index + 1)) \(option)")
+        }
+        print("Select a volume [1-\(options.count)]: ", terminator: "")
+        guard let answer = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines),
+              let selected = Int(answer),
+              options.indices.contains(selected - 1) else {
+            throw MacBayError.unsupportedOperation("Cancelled")
+        }
+        return selected - 1
+    }
+
     static func printValue<T: Encodable>(
         _ value: T,
         json: Bool,
