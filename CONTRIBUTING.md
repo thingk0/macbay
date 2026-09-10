@@ -136,8 +136,11 @@ MacBay strictly follows the [Conventional Commits 1.0.0](https://www.conventiona
    - The **PR Title** must follow the Conventional Commits format (e.g. `feat(cli): add quiet mode flag`). A GitHub Action validates the title format automatically.
    - Describe the motivation, changes made, and how to test them in the PR body.
 4. **CI Checks**:
-   - `Build and Test (macOS)`: Validates debug build, release build, and the full test suite on macOS.
+   - `Build and Test (macOS)`: Builds the package and test targets, then runs the full test suite on macOS.
+   - `Release Build (macOS)`: Builds the optimized binaries in parallel with the test job.
    - `Validate PR Title`: Verifies the PR title adheres to Conventional Commits.
+   - CI is skipped while a pull request is a draft, and for changes that only touch Markdown or `docs/`.
+     A new push to the same branch cancels the run it supersedes.
 5. **Merge Policy**:
    - **Squash and merge** is enforced for all PRs to maintain a clean linear Git history.
    - Head branches are automatically deleted upon merge.
