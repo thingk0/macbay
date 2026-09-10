@@ -9,6 +9,7 @@ public struct BundleMigrator {
     private let sizeCalculator: FileSizeCalculator
     private let volumeManager: VolumeManager
     private let appInspector: AppInspector
+    private let spaceEstimator: SpaceEstimator
 
     public init(
         fileManager: FileManager = .default,
@@ -32,6 +33,7 @@ public struct BundleMigrator {
             fileManager: fileManager,
             diskInfoProvider: SystemDiskInfoProvider(commandRunner: commandRunner)
         )
+        self.spaceEstimator = SpaceEstimator(diskInfoProvider: self.volumeManager.diskInfoProvider)
         self.appInspector = appInspector ?? AppInspector(
             fileManager: fileManager,
             commandRunner: commandRunner
@@ -90,14 +92,18 @@ public struct BundleMigrator {
         }
 
         let sizeBytes = try sizeCalculator.size(of: source)
-        var messages = [
-            "Source: \(source.path)",
-            "Destination: \(destination.path)",
-            "Size: \(OutputFormatter.humanBytes(sizeBytes))"
-        ]
+        var messages: [String] = []
         if assessment.grade == .popupRisk {
             messages.append("Warning: Application is flagged with popup risks (\(assessment.reasons.joined(separator: ", ")))")
         }
+
+        let sourceVolumeInfo = try? volumeManager.diskInfoProvider.diskInfo(for: source.path)
+        let estimate = spaceEstimator.estimate(
+            copyBytes: sizeBytes,
+            destinationVolume: volume,
+            internalFreedBytes: sourceVolumeInfo?.isInternal == true ? sizeBytes : nil
+        )
+        messages.append(contentsOf: estimate.reportLines())
 
         if dryRun {
             messages.append("Dry run: no files were changed")
@@ -112,6 +118,9 @@ public struct BundleMigrator {
                 compatibility: assessment
             )
         }
+
+        // 실행 직전에 여유 공간을 다시 확인하고, 부족하면 복사·링크 변경 전에 중단한다.
+        try spaceEstimator.requireSufficientSpace(copyBytes: sizeBytes, destinationVolume: volume)
 
         try fileManager.createDirectory(
             at: destination.deletingLastPathComponent(),
@@ -214,11 +223,9 @@ public struct BundleMigrator {
         try processInspector.assertSafeToMove(path: destination)
         try verifyCodeSignature(at: destination)
         let sizeBytes = try sizeCalculator.size(of: destination)
-        let messages = [
-            "Source: \(destination.path)",
-            "Destination: \(source.path)",
-            "Size: \(OutputFormatter.humanBytes(sizeBytes))"
-        ]
+        let internalVolume = URL(fileURLWithPath: "/")
+        let estimate = spaceEstimator.estimate(copyBytes: sizeBytes, destinationVolume: internalVolume)
+        let messages = estimate.reportLines()
         if dryRun {
             return MigrationResult(
                 operation: "undock",
@@ -230,6 +237,9 @@ public struct BundleMigrator {
                 messages: messages + ["Dry run: no files were changed"]
             )
         }
+
+        // 실행 직전에 내장 볼륨 여유 공간을 다시 확인하고, 부족하면 복사 전에 중단한다.
+        try spaceEstimator.requireSufficientSpace(copyBytes: sizeBytes, destinationVolume: internalVolume)
 
         let restored = source.deletingLastPathComponent().appendingPathComponent(
             ".\(source.lastPathComponent).macbay-restore-\(UUID().uuidString)"

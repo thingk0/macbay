@@ -274,6 +274,20 @@ mb dock Example.app --dry-run
 mb dock Example.app
 ```
 
+미리보기 출력 예시:
+```text
+Dry run: dock Example.app
+  Size: 21.6 GB
+  Source: /Applications/Example.app
+  Destination: /Volumes/KLEVV/MacBay/Applications/Example.app
+  Space: destination free 859.5 GB on /Volumes/KLEVV
+  Space: estimated free after copy 837.9 GB
+  Space: estimated internal space freed 21.6 GB (logical size estimate; APFS shared blocks and snapshots can change the actual amount)
+  Dry run: no files were changed
+```
+
+미리보기는 대상 볼륨의 여유 공간, 복사 후 예상 여유 공간, 내장 디스크에서 확보될 것으로 예상되는 공간, 그리고 대상 공간이 부족할 때 부족한 용량을 함께 표시합니다. 논리적 파일 크기를 기준으로 한 보수적인 추정치이므로 APFS 공유 블록과 스냅샷에 따라 실제 확보량이 달라질 수 있습니다. 실제 실행은 여유 공간을 다시 확인하고, 부족하거나 확인할 수 없으면 복사 전에 중단합니다. 공간이 충분하다는 추정이 이전 성공을 보장하지는 않습니다.
+
 **동작 원리**:
 1. **유효성 검사**: 번들 무결성, 실행 중인 프로세스(`lsof`), SQLite 파일 잠금(`-wal`, `-shm`)을 확인합니다.
 2. **호환성 검사**: 코드 서명 권한(entitlement)과 재배치 마커를 검사합니다.
@@ -298,6 +312,8 @@ mb undock Example.app --dry-run
 # 내부 디스크로 복원 실행
 mb undock Example.app
 ```
+
+복원 시에도 필요한 공간을 미리 보여줍니다: 내장 볼륨의 여유 공간, 복사 후 예상 여유 공간, 부족분입니다. 실제 실행 시 내장 볼륨을 다시 확인하며, 공간이 부족하거나 확인할 수 없으면 복사 전에 중단합니다.
 
 ### Xcode 유지 관리 (`xcode`)
 

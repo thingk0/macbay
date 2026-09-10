@@ -410,6 +410,8 @@ public enum MacBayError: Error, Equatable, LocalizedError, Sendable {
     case unsupportedOperation(String)
     case compatibilityBlocked(path: String, assessment: CompatibilityAssessment)
     case forceRequired(path: String, assessment: CompatibilityAssessment)
+    case insufficientSpace(path: String, neededBytes: UInt64, availableBytes: UInt64)
+    case spaceCheckFailed(path: String, details: String)
 
     public var errorCode: String {
         switch self {
@@ -424,11 +426,13 @@ public enum MacBayError: Error, Equatable, LocalizedError, Sendable {
              .unsupportedOperation:
             return "configuration_error"
         case .activeProcesses,
-             .sqliteLockDetected:
+             .sqliteLockDetected,
+             .insufficientSpace:
             return "retryable_error"
         case .signatureVerificationFailed,
              .commandFailed,
-             .manifestFailed:
+             .manifestFailed,
+             .spaceCheckFailed:
             return "execution_error"
         }
     }
@@ -452,6 +456,10 @@ public enum MacBayError: Error, Equatable, LocalizedError, Sendable {
         case let .commandFailed(_, _, details):
             return details
         case let .manifestFailed(_, details):
+            return details
+        case let .insufficientSpace(_, neededBytes, availableBytes):
+            return "Need \(OutputFormatter.humanBytes(neededBytes)), available \(OutputFormatter.humanBytes(availableBytes))"
+        case let .spaceCheckFailed(_, details):
             return details
         case let .invalidVolume(details),
              let .externalVolumeRequired(details),
@@ -498,6 +506,10 @@ public enum MacBayError: Error, Equatable, LocalizedError, Sendable {
         case let .forceRequired(path, assessment):
             let summary = assessment.reasons.joined(separator: ", ")
             return "Application has migration risks (\(path))\(summary.isEmpty ? "" : ": \(summary)"). Use --force to proceed."
+        case let .insufficientSpace(path, neededBytes, availableBytes):
+            return "Not enough space on \(path): need \(OutputFormatter.humanBytes(neededBytes)), available \(OutputFormatter.humanBytes(availableBytes))"
+        case let .spaceCheckFailed(path, details):
+            return "Unable to verify free space on \(path): \(details)"
         }
     }
 }

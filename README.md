@@ -274,6 +274,20 @@ mb dock Example.app --dry-run
 mb dock Example.app
 ```
 
+Preview output example:
+```text
+Dry run: dock Example.app
+  Size: 21.6 GB
+  Source: /Applications/Example.app
+  Destination: /Volumes/KLEVV/MacBay/Applications/Example.app
+  Space: destination free 859.5 GB on /Volumes/KLEVV
+  Space: estimated free after copy 837.9 GB
+  Space: estimated internal space freed 21.6 GB (logical size estimate; APFS shared blocks and snapshots can change the actual amount)
+  Dry run: no files were changed
+```
+
+The preview also reports the destination free space, the estimated free space after the copy, the space expected to be freed on the internal disk, and — when the destination is too small — the shortfall. These are conservative estimates based on logical file sizes, so APFS shared blocks and snapshots can change the actual amount. A real run re-checks free space and stops before copying anything if it is insufficient or cannot be verified; a sufficient estimate never guarantees that the migration will succeed.
+
 **How it works**:
 1. **Validation**: Checks bundle integrity, active processes (`lsof`), and SQLite locks (`-wal`, `-shm`).
 2. **Compatibility**: Inspects code signature entitlements and relocation markers.
@@ -298,6 +312,8 @@ mb undock Example.app --dry-run
 # Restore to internal disk
 mb undock Example.app
 ```
+
+Restoring also previews the space requirement: the internal volume's free space, the estimated free space after the copy, and any shortfall. The internal volume is re-checked at run time, and the restore stops before copying when space is insufficient or cannot be verified.
 
 ### Xcode Maintenance (`xcode`)
 
