@@ -4,6 +4,13 @@
 
 <h1 align="center">MacBay</h1>
 
+<p align="center">
+  <a href="README.md">English</a> •
+  <a href="README.ko.md">한국어</a> •
+  <a href="README.zh.md">简体中文</a> •
+  <a href="README.ja.md">日本語</a>
+</p>
+
 MacBay is a developer-first storage externalizer designed for Apple Silicon Macs. It safely moves large applications, Xcode DeviceSupport data, and developer caches to an external APFS drive while transparently preserving the original paths for terminal CLIs, LaunchAgents, and the macOS Dock.
 
 [![CI](https://github.com/thingk0/macbay/actions/workflows/ci.yml/badge.svg)](https://github.com/thingk0/macbay/actions/workflows/ci.yml)
