@@ -20,4 +20,15 @@ public protocol TUIServiceProtocol: Sendable {
         dryRun: Bool,
         progress: ProgressHandler?
     ) throws -> MigrationResult
+    func volumePath(containing path: String) -> String?
+    func planAdopt(
+        appName: String,
+        volumePath: String,
+        progress: ProgressHandler?
+    ) throws -> AdoptPlan
+    func executeAdopt(
+        plan: AdoptPlan,
+        force: Bool,
+        progress: ProgressHandler?
+    ) throws -> AdoptExecutionResult
 }

@@ -4,6 +4,8 @@ import MacBayKit
 public struct TerminalRenderer {
     // Screens that keep their buttons pinned below a scrollable body.
     private static let confirmFooterHeight = 2
+    // Screens that scroll their body and pin only a scroll indicator below it.
+    private static let outcomeFooterHeight = 1
 
     public init() {}
 
@@ -65,6 +67,12 @@ public struct TerminalRenderer {
         case .dryRunPreview(let plan):
             let body = dryRunPreviewBody(plan: plan, width: width)
             return (max(1, contentHeight - Self.confirmFooterHeight), body.count)
+        case .adoptReview(let plan):
+            let body = adoptReviewBody(plan: plan, riskAccepted: state.adoptRiskAccepted, width: width)
+            return (max(1, contentHeight - Self.confirmFooterHeight), body.count)
+        case .adoptOutcome(let outcome):
+            let body = adoptOutcomeBody(outcome: outcome, width: width)
+            return (max(1, contentHeight - Self.outcomeFooterHeight), body.count)
         default:
             return nil
         }
@@ -106,7 +114,7 @@ public struct TerminalRenderer {
     }
 
     private func renderHeader(state: TUIState, width: Int) -> String {
-        let left = "\u{001B}[1;36mMacBay\u{001B}[0m \u{001B}[2mv1.2.0\u{001B}[0m · Developer Storage Externalizer"
+        let left = "\u{001B}[1;36mMacBay\u{001B}[0m \u{001B}[2mv1.2.1\u{001B}[0m · Developer Storage Externalizer"
         let leftLen = displayWidth(left)
 
         let right: String
@@ -147,6 +155,14 @@ public struct TerminalRenderer {
             }
         case .appRestoreList:
             breadcrumb = "\u{001B}[2mHome >\u{001B}[0m \u{001B}[1;34mRestore Application\u{001B}[0m"
+        case .adoptReview(let plan):
+            breadcrumb = "\u{001B}[2mHome > Restore >\u{001B}[0m \u{001B}[1;33mAdoption Review (\(plan.appName))\u{001B}[0m"
+        case .adoptOutcome(let outcome):
+            if case .failed = outcome.status {
+                breadcrumb = "\u{001B}[1;31mAdoption Failed (\(outcome.appName))\u{001B}[0m"
+            } else {
+                breadcrumb = "\u{001B}[1;32mAdoption Succeeded (\(outcome.appName))\u{001B}[0m"
+            }
         case .infoModal(let title, _, _):
             breadcrumb = "\u{001B}[1;33mNotice: \(title)\u{001B}[0m"
         case .doctorSummary:
@@ -183,10 +199,14 @@ public struct TerminalRenderer {
             text = "\u{001B}[1m[↑/↓]\u{001B}[0m Move  \u{001B}[1m[Enter]\u{001B}[0m Select  \u{001B}[1m[Esc]\u{001B}[0m Cancel"
         case .dryRunPreview:
             text = "\u{001B}[1m[↑/↓]\u{001B}[0m Scroll  \u{001B}[1m[←/→/Tab]\u{001B}[0m Button  \u{001B}[1m[Enter]\u{001B}[0m Select  \u{001B}[1m[Esc]\u{001B}[0m Cancel"
+        case .adoptReview:
+            text = "\u{001B}[1m[↑/↓]\u{001B}[0m Scroll  \u{001B}[1m[←/→/Tab]\u{001B}[0m Button  \u{001B}[1m[Enter]\u{001B}[0m Select  \u{001B}[1m[Esc]\u{001B}[0m Cancel"
         case .mutatingProgress:
             text = "\u{001B}[33mOperation in progress. Please wait for completion…\u{001B}[0m"
         case .operationResult, .infoModal:
             text = "\u{001B}[1m[Enter / Esc]\u{001B}[0m Return"
+        case .adoptOutcome:
+            text = "\u{001B}[1m[Enter / Esc]\u{001B}[0m Return to application list"
         case .doctorSummary:
             text = "\u{001B}[1m[↑/↓/j/k]\u{001B}[0m Navigate  \u{001B}[1m[Enter]\u{001B}[0m View  \u{001B}[1m[r]\u{001B}[0m Re-run  \u{001B}[1m[Esc]\u{001B}[0m Back  \u{001B}[1m[q]\u{001B}[0m Quit"
         case .doctorFindingDetail:
@@ -221,8 +241,18 @@ public struct TerminalRenderer {
             return renderOperationResult(result: res, error: err, errorDetails: details, width: width, height: height)
         case .appRestoreList:
             return renderAppRestoreList(state: state, width: width, height: height)
-        case .infoModal(let title, let message, let guidance):
-            return renderInfoModal(title: title, message: message, guidance: guidance, width: width, height: height)
+        case .adoptReview(let plan):
+            let body = adoptReviewBody(plan: plan, riskAccepted: state.adoptRiskAccepted, width: width)
+            let viewport = max(1, height - Self.confirmFooterHeight)
+            let footer = adoptReviewFooter(state: state, plan: plan, bodyCount: body.count, viewport: viewport)
+            return composeDetail(body: body, footer: footer, height: height, scrollOffset: state.detailScrollOffset)
+        case .adoptOutcome(let outcome):
+            let body = adoptOutcomeBody(outcome: outcome, width: width)
+            let viewport = max(1, height - Self.outcomeFooterHeight)
+            let footer = [scrollIndicator(bodyCount: body.count, viewport: viewport, scrollOffset: state.detailScrollOffset)]
+            return composeDetail(body: body, footer: footer, height: height, scrollOffset: state.detailScrollOffset)
+        case .infoModal(_, let message, let guidance):
+            return renderInfoModal(message: message, guidance: guidance, width: width, height: height)
         case .doctorSummary:
             return renderDoctorSummary(state: state, width: width, height: height)
         case .doctorFindingDetail(let finding):
@@ -448,6 +478,11 @@ public struct TerminalRenderer {
         lines.append("\u{001B}[1;36mDry-Run Migration Preview · \(opTitle)\u{001B}[0m")
         lines.append("")
 
+        if let notice = plan.notice, !notice.isEmpty {
+            lines.append("  \u{001B}[1;32m✔  \(notice)\u{001B}[0m")
+            lines.append("")
+        }
+
         let pathBudget = max(12, width - 18)
         lines.append("  \u{001B}[1mApplication:\u{001B}[0m \(plan.appName)")
         lines.append("  \u{001B}[1mSize:\u{001B}[0m        \(OutputFormatter.humanBytes(plan.sizeBytes))")
@@ -618,7 +653,7 @@ public struct TerminalRenderer {
             lines.append("  Press \u{001B}[1m[Enter]\u{001B}[0m to preview restore operation.")
         case .unmanaged:
             lines.append("  \u{001B}[33mStatus:\u{001B}[0m External symlink is not registered with MacBay.")
-            lines.append("  \u{001B}[1mCLI Guidance:\u{001B}[0m Run 'mb adopt \"\(sel.name)\"' to adopt into MacBay.")
+            lines.append("  Press \u{001B}[1m[Enter]\u{001B}[0m to review adoption into MacBay standard storage.")
         case .unconfirmed:
             lines.append("  \u{001B}[35mStatus:\u{001B}[0m Unconfirmed target on external volume.")
             lines.append("  \u{001B}[1mCLI Guidance:\u{001B}[0m Run 'mb doctor' to diagnose link integrity.")
@@ -630,13 +665,238 @@ public struct TerminalRenderer {
         return lines
     }
 
+    // MARK: - Adoption Views
+
+    public enum AdoptConfirmAction: Equatable {
+        case acceptRisk
+        case adopt
+        case unavailable
+    }
+
+    /// What pressing the second button on the adoption review screen does. Input handling and
+    /// rendering share this so a button never advertises an action that cannot run.
+    public func adoptConfirmAction(plan: AdoptPlan, riskAccepted: Bool) -> AdoptConfirmAction {
+        switch plan.status {
+        case .blocked, .conflict, .alreadyAdopted:
+            return .unavailable
+        case .reviewRequired:
+            return riskAccepted ? .adopt : .acceptRisk
+        case .ready:
+            return .adopt
+        }
+    }
+
+    private func adoptReviewBody(plan: AdoptPlan, riskAccepted: Bool, width: Int) -> [String] {
+        var lines: [String] = []
+        let labelWidth = 17
+        let pathBudget = max(12, width - labelWidth - 4)
+
+        func row(_ label: String, _ value: String) -> String {
+            "  \u{001B}[1m\(padRight(label, width: labelWidth))\u{001B}[0m \(value)"
+        }
+
+        let action = adoptConfirmAction(plan: plan, riskAccepted: riskAccepted)
+        let headline = action == .unavailable ? "✖" : "⚠"
+        lines.append("\u{001B}[1;33m\(headline)  Adoption Review · \(plan.appName)\u{001B}[0m")
+        if riskAccepted, case .reviewRequired = plan.status {
+            lines.append("  \u{001B}[1;32m✔ Risk accepted for this adoption; MacBay will proceed using \u{001B}[1m--force\u{001B}[0m\u{001B}[1;32m.\u{001B}[0m")
+        }
+        lines.append("")
+        lines.append(row("Application:", plan.appName))
+        lines.append(row("Size:", OutputFormatter.humanBytes(plan.sizeBytes)))
+        lines.append(row("Mode:", adoptModeDescription(plan.mode)))
+        lines.append(row("Current Location:", shortenPath(plan.targetURL.path, maxWidth: pathBudget)))
+        lines.append(row("Standard Storage:", shortenPath(plan.destinationURL.path, maxWidth: pathBudget)))
+        lines.append(row("Link Change:", shortenPath(plan.symlinkURL.path, maxWidth: pathBudget)))
+        lines.append(
+            "  \(String(repeating: " ", count: labelWidth)) → "
+                + shortenPath(plan.destinationURL.path, maxWidth: max(10, pathBudget - 2))
+        )
+        lines.append(row("Volume:", shortenPath(plan.volumeURL.path, maxWidth: pathBudget)))
+
+        switch plan.status {
+        case let .blocked(reason, solution):
+            lines.append("")
+            lines.append("  \u{001B}[1;31mBlocked:\u{001B}[0m \(reason)")
+            lines.append("")
+            lines.append("  \u{001B}[1mSolution:\u{001B}[0m")
+            lines.append("  \(solution)")
+            lines.append("")
+            lines.append("  \u{001B}[2mAdoption cannot proceed while these signals are present.\u{001B}[0m")
+        case let .conflict(reason):
+            lines.append("")
+            lines.append("  \u{001B}[1;31mConflict:\u{001B}[0m \(reason)")
+            lines.append("")
+            lines.append("  \u{001B}[2mRun 'mb doctor' to inspect the existing MacBay records.\u{001B}[0m")
+        case let .reviewRequired(reasons, evidence):
+            lines.append("")
+            lines.append("  \u{001B}[1mRisk Factors Identified:\u{001B}[0m")
+            for reason in reasons {
+                lines.append("  • \u{001B}[33m\(reason)\u{001B}[0m")
+            }
+            if !evidence.isEmpty {
+                lines.append("")
+                lines.append("  \u{001B}[2mTechnical Evidence:\u{001B}[0m")
+                for item in evidence {
+                    lines.append("    \(item)")
+                }
+            }
+            lines.append("")
+            if riskAccepted {
+                lines.append("  \u{001B}[2mThe risks above were accepted for this adoption.\u{001B}[0m")
+            } else {
+                lines.append("  \u{001B}[1mNotice:\u{001B}[0m Adopting may trigger system permission popups or require re-enabling")
+                lines.append("  helper tools. Continuing accepts these risks using \u{001B}[1m--force\u{001B}[0m.")
+            }
+        case let .alreadyAdopted(details):
+            lines.append("")
+            lines.append("  \u{001B}[32mAlready adopted:\u{001B}[0m \(details)")
+            lines.append("")
+            lines.append("  \u{001B}[2mNo files will be changed. Press [Enter] to continue to the restore preview.\u{001B}[0m")
+        case .ready:
+            break
+        }
+
+        lines.append("")
+        if action == .unavailable {
+            lines.append("  \u{001B}[1mPress [Enter] or [Esc] to return to the application list.\u{001B}[0m")
+        } else if action == .acceptRisk {
+            lines.append("  \u{001B}[1mAccept the risk to continue with the adoption preview.\u{001B}[0m")
+        } else {
+            lines.append("  \u{001B}[1mProceed with adoption into MacBay standard storage?\u{001B}[0m")
+        }
+
+        return lines
+    }
+
+    private func adoptReviewFooter(state: TUIState, plan: AdoptPlan, bodyCount: Int, viewport: Int) -> [String] {
+        let indicator = scrollIndicator(bodyCount: bodyCount, viewport: viewport, scrollOffset: state.detailScrollOffset)
+
+        guard let confirmLabel = adoptConfirmLabel(plan: plan, riskAccepted: state.adoptRiskAccepted) else {
+            return [indicator, "    \u{001B}[7;1m [ Close ] \u{001B}[0m"]
+        }
+
+        let cancelBtn = state.adoptReviewFocusIndex == 0 ? "\u{001B}[7;1m [ Cancel ] \u{001B}[0m" : " [ Cancel ] "
+        let confirmBtn = state.adoptReviewFocusIndex == 1
+            ? "\u{001B}[7;1;32m [ \(confirmLabel) ] \u{001B}[0m"
+            : " [ \(confirmLabel) ] "
+        return [indicator, "    \(cancelBtn)      \(confirmBtn)"]
+    }
+
+    private func adoptConfirmLabel(plan: AdoptPlan, riskAccepted: Bool) -> String? {
+        switch adoptConfirmAction(plan: plan, riskAccepted: riskAccepted) {
+        case .acceptRisk: return "Accept Risk & Continue"
+        case .adopt: return "Confirm & Adopt"
+        case .unavailable: return nil
+        }
+    }
+
+    private func adoptModeDescription(_ mode: AdoptMode) -> String {
+        switch mode {
+        case .moveAndAdopt:
+            return "Move bundle to standard storage and register"
+        case .registerOnly:
+            return "Register only (bundle already at standard storage, nothing moves)"
+        case .alreadyAdopted:
+            return "Already adopted (no changes needed)"
+        }
+    }
+
+    private func adoptOutcomeBody(outcome: AdoptOutcome, width: Int) -> [String] {
+        var lines: [String] = []
+        let labelWidth = 17
+        let pathBudget = max(12, width - labelWidth - 4)
+
+        func row(_ label: String, _ value: String) -> String {
+            "  \u{001B}[1m\(padRight(label, width: labelWidth))\u{001B}[0m \(value)"
+        }
+
+        switch outcome.status {
+        case .completed:
+            lines.append("\u{001B}[1;32m✔  Adoption Completed · \(outcome.appName)\u{001B}[0m")
+            lines.append("")
+            if let mode = outcome.mode {
+                lines.append(row("Mode:", adoptModeDescription(mode)))
+            }
+            if let size = outcome.sizeBytes {
+                lines.append(row("Size:", OutputFormatter.humanBytes(size)))
+            }
+            if let location = outcome.currentLocation {
+                lines.append(row("Location:", shortenPath(location, maxWidth: pathBudget)))
+            }
+            if let destination = outcome.destinationPath {
+                lines.append(row("Standard Storage:", shortenPath(destination, maxWidth: pathBudget)))
+            }
+            if let volume = outcome.volumePath {
+                lines.append(row("Volume:", shortenPath(volume, maxWidth: pathBudget)))
+            }
+            lines.append("")
+            lines.append("  The application is registered in MacBay records on that volume.")
+
+            if let previewError = outcome.restorePreviewError {
+                lines.append("")
+                lines.append("  \u{001B}[1;33m⚠  Restore Preview Failed\u{001B}[0m")
+                lines.append("  \(previewError)")
+                lines.append("")
+                lines.append("  \u{001B}[1mThe adoption above did complete; only the restore preview failed.\u{001B}[0m")
+                lines.append("  Run \u{001B}[1mmb doctor\u{001B}[0m before retrying, or press [r] to refresh the list.")
+            } else {
+                lines.append("  Preparing the restore preview for this application…")
+            }
+
+        case let .failed(stage, message):
+            lines.append("\u{001B}[1;31m✖  Adoption Failed · \(outcome.appName)\u{001B}[0m")
+            lines.append("")
+            if let stage {
+                lines.append(row("Failed Stage:", stage))
+                lines.append("")
+            }
+            lines.append("  \u{001B}[1mError:\u{001B}[0m")
+            lines.append("  \(message)")
+
+            if let details = outcome.errorDetails, !details.isEmpty {
+                lines.append("")
+                lines.append("  \u{001B}[1mDetails:\u{001B}[0m")
+                lines.append("  \(details)")
+            }
+
+            lines.append("")
+            lines.append("  \u{001B}[1mRollback:\u{001B}[0m")
+            if outcome.rollbackActions.isEmpty, outcome.rollbackError == nil {
+                lines.append("  No changes had been applied yet, so nothing needed to be rolled back.")
+            } else {
+                for action in outcome.rollbackActions {
+                    lines.append("    \u{001B}[32m✔\u{001B}[0m \(action)")
+                }
+                if let rollbackError = outcome.rollbackError {
+                    lines.append("    \u{001B}[1;31m✖ \(rollbackError)\u{001B}[0m")
+                }
+            }
+
+            if !outcome.manualInterventionNeeded.isEmpty {
+                lines.append("")
+                lines.append("  \u{001B}[1;33mManual Intervention Needed:\u{001B}[0m")
+                for item in outcome.manualInterventionNeeded {
+                    lines.append("  • \(item)")
+                }
+            }
+
+            lines.append("")
+            lines.append("  \u{001B}[1;33mThe application is not guaranteed to be in its original state, and the restore")
+            lines.append("  preview was not prepared. Inspect the paths above before retrying.\u{001B}[0m")
+            lines.append("")
+            lines.append("  \u{001B}[1mRecommended Action:\u{001B}[0m")
+            lines.append("  Run \u{001B}[1mmb doctor\u{001B}[0m to inspect link and record integrity.")
+        }
+
+        return lines
+    }
+
     // MARK: - Info Modal View
 
-    private func renderInfoModal(title: String, message: String, guidance: String?, width: Int, height: Int) -> [String] {
+    private func renderInfoModal(message: String, guidance: String?, width: Int, height: Int) -> [String] {
         var lines: [String] = []
 
-        lines.append("\u{001B}[1;33mNotice: \(title)\u{001B}[0m")
-        lines.append("")
         lines.append("  \(message)")
 
         if let g = guidance {

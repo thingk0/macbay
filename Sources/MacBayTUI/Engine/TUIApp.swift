@@ -7,6 +7,7 @@ public final class TUIApp: @unchecked Sendable {
         case scan
         case doctor
         case preview
+        case adoptPlan
 
         var loadingMessage: String {
             switch self {
@@ -18,6 +19,8 @@ public final class TUIApp: @unchecked Sendable {
                 return "Diagnosing MacBay links and volume records…"
             case .preview:
                 return "Preparing dry-run preview…"
+            case .adoptPlan:
+                return "Preparing adoption plan…"
             }
         }
     }
@@ -300,6 +303,10 @@ public final class TUIApp: @unchecked Sendable {
             handleOperationResultKey(key)
         case .appRestoreList:
             handleAppRestoreListKey(key)
+        case .adoptReview(let plan):
+            handleAdoptReviewKey(key, plan: plan)
+        case .adoptOutcome:
+            handleAdoptOutcomeKey(key)
         case .infoModal:
             handleInfoModalKey(key)
         case .doctorSummary:
@@ -711,11 +718,7 @@ public final class TUIApp: @unchecked Sendable {
             case .managed:
                 startDryRunUndock(item: item)
             case .unmanaged:
-                state.pushScreen(.infoModal(
-                    title: "Unmanaged Application",
-                    message: "This application is not managed by MacBay (\(item.externalPath)).",
-                    guidance: "Run 'mb adopt \"\(item.name)\"' to adopt it into MacBay."
-                ))
+                startAdoptReview(item: item)
             case .unconfirmed:
                 state.pushScreen(.infoModal(
                     title: "Unconfirmed Application",
@@ -774,6 +777,285 @@ public final class TUIApp: @unchecked Sendable {
                 self.lock.unlock()
             }
         }
+    }
+
+    // MARK: - Adoption Flow
+    //
+    // Adoption is offered from the restore list because an unmanaged external application cannot
+    // be restored until MacBay records it. The volume comes from the selected application's own
+    // external path, never from the configured default volume.
+
+    private func startAdoptReview(item: RestoreItem) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !state.isMutating else { return }
+
+        let message = "Preparing adoption plan for \(item.name)…"
+        enqueueRequest(.adoptPlan, message: message) { [weak self] in
+            guard let self else { return }
+
+            guard let volumePath = self.service.volumePath(containing: item.externalPath) else {
+                self.lock.lock()
+                self.state.pushScreen(.infoModal(
+                    title: "Volume Not Resolved",
+                    message: "MacBay could not determine which volume holds \(item.externalPath).",
+                    guidance: "Connect the drive that stores this application, then press 'r' to refresh. Adoption stays disabled until the volume can be verified."
+                ))
+                self.lock.unlock()
+                return
+            }
+
+            do {
+                let plan = try self.service.planAdopt(appName: item.name, volumePath: volumePath, progress: nil)
+
+                self.lock.lock()
+                self.state.adoptReviewFocusIndex = 0 // Cancel is default!
+                self.state.adoptRiskAccepted = false
+                self.state.detailScrollOffset = 0
+                self.lock.unlock()
+
+                if case .alreadyAdopted = plan.status {
+                    self.prepareRestorePreviewAfterAdoption(
+                        appName: plan.appName,
+                        volumePath: volumePath,
+                        notice: "Already registered in MacBay on \(volumePath) · no changes were made."
+                    )
+                    return
+                }
+
+                self.lock.lock()
+                self.state.pushScreen(.adoptReview(plan: plan))
+                self.lock.unlock()
+            } catch {
+                self.lock.lock()
+                self.state.pushScreen(.infoModal(
+                    title: "Adoption Review Failed",
+                    message: self.describe(error: error),
+                    guidance: (error as? MacBayError)?.errorDetails
+                ))
+                self.lock.unlock()
+            }
+        }
+    }
+
+    private func handleAdoptReviewKey(_ key: Key, plan: AdoptPlan) {
+        switch key {
+        case .escape:
+            state.popScreen()
+        case .up, .char("k"), .char("K"):
+            scrollDetail(by: -1)
+        case .down, .char("j"), .char("J"):
+            scrollDetail(by: 1)
+        case .left, .right, .tab:
+            state.adoptReviewFocusIndex = (state.adoptReviewFocusIndex == 0) ? 1 : 0
+        case .enter:
+            guard state.adoptReviewFocusIndex == 1 else {
+                state.popScreen()
+                return
+            }
+            switch renderer.adoptConfirmAction(plan: plan, riskAccepted: state.adoptRiskAccepted) {
+            case .unavailable:
+                state.popScreen()
+            case .acceptRisk:
+                state.adoptRiskAccepted = true
+                state.detailScrollOffset = 0
+            case .adopt:
+                executeAdoption(plan: plan)
+            }
+        default:
+            break
+        }
+    }
+
+    private func executeAdoption(plan: AdoptPlan) {
+        guard !state.isMutating else { return }
+        guard case .adoptReview = state.currentScreen else { return }
+
+        let requiresForce: Bool
+        if case .reviewRequired = plan.status {
+            requiresForce = true
+        } else {
+            requiresForce = false
+        }
+
+        state.isMutating = true
+        state.currentStepLabel = "Starting adoption"
+        state.currentStepStarted = Date()
+        state.operationStarted = Date()
+        state.operationElapsed = 0
+        state.completedSteps = []
+        state.detailScrollOffset = 0
+        state.currentScreen = .mutatingProgress(operation: "adopt", appName: plan.appName)
+
+        workerQueue.async { [weak self] in
+            guard let self else { return }
+            do {
+                let result = try self.service.executeAdopt(
+                    plan: plan,
+                    force: requiresForce,
+                    progress: { [weak self] step in
+                        self?.handleProgress(step)
+                    }
+                )
+                self.handleAdoptSuccess(result: result, plan: plan)
+            } catch {
+                self.handleAdoptFailure(error: error, plan: plan)
+            }
+        }
+    }
+
+    private func handleAdoptSuccess(result: AdoptExecutionResult, plan: AdoptPlan) {
+        lock.lock()
+        state.isMutating = false
+        if let prevLabel = state.currentStepLabel, let started = state.currentStepStarted {
+            state.completedSteps.append(CompletedStep(label: prevLabel, duration: Date().timeIntervalSince(started)))
+            state.currentStepLabel = nil
+        }
+        if state.quitDeferred {
+            shouldExit = true
+            lock.unlock()
+            return
+        }
+        lock.unlock()
+        requestRedraw()
+
+        loadStatus(force: true)
+        loadScan(force: true)
+
+        let volumePath = plan.volumeURL.path
+        prepareRestorePreviewAfterAdoption(
+            appName: plan.appName,
+            volumePath: volumePath,
+            notice: "Adoption completed · registered in MacBay records on \(volumePath).",
+            adoptedMode: result.mode,
+            adoptedSize: result.sizeBytes,
+            adoptedLocation: result.sourcePath,
+            adoptedDestination: result.destinationPath
+        )
+    }
+
+    private func handleAdoptFailure(error: Error, plan: AdoptPlan) {
+        lock.lock()
+        state.isMutating = false
+        if let prevLabel = state.currentStepLabel, let started = state.currentStepStarted {
+            state.completedSteps.append(CompletedStep(label: prevLabel, duration: Date().timeIntervalSince(started)))
+            state.currentStepLabel = nil
+        }
+        if state.quitDeferred {
+            shouldExit = true
+            lock.unlock()
+            return
+        }
+
+        let outcome: AdoptOutcome
+        if let adoptError = error as? AdoptExecutionError {
+            var rollbackActions: [String] = []
+            var rollbackError: String?
+            var manualInterventionNeeded: [String] = []
+            switch adoptError.rollback {
+            case .notRequired:
+                break
+            case let .succeeded(actions):
+                rollbackActions = actions
+            case let .failed(reason, intervention):
+                rollbackError = reason
+                manualInterventionNeeded = intervention
+            }
+            outcome = AdoptOutcome(
+                appName: plan.appName,
+                status: .failed(stage: adoptError.stage, message: adoptError.message),
+                rollbackActions: rollbackActions,
+                rollbackError: rollbackError,
+                manualInterventionNeeded: manualInterventionNeeded
+            )
+        } else {
+            let failure = error as? MacBayError
+            outcome = AdoptOutcome(
+                appName: plan.appName,
+                status: .failed(stage: nil, message: failure?.errorDescription ?? error.localizedDescription),
+                errorDetails: failure?.errorDetails
+            )
+        }
+
+        state.currentScreen = .adoptOutcome(outcome)
+        lock.unlock()
+        requestRedraw()
+
+        loadStatus(force: true)
+        loadScan(force: true)
+    }
+
+    private func prepareRestorePreviewAfterAdoption(
+        appName: String,
+        volumePath: String,
+        notice: String,
+        adoptedMode: AdoptMode? = nil,
+        adoptedSize: UInt64? = nil,
+        adoptedLocation: String? = nil,
+        adoptedDestination: String? = nil
+    ) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let message = "Preparing dry-run restore preview for \(appName)…"
+        enqueueRequest(.preview, message: message) { [weak self] in
+            guard let self else { return }
+            do {
+                let res = try self.service.undock(
+                    appName: appName,
+                    volumePath: volumePath,
+                    dryRun: true,
+                    progress: nil
+                )
+                self.lock.lock()
+                let preview = MigrationPlanPreview(
+                    appName: appName,
+                    operation: "undock",
+                    sourcePath: res.sourcePath,
+                    destinationPath: res.destinationPath,
+                    sizeBytes: res.sizeBytes,
+                    volumePath: volumePath,
+                    force: false,
+                    messages: res.messages,
+                    notice: notice
+                )
+                self.state.confirmFocusIndex = 0 // Cancel is default!
+                // Adoption screens are dropped so cancelling the restore never reopens the review.
+                self.state.currentScreen = .dryRunPreview(preview)
+                self.lock.unlock()
+            } catch {
+                self.lock.lock()
+                var outcome = AdoptOutcome(
+                    appName: appName,
+                    status: .completed,
+                    mode: adoptedMode,
+                    sizeBytes: adoptedSize,
+                    currentLocation: adoptedLocation,
+                    destinationPath: adoptedDestination,
+                    volumePath: volumePath
+                )
+                outcome.restorePreviewError = self.describe(error: error)
+                self.state.currentScreen = .adoptOutcome(outcome)
+                self.lock.unlock()
+            }
+        }
+    }
+
+    private func handleAdoptOutcomeKey(_ key: Key) {
+        switch key {
+        case .enter, .escape:
+            state.popScreen()
+        case .up, .char("k"), .char("K"):
+            scrollDetail(by: -1)
+        case .down, .char("j"), .char("J"):
+            scrollDetail(by: 1)
+        default:
+            break
+        }
+    }
+
+    private func describe(error: Error) -> String {
+        (error as? MacBayError)?.errorDescription ?? error.localizedDescription
     }
 
     private func handleInfoModalKey(_ key: Key) {

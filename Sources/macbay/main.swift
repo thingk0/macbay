@@ -8,7 +8,7 @@ struct MacBay: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "mb",
         abstract: "The developer-first storage externalizer for macOS.",
-        version: "1.2.0",
+        version: "1.2.1",
         subcommands: [
             InitCommand.self,
             StatusCommand.self,

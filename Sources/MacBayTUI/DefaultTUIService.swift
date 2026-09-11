@@ -75,4 +75,30 @@ public struct DefaultTUIService: @unchecked Sendable, TUIServiceProtocol {
             progress: progress
         )
     }
+
+    public func volumePath(containing path: String) -> String? {
+        guard !path.isEmpty else { return nil }
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard let values = try? url.resourceValues(forKeys: [.volumeURLKey]),
+              let volumeURL = values.volume else {
+            return nil
+        }
+        return volumeURL.standardizedFileURL.path
+    }
+
+    public func planAdopt(
+        appName: String,
+        volumePath: String,
+        progress: ProgressHandler?
+    ) throws -> AdoptPlan {
+        try service.planAdopt(appName: appName, volumePath: volumePath, progress: progress)
+    }
+
+    public func executeAdopt(
+        plan: AdoptPlan,
+        force: Bool,
+        progress: ProgressHandler?
+    ) throws -> AdoptExecutionResult {
+        try service.executeAdopt(plan: plan, force: force, progress: progress)
+    }
 }

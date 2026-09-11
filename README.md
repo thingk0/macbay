@@ -105,7 +105,7 @@ Verify installation:
 
 ```sh
 mb --version
-# Output: 1.2.0
+# Output: 1.2.1
 ```
 
 ---
@@ -136,13 +136,13 @@ mb tui
 | `r` | Refresh current screen data |
 | `←` / `→` or `Tab` | Switch between buttons (Cancel / Confirm) |
 
-#### Version 1.0 TUI Scope
+#### TUI Scope
 
 - **Home**: Inspect internal/external disk capacity and managed application counts.
 - **Move Application (`dock`)**: Browse application candidates sorted by size with `[Safe]`, `[Review]`, and `[Blocked]` status badges. Inspect bundle details, review relocation risks, select session target volume, and preview dry-run space changes before confirming.
-- **Restore Application (`undock`)**: Restore connected MacBay-managed applications back to internal storage. Unmanaged or broken links display helpful status and CLI guidance (`mb adopt`, `mb doctor`).
+- **Restore Application (`undock`)**: Restore connected MacBay-managed applications back to internal storage. Unmanaged apps can be adopted straight from this screen: review the current location, standard storage path, link change, and whether the bundle actually moves, then confirm. Adoption targets the volume that really holds the app, never the configured default, and the restore preview is prepared only after that confirmation. Unconfirmed or broken links display status and `mb doctor` guidance.
 - **Diagnosis (`doctor`)**: Inspect doctor findings by category and status, with actionable recommendations highlighted for each issue.
-- *(Note: Multi-select, search, and Xcode/cache/adopt/repair execution will be introduced in subsequent versions. Use CLI commands for those workflows.)*
+- *(Note: Multi-select, search, and Xcode/cache/repair execution will be introduced in subsequent versions. Use CLI commands for those workflows.)*
 
 ### 1. Check Storage Health
 

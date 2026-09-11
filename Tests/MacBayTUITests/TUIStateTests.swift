@@ -326,6 +326,7 @@ final class TUIStateTests: XCTestCase {
             unresolvedApplicationLinks: []
         )
         let fake = FakeTUIService(scan: scan, eligibleVolumes: [vol])
+        fake.artificialDelay = 0.05
         let app = TUIApp(service: fake)
 
         // Set state to loading
@@ -338,7 +339,7 @@ final class TUIStateTests: XCTestCase {
         XCTAssertEqual(fake.dockCalls.count, initialDockCalls)
     }
 
-    func testRestoreUnmanagedDisplaysGuidance() {
+    func testRestoreUnmanagedOpensAdoptionReview() {
         let unmanaged = ExternalApplication(
             name: "UnmanagedApp.app",
             sourcePath: "/Applications/UnmanagedApp.app",
@@ -354,6 +355,7 @@ final class TUIStateTests: XCTestCase {
             unresolvedApplicationLinks: []
         )
         let fake = FakeTUIService(scan: scan)
+        fake.mountedVolumePaths = ["/Volumes/External"]
         let app = TUIApp(service: fake)
         app.loadScan()
 
@@ -366,14 +368,19 @@ final class TUIStateTests: XCTestCase {
         app.handleKey(.enter)
         XCTAssertEqual(app.state.currentScreen, .appRestoreList)
 
-        // Select unmanaged app
+        // Select unmanaged app; the review needs the app's own volume
         app.handleKey(.enter)
-        guard case let .infoModal(title, _, guidance) = app.state.currentScreen else {
-            return XCTFail("Expected infoModal for unmanaged app, got \(app.state.currentScreen)")
+        let reviewExp = expectation(description: "Adoption review opened")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { reviewExp.fulfill() }
+        wait(for: [reviewExp], timeout: 2.0)
+
+        guard case let .adoptReview(plan) = app.state.currentScreen else {
+            return XCTFail("Expected adoptReview for unmanaged app, got \(app.state.currentScreen)")
         }
-        XCTAssertTrue(title.contains("Unmanaged"))
-        XCTAssertTrue(guidance?.contains("adopt") == true)
+        XCTAssertEqual(plan.appName, "UnmanagedApp.app")
+        XCTAssertEqual(fake.adoptPlanCalls.first?.volumePath, "/Volumes/External")
         XCTAssertTrue(fake.undockCalls.isEmpty, "Unmanaged app cannot be restored with undock")
+        XCTAssertTrue(fake.adoptExecuteCalls.isEmpty, "Opening the review must not adopt")
     }
 
     func testTerminalRendererResizeNotice() {

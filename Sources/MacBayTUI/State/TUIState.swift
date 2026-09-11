@@ -10,6 +10,8 @@ public enum TUIScreen: Equatable {
     case mutatingProgress(operation: String, appName: String)
     case operationResult(result: MigrationResult?, error: String?, errorDetails: String?)
     case appRestoreList
+    case adoptReview(plan: AdoptPlan)
+    case adoptOutcome(AdoptOutcome)
     case infoModal(title: String, message: String, guidance: String?)
     case doctorSummary
     case doctorFindingDetail(DoctorFinding)
@@ -59,6 +61,8 @@ public struct TUIState: Equatable {
     // Focus for dual-button modals (0 = Cancel, 1 = Confirm/Accept)
     public var confirmFocusIndex = 0
     public var riskFocusIndex = 0
+    public var adoptReviewFocusIndex = 0
+    public var adoptRiskAccepted = false
 
     public init() {}
 
