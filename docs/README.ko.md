@@ -104,7 +104,7 @@ sudo ln -sf /usr/local/bin/mb /usr/local/bin/macbay
 
 ```sh
 mb --version
-# 출력: 1.1.0
+# 출력: 1.2.0
 ```
 
 ---
@@ -373,6 +373,55 @@ Dry run: adopt ChatGPT.app
 5. **원자적 심볼릭 링크 갱신**: `/Applications/<App>.app` 심볼릭 링크를 새로운 표준 경로로 원자적 교체합니다.
 6. **매니페스트 등록**: 멀티 프로세스 파일 락(`flock`) 하에서 `MacBay/manifest.json`에 안전하게 등록합니다.
 7. **시스템 갱신**: LaunchServices 등록 정보(`lsregister -f`)를 갱신하고 Dock 프로세스를 재시작합니다.
+
+### 중복 앱 비교 및 복구 (`repair`)
+
+`mb doctor`에서 매니페스트에 등록된 앱의 내장 경로(`/Applications`)에 실제 앱 번들이 다시 감지되고 외장 사본도 존재하는 경우(`local_data_detected`), `mb repair`를 통해 안전하게 비교하고 복구할 수 있습니다:
+
+```sh
+# 1. 읽기 전용 비교 (버전, 빌드, 식별자, 서명, 크기)
+mb repair "Kiro CLI.app"
+
+# 2. 내장 앱 외장 재이동 (redock) 미리보기
+mb repair "Kiro CLI.app" --action redock --dry-run
+
+# 3. 내장 앱 유지 및 관리 해제 (keep-local) 미리보기
+mb repair "Kiro CLI.app" --action keep-local --dry-run
+
+# 4. 실제 실행
+mb repair "Kiro CLI.app" --action redock
+mb repair "Kiro CLI.app" --action keep-local
+
+# 5. 중단된 복구 작업 롤백 복원
+mb repair "Kiro CLI.app" --rollback
+```
+
+**비교 출력 예시**:
+```text
+Repair comparison · Kiro CLI.app
+  Volume: /Volumes/ExternalSSD
+
+Attributes               Local (/Applications)               External (MacBay)
+───────────────────────  ──────────────────────────────────  ──────────────────────────────────
+Identifier               com.kiro.cli                        com.kiro.cli
+Version                  1.2.0                               1.1.0
+Build                    120                                 110
+Size                     105.4 MB                            98.2 MB
+Signature                Valid                               Valid
+Compatibility            Safe                                Safe
+
+Available actions:
+  • mb repair "Kiro CLI.app" --action redock
+    Re-dock local app to external storage; backs up existing external copy
+  • mb repair "Kiro CLI.app" --action keep-local
+    Keep local app and remove migration record; external copy remains as unmanaged archive
+```
+
+**안전성 및 백업 정책**:
+- **식별자 일치 필수**: `redock`은 두 경로의 번들 식별자(`CFBundleIdentifier`)가 일치해야 진행됩니다. 다른 앱을 덮어쓰는 실수를 방지합니다.
+- **이전 외장 사본 백업 보관**: `redock` 실행 시 기존 외장 앱은 `<Volume>/MacBay/Backups/<작업ID>/<App>.app`으로 안전하게 이동된 후 새 앱이 배치됩니다. 백업 사본은 자동 삭제되지 않고 영구 보관됩니다.
+- **독립된 복구 저널**: 작업 상태는 `<Volume>/MacBay/.operations/repair-<App>.json`(버전 1)에 안전하게 기록됩니다. 작업이 중단된 경우 `mb doctor`가 감지하여 `mb repair "<App>" --rollback`으로 복원하도록 안내합니다.
+- **내장 유지 (keep-local)**: 매니페스트 항목만 원자적으로 제거하며, 내장 앱과 외장 사본은 파일시스템에서 전혀 삭제되지 않고 외장 사본은 비관리 보관 사본이 됩니다.
 
 
 ### Xcode 유지 관리 (`xcode`)

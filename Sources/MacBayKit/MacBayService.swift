@@ -10,6 +10,7 @@ public struct MacBayService {
     private let bundleMigrator: BundleMigrator
     private let appAdopter: AppAdopter
     public let adoptAppUseCase: any AdoptAppUseCaseProtocol
+    public let repairAppUseCase: any RepairAppUseCaseProtocol
     private let xcodeDoctor: XcodeDoctor
     private let cacheManager: CacheManager
 
@@ -18,7 +19,8 @@ public struct MacBayService {
         commandRunner: any CommandRunner = SystemCommandRunner(),
         volumeManager: VolumeManager? = nil,
         configStore: ConfigStore? = nil,
-        adoptAppUseCase: (any AdoptAppUseCaseProtocol)? = nil
+        adoptAppUseCase: (any AdoptAppUseCaseProtocol)? = nil,
+        repairAppUseCase: (any RepairAppUseCaseProtocol)? = nil
     ) {
         self.fileManager = fileManager
         self.commandRunner = commandRunner
@@ -52,6 +54,14 @@ public struct MacBayService {
             operationJournal: DarwinOperationJournal(fileManager: fileManager),
             systemRefresher: DarwinSystemEnvironmentRefresher(fileManager: fileManager, commandRunner: commandRunner),
             volumeInspector: DarwinVolumeStorageInspector(volumeManager: self.volumeManager)
+        )
+        self.repairAppUseCase = repairAppUseCase ?? RepairAppUseCase(
+            safetyInspector: DarwinRepairSafetyInspector(fileManager: fileManager, commandRunner: commandRunner),
+            bundleOperations: DarwinRepairBundleOperations(fileManager: fileManager, commandRunner: commandRunner),
+            manifestRepository: DarwinRepairManifestRepository(fileManager: fileManager),
+            journal: DarwinRepairJournal(fileManager: fileManager),
+            volumeInspector: DarwinRepairVolumeInspector(fileManager: fileManager),
+            systemRefresher: DarwinSystemEnvironmentRefresher(fileManager: fileManager, commandRunner: commandRunner)
         )
         self.xcodeDoctor = XcodeDoctor(
             fileManager: fileManager,
@@ -242,6 +252,50 @@ public struct MacBayService {
                 "Recorded in manifest on \(plan.volumeURL.path)"
             ],
             compatibility: plan.compatibility
+        )
+    }
+
+    public func compareApp(appName: String, volumePath: String?) throws -> RepairComparison {
+        let selection = try selectVolume(path: volumePath)
+        return try repairAppUseCase.compare(
+            appName: appName,
+            on: URL(fileURLWithPath: selection.volume.path)
+        )
+    }
+
+    public func planRepair(
+        appName: String,
+        action: RepairAction,
+        volumePath: String?,
+        progress: (@Sendable (String) -> Void)? = nil
+    ) throws -> RepairPlan {
+        let selection = try selectVolume(path: volumePath)
+        return try repairAppUseCase.plan(
+            appName: appName,
+            action: action,
+            on: URL(fileURLWithPath: selection.volume.path),
+            progress: progress
+        )
+    }
+
+    public func executeRepair(
+        plan: RepairPlan,
+        force: Bool = false,
+        progress: (@Sendable (String) -> Void)? = nil
+    ) throws -> RepairExecutionResult {
+        try repairAppUseCase.execute(plan: plan, force: force, progress: progress)
+    }
+
+    public func rollbackRepair(
+        appName: String,
+        volumePath: String?,
+        progress: (@Sendable (String) -> Void)? = nil
+    ) throws -> RepairExecutionResult {
+        let selection = try selectVolume(path: volumePath)
+        return try repairAppUseCase.rollback(
+            appName: appName,
+            on: URL(fileURLWithPath: selection.volume.path),
+            progress: progress
         )
     }
 

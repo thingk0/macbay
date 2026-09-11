@@ -45,6 +45,10 @@ public enum MacBayPaths {
         externalRoot(on: volume).appendingPathComponent(".operations", isDirectory: true)
     }
 
+    public static func backupsRoot(on volume: URL) -> URL {
+        externalRoot(on: volume).appendingPathComponent("Backups", isDirectory: true)
+    }
+
     public static func applicationURL(named name: String) -> URL {
         if name.hasPrefix("/") || name.hasPrefix("~/") || name.contains("/") {
             return expandedURL(name)

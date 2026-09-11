@@ -540,6 +540,151 @@ public struct OutputFormatter {
         }
     }
 
+    public func formatRepairComparison(_ comparison: RepairComparison) -> String {
+        var sections: [[String]] = []
+
+        let header = [
+            style("Repair comparison · \(comparison.appName)", color: "36", bold: true),
+            "  Volume: \(comparison.volumePath)"
+        ]
+        sections.append(header)
+
+        let local = comparison.localCopy
+        let external = comparison.externalCopy
+
+        func pad(_ text: String, _ length: Int) -> String {
+            let truncated = String(text.prefix(length))
+            return truncated.padding(toLength: length, withPad: " ", startingAt: 0)
+        }
+
+        let tableLines = [
+            style("Attributes               Local (/Applications)               External (MacBay)", color: "37", bold: true),
+            "───────────────────────  ──────────────────────────────────  ──────────────────────────────────",
+            "\(pad("Identifier", 23))  \(pad(local.bundleIdentifier ?? "None", 34))  \(pad(external.bundleIdentifier ?? "None", 34))",
+            "\(pad("Version", 23))  \(pad(local.version ?? "Unknown", 34))  \(pad(external.version ?? "Unknown", 34))",
+            "\(pad("Build", 23))  \(pad(local.buildNumber ?? "Unknown", 34))  \(pad(external.buildNumber ?? "Unknown", 34))",
+            "\(pad("Size", 23))  \(pad(Self.humanBytes(local.sizeBytes), 34))  \(pad(Self.humanBytes(external.sizeBytes), 34))",
+            "\(pad("Signature", 23))  \(pad(local.signatureStatus, 34))  \(pad(external.signatureStatus, 34))",
+            "\(pad("Compatibility", 23))  \(pad(local.compatibilityGrade, 34))  \(pad(external.compatibilityGrade, 34))"
+        ]
+        sections.append(tableLines)
+
+        if !comparison.canRedock && !comparison.redockBlockers.isEmpty {
+            var blockerLines = [
+                style("Notice: Redock is blocked for this application", color: "31", bold: true)
+            ]
+            for blocker in comparison.redockBlockers {
+                blockerLines.append("  • \(blocker)")
+            }
+            sections.append(blockerLines)
+        }
+
+        var actionsLines = [
+            style("Available actions:", color: "33", bold: true)
+        ]
+        if comparison.canRedock {
+            actionsLines.append("  • mb repair \"\(comparison.appName)\" --action redock")
+            actionsLines.append("    Re-dock local app to external storage; backs up existing external copy")
+        }
+        actionsLines.append("  • mb repair \"\(comparison.appName)\" --action keep-local")
+        actionsLines.append("    Keep local app and remove migration record; external copy remains as unmanaged archive")
+        sections.append(actionsLines)
+
+        return sections.map { $0.joined(separator: "\n") }.joined(separator: "\n\n")
+    }
+
+    public func formatRepairPlan(plan: RepairPlan, force: Bool, dryRun: Bool) -> String {
+        var sections: [[String]] = []
+
+        if case let .reviewRequired(reasons, _) = plan.status, force {
+            sections.append([
+                style("Notice: Proceeding with --force for application flagged with popup risk", color: "33", bold: true),
+                "  Reasons: \(reasons.joined(separator: ", "))",
+                "  Potential risk acknowledged."
+            ])
+        }
+
+        let prefix = dryRun ? "Dry run: repair" : "Plan: repair"
+        var planLines = [
+            style("\(prefix) \(plan.appName) (\(plan.action.rawValue))", color: dryRun ? "33" : "36", bold: true),
+            "  Action: \(plan.action.rawValue)"
+        ]
+
+        switch plan.action {
+        case .redock:
+            planLines.append("  Local (source): \(plan.localURL.path)")
+            planLines.append("  External (destination): \(plan.externalURL.path)")
+            if let backupURL = plan.backupURL {
+                planLines.append("  External backup target: \(backupURL.path)")
+            }
+            planLines.append("  Symlink: \(plan.localURL.path) -> \(plan.externalURL.path)")
+            planLines.append("  Required external space: \(Self.humanBytes(plan.requiredExternalSpaceBytes))")
+            planLines.append("  Estimated freed internal space: \(Self.humanBytes(plan.estimatedFreedInternalBytes))")
+        case .keepLocal:
+            planLines.append("  Local app: \(plan.localURL.path) (retained)")
+            planLines.append("  External app: \(plan.externalURL.path) (retained as unmanaged archive)")
+            planLines.append("  Manifest: record will be removed from \(plan.volumeURL.path)")
+        }
+
+        if dryRun {
+            planLines.append("  Dry run: no files were changed")
+        }
+        sections.append(planLines)
+
+        return sections.map { $0.joined(separator: "\n") }.joined(separator: "\n\n")
+    }
+
+    public func formatRepairExecutionResult(_ result: RepairExecutionResult) -> String {
+        switch result.outcome {
+        case .completed:
+            var lines = [
+                style("Completed: repair \(result.appName) (\(result.action.rawValue))", color: "32", bold: true)
+            ]
+            switch result.action {
+            case .redock:
+                lines.append("  Destination: \(result.externalPath)")
+                if let symlink = result.symlinkPath {
+                    lines.append("  Symlink: \(symlink)")
+                }
+                if let backup = result.backupPath {
+                    lines.append("  Previous external copy preserved at: \(backup)")
+                }
+                if result.freedBytes > 0 {
+                    lines.append("  Internal space freed: \(Self.humanBytes(result.freedBytes))")
+                }
+            case .keepLocal:
+                lines.append("  Local application retained: \(result.localPath)")
+                lines.append("  External copy archived: \(result.externalPath)")
+                lines.append("  Status: removed from manifest; external copy is now an unmanaged archive")
+            }
+            return lines.joined(separator: "\n")
+
+        case let .noChanges(reason):
+            return [
+                style("No changes: repair \(result.appName)", color: "36", bold: true),
+                "  Reason: \(reason)"
+            ].joined(separator: "\n")
+
+        case let .failed(stage, error, rollback):
+            var lines = [
+                style("Failed: repair \(result.appName)", color: "31", bold: true),
+                "  Stage: \(stage)",
+                "  Error: \(error)"
+            ]
+            switch rollback {
+            case .notRequired:
+                lines.append("  Rollback: not required (no files were modified)")
+            case let .succeeded(actions):
+                lines.append("  Rollback: succeeded (\(actions.joined(separator: ", ")))")
+            case let .failed(rbErr, actions):
+                lines.append("  Rollback: failed (\(rbErr))")
+                lines.append("  Manual action required: \(actions.joined(separator: ", "))")
+            }
+            return lines.joined(separator: "\n")
+        }
+    }
+
+
 
     public func initReport(_ report: InitReport) -> String {
         var lines = [style("MacBay default volume", color: "36", bold: true)]

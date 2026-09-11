@@ -104,7 +104,7 @@ sudo ln -sf /usr/local/bin/mb /usr/local/bin/macbay
 
 ```sh
 mb --version
-# 输出：1.1.0
+# 输出：1.2.0
 ```
 
 ---
@@ -373,6 +373,55 @@ Dry run: adopt ChatGPT.app
 5. **原子符号链接更新**：以原子操作将 `/Applications/<App>.app` 符号链接更新为指向新的标准路径。
 6. **清单登记**：在跨进程文件锁（`flock`）保护下更新 `MacBay/manifest.json`。
 7. **系统刷新**：重建 LaunchServices 注册信息并重启 Dock。
+
+### 重复应用比对与修复 (`repair`)
+
+当 `mb doctor` 检测到清单中已记录的应用在内置路径（`/Applications`）中再次出现完整应用包（例如由安装程序或自动更新重新生成），同时外置副本依然存在时（`local_data_detected`），`mb repair` 提供安全检查、比对以及修复流程：
+
+```sh
+# 1. 只读并排比对（版本、构建号、标识符、代码签名、体积）
+mb repair "Kiro CLI.app"
+
+# 2. 重新外置应用（redock）预览
+mb repair "Kiro CLI.app" --action redock --dry-run
+
+# 3. 保留本地应用并解除管理（keep-local）预览
+mb repair "Kiro CLI.app" --action keep-local --dry-run
+
+# 4. 实际执行
+mb repair "Kiro CLI.app" --action redock
+mb repair "Kiro CLI.app" --action keep-local
+
+# 5. 回滚中断的修复操作
+mb repair "Kiro CLI.app" --rollback
+```
+
+**比对输出示例**：
+```text
+Repair comparison · Kiro CLI.app
+  Volume: /Volumes/ExternalSSD
+
+Attributes               Local (/Applications)               External (MacBay)
+───────────────────────  ──────────────────────────────────  ──────────────────────────────────
+Identifier               com.kiro.cli                        com.kiro.cli
+Version                  1.2.0                               1.1.0
+Build                    120                                 110
+Size                     105.4 MB                            98.2 MB
+Signature                Valid                               Valid
+Compatibility            Safe                                Safe
+
+Available actions:
+  • mb repair "Kiro CLI.app" --action redock
+    Re-dock local app to external storage; backs up existing external copy
+  • mb repair "Kiro CLI.app" --action keep-local
+    Keep local app and remove migration record; external copy remains as unmanaged archive
+```
+
+**安全性与备份策略**：
+- **标识符严格匹配**：执行 `redock` 时，会严格比对两端应用包标识符（`CFBundleIdentifier`）。若标识符不一致将拒绝执行，防止意外覆盖不相关的应用。
+- **保留外置备份副本**：执行 `redock` 时，现有外置副本会首先安全移动至 `<Volume>/MacBay/Backups/<OperationID>/<App>.app` 进行归档，然后再放置新副本。外置备份副本绝不会被自动删除。
+- **独立修复操作日志**：修复操作状态保存在外置卷的 `<Volume>/MacBay/.operations/repair-<App>.json`（架构版本 v1）中。若操作意外中断，`mb doctor` 将检测并报告未完成操作（`incomplete_operation`），并引导用户执行 `mb repair "<App>" --rollback` 进行恢复。
+- **保留本地副本（keep-local）**：`keep-local` 仅原子移除清单中的对应条目。内置应用与外置副本均完好保留在文件系统中，外置副本变为未受管的归档副本。
 
 
 ### Xcode 维护管理 (`xcode`)

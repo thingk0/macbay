@@ -7,7 +7,7 @@ struct MacBay: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "mb",
         abstract: "The developer-first storage externalizer for macOS.",
-        version: "1.1.0",
+        version: "1.2.0",
         subcommands: [
             InitCommand.self,
             StatusCommand.self,
@@ -16,6 +16,7 @@ struct MacBay: ParsableCommand {
             DockCommand.self,
             AdoptCommand.self,
             UndockCommand.self,
+            RepairCommand.self,
             XcodeCommand.self,
             CacheCommand.self
         ]

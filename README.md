@@ -104,7 +104,7 @@ Verify installation:
 
 ```sh
 mb --version
-# Output: 1.1.0
+# Output: 1.2.0
 ```
 
 ---
@@ -373,6 +373,55 @@ Dry run: adopt ChatGPT.app
 5. **Atomic Symlink Update**: Swaps the `/Applications/<App>.app` symlink to point to the new MacBay path atomically.
 6. **Manifest Registration**: Records the item in `MacBay/manifest.json` with multi-process file locking (`flock`).
 7. **System Refresh**: Rebuilds LaunchServices registration (`lsregister -f`) and restarts the Dock.
+
+### Repairing Duplicate Applications (`repair`)
+
+When `mb doctor` detects that an application recorded in the manifest has a full duplicate bundle in `/Applications` again (e.g. from an installer or auto-updater) while the external copy still exists (`local_data_detected`), `mb repair` provides safe inspection, comparison, and recovery:
+
+```sh
+# 1. Read-only side-by-side comparison
+mb repair "Kiro CLI.app"
+
+# 2. Preview re-externalization (redock)
+mb repair "Kiro CLI.app" --action redock --dry-run
+
+# 3. Preview keeping the local copy and unmanaging
+mb repair "Kiro CLI.app" --action keep-local --dry-run
+
+# 4. Real execution
+mb repair "Kiro CLI.app" --action redock
+mb repair "Kiro CLI.app" --action keep-local
+
+# 5. Rollback an interrupted operation
+mb repair "Kiro CLI.app" --rollback
+```
+
+**Comparison output example**:
+```text
+Repair comparison · Kiro CLI.app
+  Volume: /Volumes/ExternalSSD
+
+Attributes               Local (/Applications)               External (MacBay)
+───────────────────────  ──────────────────────────────────  ──────────────────────────────────
+Identifier               com.kiro.cli                        com.kiro.cli
+Version                  1.2.0                               1.1.0
+Build                    120                                 110
+Size                     105.4 MB                            98.2 MB
+Signature                Valid                               Valid
+Compatibility            Safe                                Safe
+
+Available actions:
+  • mb repair "Kiro CLI.app" --action redock
+    Re-dock local app to external storage; backs up existing external copy
+  • mb repair "Kiro CLI.app" --action keep-local
+    Keep local app and remove migration record; external copy remains as unmanaged archive
+```
+
+**Safety & Backup Policy**:
+- **Bundle ID Matching**: `redock` strictly verifies that bundle identifiers match before proceeding. If IDs differ, `redock` is refused to prevent accidental overwrites.
+- **External Backup Retention**: When executing `redock`, the existing external copy is moved to `<Volume>/MacBay/Backups/<OperationID>/<App>.app` before the new copy is placed. External backups are preserved and never automatically deleted.
+- **Dedicated Repair Journal**: Operations are recorded in `<Volume>/MacBay/.operations/repair-<App>.json` (schema v1). If an operation is interrupted, `mb doctor` reports it (`incomplete_operation`) and guides you to run `mb repair "<App>" --rollback`.
+- **Keep-Local**: `keep-local` removes only the item entry from `manifest.json`. Both local and external applications remain completely untouched, with the external copy becoming an unmanaged archive.
 
 
 ### Xcode Maintenance (`xcode`)

@@ -104,7 +104,7 @@ sudo ln -sf /usr/local/bin/mb /usr/local/bin/macbay
 
 ```sh
 mb --version
-# 出力例: 1.1.0
+# 出力例: 1.2.0
 ```
 
 ---
@@ -373,6 +373,55 @@ Dry run: adopt ChatGPT.app
 5. **シンボリックリンクのアトミック更新**: `/Applications/<App>.app` のシンボリックリンクを新しい標準パスへアトミックに差し替えます。
 6. **マニフェスト登録**: プロセス間ファイルロック（`flock`）のもとで `MacBay/manifest.json` に記録します。
 7. **システムの更新**: LaunchServicesの登録情報（`lsregister -f`）を再構築し、Dockを再起動します。
+
+### 重複アプリケーションの比較と修復（`repair`）
+
+`mb doctor` において、マニフェストに登録されたアプリの内蔵パス（`/Applications`）に実体バンドルが再生成され、かつ外部コピーも残存している状態（`local_data_detected`）が検出された場合、`mb repair` を使用して安全に比較・修復を行うことができます:
+
+```sh
+# 1. 読み取り専用の比較（バージョン、ビルド、識別子、署名、サイズ）
+mb repair "Kiro CLI.app"
+
+# 2. 内蔵アプリの外部再配置（redock）プレビュー
+mb repair "Kiro CLI.app" --action redock --dry-run
+
+# 3. 内蔵アプリの保持と管理解除（keep-local）プレビュー
+mb repair "Kiro CLI.app" --action keep-local --dry-run
+
+# 4. 実際の実行
+mb repair "Kiro CLI.app" --action redock
+mb repair "Kiro CLI.app" --action keep-local
+
+# 5. 中断された修復操作のロールバック復元
+mb repair "Kiro CLI.app" --rollback
+```
+
+**比較出力の例**:
+```text
+Repair comparison · Kiro CLI.app
+  Volume: /Volumes/ExternalSSD
+
+Attributes               Local (/Applications)               External (MacBay)
+───────────────────────  ──────────────────────────────────  ──────────────────────────────────
+Identifier               com.kiro.cli                        com.kiro.cli
+Version                  1.2.0                               1.1.0
+Build                    120                                 110
+Size                     105.4 MB                            98.2 MB
+Signature                Valid                               Valid
+Compatibility            Safe                                Safe
+
+Available actions:
+  • mb repair "Kiro CLI.app" --action redock
+    Re-dock local app to external storage; backs up existing external copy
+  • mb repair "Kiro CLI.app" --action keep-local
+    Keep local app and remove migration record; external copy remains as unmanaged archive
+```
+
+**安全性とバックアップポリシー**:
+- **識別子の一致検証**: `redock` は両パスのバンドル識別子（`CFBundleIdentifier`）が一致していることを厳密に検証します。異なるアプリを誤って上書きすることを防止します。
+- **既存外部コピーのバックアップ保持**: `redock` の実行時、既存の外部アプリは `<Volume>/MacBay/Backups/<OperationID>/<App>.app` へ安全に退避された後に新しいアプリが配置されます。退避されたバックアップは自動削除されず、永続的に保持されます。
+- **独立した修復ジャーナル**: 操作状態は外部ボリュームの `<Volume>/MacBay/.operations/repair-<App>.json`（スキーマ v1）に記録されます。万が一処理が中断された場合、`mb doctor` が未完了操作（`incomplete_operation`）として検知し、`mb repair "<App>" --rollback` による復旧を案内します。
+- **内蔵保持（keep-local）**: `keep-local` はマニフェストから該当項目の記録のみをアトミックに削除します。内蔵アプリおよび外部コピーの双方がファイルシステム上にそのまま保持され、外部コピーは非管理アーカイブとなります。
 
 
 ### Xcodeのメンテナンス（`xcode`）
