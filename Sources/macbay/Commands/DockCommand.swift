@@ -21,12 +21,16 @@ struct DockCommand: ParsableCommand {
             yes: options.yes,
             dryRun: options.dryRun
         )
+        let progress = TerminalProgress(json: options.json)
+        defer { progress.stop() }
         let result = try MacBayService().dock(
             appName: app,
             volumePath: options.volume,
             dryRun: options.dryRun,
-            force: force
+            force: force,
+            progress: progress.update
         )
+        progress.stop()
         try CommandSupport.printValue(result, json: options.json) { $0.migration(result) }
     }
 }

@@ -325,7 +325,19 @@ public struct VolumeManager {
 
     private func explicitVolume(path: String) throws -> StorageVolume {
         let standardizedPath = MacBayPaths.expandedURL(path).path
-        let info = try diskInfoProvider.diskInfo(for: standardizedPath)
+        let info: VolumeDiskInfo
+        do {
+            info = try diskInfoProvider.diskInfo(for: standardizedPath)
+        } catch let error as MacBayError {
+            switch error {
+            case .invalidVolume, .externalVolumeRequired:
+                throw error
+            default:
+                throw MacBayError.invalidVolume("Unable to inspect volume at '\(standardizedPath)': \(error.localizedDescription)")
+            }
+        } catch {
+            throw MacBayError.invalidVolume("Unable to inspect volume at '\(standardizedPath)': \(error.localizedDescription)")
+        }
         let check = eligibilityCheck(for: info)
         guard check.isEligible else {
             if info.isInternal {

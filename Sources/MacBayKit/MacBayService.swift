@@ -9,6 +9,7 @@ public struct MacBayService {
     private let scanner: AppScanner
     private let bundleMigrator: BundleMigrator
     private let appAdopter: AppAdopter
+    public let adoptAppUseCase: any AdoptAppUseCaseProtocol
     private let xcodeDoctor: XcodeDoctor
     private let cacheManager: CacheManager
 
@@ -16,7 +17,8 @@ public struct MacBayService {
         fileManager: FileManager = .default,
         commandRunner: any CommandRunner = SystemCommandRunner(),
         volumeManager: VolumeManager? = nil,
-        configStore: ConfigStore? = nil
+        configStore: ConfigStore? = nil,
+        adoptAppUseCase: (any AdoptAppUseCaseProtocol)? = nil
     ) {
         self.fileManager = fileManager
         self.commandRunner = commandRunner
@@ -42,6 +44,14 @@ public struct MacBayService {
             commandRunner: commandRunner,
             volumeManager: self.volumeManager,
             manifestStore: self.manifestStore
+        )
+        self.adoptAppUseCase = adoptAppUseCase ?? AdoptAppUseCase(
+            safetyInspector: DarwinAppSafetyInspector(fileManager: fileManager, commandRunner: commandRunner),
+            fileOperations: DarwinBundleFileOperations(fileManager: fileManager),
+            manifestRepository: DarwinManifestRepository(fileManager: fileManager),
+            operationJournal: DarwinOperationJournal(fileManager: fileManager),
+            systemRefresher: DarwinSystemEnvironmentRefresher(fileManager: fileManager, commandRunner: commandRunner),
+            volumeInspector: DarwinVolumeStorageInspector(volumeManager: self.volumeManager)
         )
         self.xcodeDoctor = XcodeDoctor(
             fileManager: fileManager,
@@ -158,33 +168,85 @@ public struct MacBayService {
         appName: String,
         volumePath: String?,
         dryRun: Bool,
-        force: Bool = false
+        force: Bool = false,
+        progress: ProgressHandler? = nil
     ) throws -> MigrationResult {
+        progress?(.selectingVolume)
         let selection = try selectVolume(path: volumePath)
         return try bundleMigrator.dock(
             appName: appName,
             on: URL(fileURLWithPath: selection.volume.path),
             dryRun: dryRun,
-            force: force
+            force: force,
+            progress: progress
         )
+    }
+
+    public func planAdopt(
+        appName: String,
+        volumePath: String?,
+        progress: ProgressHandler? = nil
+    ) throws -> AdoptPlan {
+        progress?(.selectingVolume)
+        let selection = try selectVolume(path: volumePath)
+        return try adoptAppUseCase.plan(
+            appName: appName,
+            on: URL(fileURLWithPath: selection.volume.path),
+            progress: progress
+        )
+    }
+
+    public func executeAdopt(
+        plan: AdoptPlan,
+        force: Bool = false,
+        progress: ProgressHandler? = nil
+    ) throws -> AdoptExecutionResult {
+        try adoptAppUseCase.execute(plan: plan, force: force, progress: progress)
     }
 
     public func adopt(
         appName: String,
         volumePath: String?,
         dryRun: Bool,
-        force: Bool = false
+        force: Bool = false,
+        progress: ProgressHandler? = nil
     ) throws -> MigrationResult {
-        let selection = try selectVolume(path: volumePath)
-        return try appAdopter.adopt(
-            appName: appName,
-            on: URL(fileURLWithPath: selection.volume.path),
-            dryRun: dryRun,
-            force: force
+        let plan = try planAdopt(appName: appName, volumePath: volumePath, progress: progress)
+        if dryRun {
+            return MigrationResult(
+                operation: "adopt",
+                name: plan.appName,
+                sourcePath: plan.targetURL.path,
+                destinationPath: plan.destinationURL.path,
+                sizeBytes: plan.sizeBytes,
+                dryRun: true,
+                messages: [
+                    "Action: \(plan.mode == .alreadyAdopted ? "Already adopted in MacBay (no changes needed)" : "Adopt application into MacBay standard storage")",
+                    "Symlink: \(plan.symlinkURL.path) -> \(plan.destinationURL.path)",
+                    "Space: estimated internal space freed 0 B (same-volume relocation)",
+                    "Dry run: no files were changed"
+                ],
+                compatibility: plan.compatibility
+            )
+        }
+        let result = try executeAdopt(plan: plan, force: force, progress: progress)
+        return MigrationResult(
+            operation: "adopt",
+            name: result.appName,
+            sourcePath: result.sourcePath,
+            destinationPath: result.destinationPath,
+            sizeBytes: result.sizeBytes,
+            dryRun: false,
+            messages: [
+                "Symlink: \(result.symlinkPath) -> \(result.destinationPath)",
+                "Recorded in manifest on \(plan.volumeURL.path)"
+            ],
+            compatibility: plan.compatibility
         )
     }
 
-    public func undock(appName: String, volumePath: String?, dryRun: Bool) throws -> MigrationResult {
+    public func undock(appName: String, volumePath: String?, dryRun: Bool, progress: ProgressHandler? = nil) throws -> MigrationResult {
+        progress?(.selectingVolume)
         let volume: URL?
         let fallbackVolume: URL?
         if let volumePath {
@@ -199,7 +261,8 @@ public struct MacBayService {
             appName: appName,
             from: volume,
             fallbackVolume: fallbackVolume,
-            dryRun: dryRun
+            dryRun: dryRun,
+            progress: progress
         )
     }
 

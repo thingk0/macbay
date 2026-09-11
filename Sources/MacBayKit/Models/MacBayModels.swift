@@ -873,5 +873,19 @@ public struct AdoptOperationRecord: Codable, Equatable, Sendable {
         self.phase = phase
         self.timestamp = timestamp
     }
+
+    public func updatingPhase(_ newPhase: Phase) -> AdoptOperationRecord {
+        AdoptOperationRecord(
+            id: id,
+            appName: appName,
+            sourcePath: sourcePath,
+            originalExternalPath: originalExternalPath,
+            targetExternalPath: targetExternalPath,
+            originalLinkTarget: originalLinkTarget,
+            volumePath: volumePath,
+            phase: newPhase,
+            timestamp: timestamp
+        )
+    }
 }
 

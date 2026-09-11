@@ -474,4 +474,155 @@ final class CLIIntegrationTests: XCTestCase {
             XCTAssertFalse(FileManager.default.fileExists(atPath: configFilePath(in: configHome)))
         }
     }
+
+    private func firstWritableExternalVolume() throws -> StorageVolume? {
+        let manager = VolumeManager()
+        return try manager.externalVolumes().first
+    }
+
+    private func makeExternalAppFixture(
+        on volumeURL: URL,
+        appName: String = "TestApp.app",
+        isPopupRisk: Bool = false
+    ) throws -> (appURL: URL, symlinkURL: URL) {
+        let baseDir = volumeURL.appendingPathComponent("macbay-test-cli-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: baseDir, withIntermediateDirectories: true)
+        fixtureDirectories.append(baseDir)
+
+        let appURL = baseDir.appendingPathComponent(appName, isDirectory: true)
+        let macosDir = appURL.appendingPathComponent("Contents/MacOS", isDirectory: true)
+        try FileManager.default.createDirectory(at: macosDir, withIntermediateDirectories: true)
+
+        let execURL = macosDir.appendingPathComponent("TestApp")
+        try "#!/bin/sh\nexit 0\n".write(to: execURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: execURL.path)
+
+        let infoPlistURL = appURL.appendingPathComponent("Contents/Info.plist")
+        let extraPlist = isPopupRisk ? "<key>SMPrivilegedExecutables</key><dict><key>com.example.helper</key><string>identifier</string></dict>" : ""
+        let plistContent = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>CFBundleExecutable</key>
+            <string>TestApp</string>
+            <key>CFBundleIdentifier</key>
+            <string>com.example.macbay.test</string>
+            <key>CFBundleName</key>
+            <string>TestApp</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            \(extraPlist)
+        </dict>
+        </plist>
+        """
+        try plistContent.write(to: infoPlistURL, atomically: true, encoding: .utf8)
+
+        let signProcess = Process()
+        signProcess.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+        signProcess.arguments = ["-s", "-", "--force", appURL.path]
+        try signProcess.run()
+        signProcess.waitUntilExit()
+
+        let symlinkParent = FileManager.default.temporaryDirectory
+            .appendingPathComponent("macbay-symlinks-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: symlinkParent, withIntermediateDirectories: true)
+        fixtureDirectories.append(symlinkParent)
+
+        let symlinkURL = symlinkParent.appendingPathComponent(appName)
+        try FileManager.default.createSymbolicLink(at: symlinkURL, withDestinationURL: appURL)
+
+        return (appURL, symlinkURL)
+    }
+
+    func testAdoptDryRunOutputsPlanAndDoesNotMutateFiles() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+        guard let volume = try firstWritableExternalVolume() else {
+            throw XCTSkip("No writable external volume available for integration test")
+        }
+
+        let volumeURL = URL(fileURLWithPath: volume.path)
+        let (appURL, symlinkURL) = try makeExternalAppFixture(on: volumeURL, appName: "CLIAdoptDryRun.app")
+
+        let result = try runCLI(arguments: ["adopt", symlinkURL.path, "--volume", volume.path, "--dry-run"])
+        XCTAssertEqual(result.status, 0)
+        XCTAssertTrue(result.stdout.contains("Dry run: adopt CLIAdoptDryRun.app"))
+        XCTAssertTrue(result.stdout.contains("Dry run: no files were changed"))
+
+        // Verify no files were moved
+        XCTAssertTrue(FileManager.default.fileExists(atPath: appURL.path))
+        let macbayDest = volumeURL.appendingPathComponent("MacBay/Applications/CLIAdoptDryRun.app")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: macbayDest.path))
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: symlinkURL.path), appURL.path)
+    }
+
+    func testAdoptJsonWithoutYesFailsWithConfirmationRequired() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+        guard let volume = try firstWritableExternalVolume() else {
+            throw XCTSkip("No writable external volume available for integration test")
+        }
+
+        let volumeURL = URL(fileURLWithPath: volume.path)
+        let (appURL, symlinkURL) = try makeExternalAppFixture(on: volumeURL, appName: "CLIAdoptJsonNoYes.app")
+
+        let result = try runCLI(arguments: ["adopt", symlinkURL.path, "--volume", volume.path, "--json"])
+        XCTAssertNotEqual(result.status, 0)
+
+        guard let data = result.stderr.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let errorObj = json["error"] as? [String: Any] else {
+            return XCTFail("stderr was not valid error JSON envelope: \(result.stderr)")
+        }
+
+        XCTAssertEqual(errorObj["code"] as? String, "configuration_error")
+        let message = errorObj["message"] as? String ?? ""
+        XCTAssertTrue(message.contains("Confirmation required"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: appURL.path))
+    }
+
+    func testAdoptReviewRequiredWithoutForceFailsWithoutPrompting() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+        guard let volume = try firstWritableExternalVolume() else {
+            throw XCTSkip("No writable external volume available for integration test")
+        }
+
+        let volumeURL = URL(fileURLWithPath: volume.path)
+        let (_, symlinkURL) = try makeExternalAppFixture(on: volumeURL, appName: "CLIAdoptReview.app", isPopupRisk: true)
+
+        let result = try runCLI(
+            arguments: ["adopt", symlinkURL.path, "--volume", volume.path],
+            closeStdin: true
+        )
+        XCTAssertNotEqual(result.status, 0)
+        XCTAssertTrue(result.stdout.contains("Review required · CLIAdoptReview.app"))
+        XCTAssertTrue(result.stdout.contains("mb adopt \"CLIAdoptReview.app\" --force"))
+        XCTAssertTrue(result.stdout.contains("No files were changed"))
+        XCTAssertFalse(result.stdout.contains("Proceed with adoption?"))
+    }
+
+    func testAdoptReviewRequiredWithForceAndDryRun() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+        guard let volume = try firstWritableExternalVolume() else {
+            throw XCTSkip("No writable external volume available for integration test")
+        }
+
+        let volumeURL = URL(fileURLWithPath: volume.path)
+        let (_, symlinkURL) = try makeExternalAppFixture(on: volumeURL, appName: "CLIAdoptReviewForce.app", isPopupRisk: true)
+
+        let result = try runCLI(
+            arguments: ["adopt", symlinkURL.path, "--volume", volume.path, "--force", "--dry-run"]
+        )
+        XCTAssertEqual(result.status, 0)
+        XCTAssertTrue(result.stdout.contains("Notice: Proceeding with --force"))
+        XCTAssertTrue(result.stdout.contains("Dry run: adopt CLIAdoptReviewForce.app"))
+    }
 }
+

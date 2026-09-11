@@ -46,8 +46,10 @@ public struct AppAdopter {
         appName: String,
         on volume: URL,
         dryRun: Bool,
-        force: Bool = false
+        force: Bool = false,
+        progress: ProgressHandler? = nil
     ) throws -> MigrationResult {
+        progress?(.validating)
         // 1. 앱 경로 및 심볼릭 링크 검증
         let source = MacBayPaths.applicationURL(named: appName)
         guard source.pathExtension.lowercased() == "app" else {
@@ -135,9 +137,12 @@ public struct AppAdopter {
         }
 
         // 3. 프로세스 / 잠금 / 코드서명 / 호환성 검사
+        progress?(.checkingProcesses)
         try processInspector.assertSafeToMove(path: target)
+        progress?(.verifyingSignature)
         try verifyCodeSignature(at: target)
 
+        progress?(.checkingCompatibility)
         let assessment = appInspector.assess(bundleURL: target)
         if assessment.grade == .blocked {
             throw MacBayError.compatibilityBlocked(path: target.path, assessment: assessment)
@@ -151,6 +156,7 @@ public struct AppAdopter {
             .appendingPathComponent(source.lastPathComponent, isDirectory: true)
             .standardizedFileURL
 
+        progress?(.inspectingStorage)
         let sizeBytes = try sizeCalculator.size(of: target)
         let manifest = try manifestStore.load(on: volume)
         guard manifest.version == DockManifest.currentVersion else {
@@ -265,6 +271,7 @@ public struct AppAdopter {
                 phase: .registering,
                 timestamp: macBayTimestamp()
             )
+            progress?(.savingManifest)
             try operationJournal.save(opRecord, on: volume)
 
             // 심볼릭 링크가 표준 대상 경로를 가리키지 않는 경우 원자적으로 교체
@@ -273,6 +280,7 @@ public struct AppAdopter {
                 URL(fileURLWithPath: currentTarget!).standardizedFileURL.path.caseInsensitiveCompare(destination.path) != .orderedSame
 
             if linkNeedsUpdate {
+                progress?(.updatingLink)
                 let tempLink = source.deletingLastPathComponent()
                     .appendingPathComponent(".\(source.lastPathComponent).macbay-adopt-\(UUID().uuidString)")
                 do {
@@ -303,6 +311,7 @@ public struct AppAdopter {
                 dockedAt: macBayTimestamp()
             )
 
+            progress?(.savingManifest)
             do {
                 try manifestStore.updating(on: volume) { manifest in
                     manifest.items.removeAll { $0.sourcePath == newItem.sourcePath }
@@ -348,6 +357,7 @@ public struct AppAdopter {
             try operationJournal.save(opRecord, on: volume)
 
             // Step A: 동일 파일시스템 rename 이동
+            progress?(.moving)
             try fileManager.createDirectory(
                 at: destination.deletingLastPathComponent(),
                 withIntermediateDirectories: true
@@ -362,6 +372,7 @@ public struct AppAdopter {
             try? operationJournal.save(opRecord, on: volume)
 
             // 이동 후 서명 재검증
+            progress?(.verifyingSignature)
             do {
                 try verifyCodeSignature(at: destination)
             } catch {
@@ -371,6 +382,7 @@ public struct AppAdopter {
             }
 
             // Step B: 임시 링크 생성 후 원자적 교체
+            progress?(.updatingLink)
             let tempLink = source.deletingLastPathComponent()
                 .appendingPathComponent(".\(source.lastPathComponent).macbay-adopt-\(UUID().uuidString)")
             do {
@@ -395,6 +407,7 @@ public struct AppAdopter {
             try? operationJournal.save(opRecord, on: volume)
 
             // Step C: manifest 저장 (실패 시 원복)
+            progress?(.savingManifest)
             let newItem = DockedItem(
                 name: source.lastPathComponent,
                 sourcePath: source.path,
@@ -424,6 +437,7 @@ public struct AppAdopter {
 
             // Step D: 완료 후 작업 기록 정리 및 Dock 갱신
             operationJournal.remove(for: source.lastPathComponent, on: volume)
+            progress?(.refreshingDock)
             let dockWarnings = dockRefresher.refresh(for: source)
             messages.append("Adopted \(source.lastPathComponent): moved to MacBay storage, updated symlink, and registered in manifest")
             messages.append(contentsOf: dockWarnings)

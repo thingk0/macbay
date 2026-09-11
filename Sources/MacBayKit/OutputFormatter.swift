@@ -440,6 +440,107 @@ public struct OutputFormatter {
         return lines.joined(separator: "\n")
     }
 
+    public func formatReviewRequired(appName: String, reasons: [String], commandToProceed: String) -> String {
+        var lines = [
+            style("Review required · \(appName)", color: "33", bold: true),
+            ""
+        ]
+        if !reasons.isEmpty {
+            lines.append("  Detected: \(reasons.joined(separator: ", "))")
+        } else {
+            lines.append("  Detected: DMG relocation prompt code")
+        }
+        lines.append("  The app may display a relocation prompt after its path changes.")
+        lines.append("  This signal does not confirm that a problem will occur.")
+        lines.append("")
+        lines.append("  No files were changed.")
+        lines.append("  To proceed:")
+        lines.append("    \(commandToProceed)")
+        return lines.joined(separator: "\n")
+    }
+
+    public func formatBlocked(appName: String, reason: String, solution: String) -> String {
+        [
+            style("Blocked · \(appName)", color: "31", bold: true),
+            "",
+            "  Reason: \(reason)",
+            "  Next: \(solution)",
+            "",
+            "  No files were changed."
+        ].joined(separator: "\n")
+    }
+
+    public func formatAlreadyManaged(appName: String, details: String) -> String {
+        [
+            style("Already managed · \(appName)", color: "36", bold: true),
+            "",
+            "  \(details)",
+            "  No changes required."
+        ].joined(separator: "\n")
+    }
+
+    public func formatAdoptPlan(plan: AdoptPlan, force: Bool, dryRun: Bool) -> String {
+        var sections: [[String]] = []
+
+        if case let .reviewRequired(reasons, _) = plan.status, force {
+            sections.append([
+                style("Notice: Proceeding with --force for application flagged with popup risk", color: "33", bold: true),
+                "  Reasons: \(reasons.joined(separator: ", "))",
+                "  Potential risk acknowledged."
+            ])
+        }
+
+        let prefix = dryRun ? "Dry run: adopt" : "Plan: adopt"
+        var planLines = [
+            style("\(prefix) \(plan.appName)", color: dryRun ? "33" : "36", bold: true),
+            "  Size: \(Self.humanBytes(plan.sizeBytes))",
+            "  Source: \(plan.targetURL.path)",
+            "  Destination: \(plan.destinationURL.path)",
+            "  Symlink: \(plan.symlinkURL.path) -> \(plan.destinationURL.path)",
+            "  Space: no additional space required (same volume relocation)"
+        ]
+        if dryRun {
+            planLines.append("  Dry run: no files were changed")
+        }
+        sections.append(planLines)
+
+        return sections.map { $0.joined(separator: "\n") }.joined(separator: "\n\n")
+    }
+
+    public func formatAdoptExecutionResult(_ result: AdoptExecutionResult) -> String {
+        switch result.outcome {
+        case .completed:
+            return [
+                style("Completed: adopt \(result.appName)", color: "32", bold: true),
+                "  Location: \(result.destinationPath)",
+                "  Symlink: \(result.symlinkPath) -> \(result.destinationPath)",
+                "  Status: successfully adopted into MacBay standard storage and registered in manifest"
+            ].joined(separator: "\n")
+        case let .noChanges(reason):
+            return [
+                style("No changes: adopt \(result.appName)", color: "36", bold: true),
+                "  Reason: \(reason)"
+            ].joined(separator: "\n")
+        case let .failed(stage, error, rollback):
+            var lines = [
+                style("Failed: adopt \(result.appName)", color: "31", bold: true),
+                "  Stage: \(stage)",
+                "  Error: \(error)"
+            ]
+            switch rollback {
+            case .notRequired:
+                lines.append("  Rollback: not required (no files were modified)")
+            case let .succeeded(actions):
+                lines.append("  Rollback: succeeded (\(actions.joined(separator: ", ")))")
+            case let .failed(rbErr, actions):
+                lines.append("  Rollback: failed (\(rbErr))")
+                lines.append("  Manual action required: \(actions.joined(separator: ", "))")
+            }
+            return lines.joined(separator: "\n")
+        }
+    }
+
+
     public func initReport(_ report: InitReport) -> String {
         var lines = [style("MacBay default volume", color: "36", bold: true)]
         lines.append("  Saved: \(report.volume.name) (\(report.volume.path))")
