@@ -16,8 +16,17 @@ final class CLIIntegrationTests: XCTestCase {
     }
 
     private var fixtureDirectories: [URL] = []
+    private var manifestEntriesToClean: [(volumeURL: URL, appName: String)] = []
 
     override func tearDownWithError() throws {
+        for entry in manifestEntriesToClean {
+            let manifestStore = ManifestStore()
+            try? manifestStore.updating(on: entry.volumeURL) { manifest in
+                manifest.items.removeAll { $0.name == entry.appName }
+            }
+        }
+        manifestEntriesToClean.removeAll()
+
         for url in fixtureDirectories {
             try? FileManager.default.removeItem(at: url)
         }
@@ -735,6 +744,7 @@ final class CLIIntegrationTests: XCTestCase {
                 dockedAt: "2026-09-01T00:00:00Z"
             ))
         }
+        manifestEntriesToClean.append((volumeURL: volumeURL, appName: appName))
 
         return (localAppURL, externalAppURL)
     }
