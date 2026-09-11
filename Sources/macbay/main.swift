@@ -1,6 +1,7 @@
 import Foundation
 import ArgumentParser
 import MacBayKit
+import MacBayTUI
 import Darwin
 
 struct MacBay: ParsableCommand {
@@ -18,11 +19,27 @@ struct MacBay: ParsableCommand {
             UndockCommand.self,
             RepairCommand.self,
             XcodeCommand.self,
-            CacheCommand.self
+            CacheCommand.self,
+            TUICommand.self
         ]
     )
 
     static func execute() {
+        if CommandLine.arguments.count <= 1 {
+            if MacBayTUI.isInteractiveTerminal() {
+                do {
+                    try MacBayTUI.run()
+                    Darwin.exit(0)
+                } catch {
+                    fputs("Error: \(error.localizedDescription)\n", stderr)
+                    Darwin.exit(1)
+                }
+            } else {
+                print(helpMessage())
+                Darwin.exit(0)
+            }
+        }
+
         do {
             var command = try parseAsRoot()
             try command.run()

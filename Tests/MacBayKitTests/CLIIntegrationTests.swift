@@ -845,6 +845,49 @@ final class CLIIntegrationTests: XCTestCase {
         XCTAssertTrue(message.contains("Confirmation required"))
         XCTAssertTrue(FileManager.default.fileExists(atPath: localURL.path))
     }
+
+    func testZeroArgumentNonTTYOutputsHelpAndExitsZero() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+
+        let result = try runCLI(arguments: [])
+        XCTAssertEqual(result.status, 0)
+        XCTAssertTrue(result.stdout.contains("status"))
+        XCTAssertTrue(result.stdout.contains("tui"))
+        XCTAssertFalse(result.stdout.contains("\u{001B}"))
+    }
+
+    func testTUICommandNonTTYFailsWithExplanation() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+
+        let result = try runCLI(arguments: ["tui"])
+        XCTAssertNotEqual(result.status, 0)
+        XCTAssertTrue(result.stderr.contains("Interactive terminal required for TUI mode"))
+    }
+
+    func testJsonOutputContainsNoControlCharacters() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+
+        let statusResult = try runCLI(arguments: ["status", "--json"])
+        XCTAssertEqual(statusResult.status, 0)
+        XCTAssertFalse(statusResult.stdout.contains("\u{001B}"))
+        XCTAssertFalse(statusResult.stderr.contains("\u{001B}"))
+
+        let applications = try makeApplicationsFixture()
+        let scanResult = try runCLI(arguments: ["scan", "--json", "--applications-dir", applications.path])
+        XCTAssertEqual(scanResult.status, 0)
+        XCTAssertFalse(scanResult.stdout.contains("\u{001B}"))
+        XCTAssertFalse(scanResult.stderr.contains("\u{001B}"))
+
+        let doctorResult = try runCLI(arguments: ["doctor", "--json"])
+        XCTAssertFalse(doctorResult.stdout.contains("\u{001B}"))
+        XCTAssertFalse(doctorResult.stderr.contains("\u{001B}"))
+    }
 }
 
 

@@ -22,6 +22,7 @@ MacBay is a developer-first storage externalizer designed for Apple Silicon Macs
 
 ## Features
 
+- **Interactive TUI Mode (`mb` / `mb tui`)**: Launch a keyboard-driven Terminal User Interface directly by typing `mb` in an interactive terminal. Inspect storage capacity, browse applications with Safe/Review/Blocked status, safely preview and execute moves and restorations, and explore diagnostic findings with actionable recommendations.
 - **Application Relocation (`dock` / `undock` / `adopt`)**: Migrate large apps to external storage, restore them to internal disk, or adopt already-externalized apps into standard MacBay layout without restoring first. Dock icons and LaunchServices are automatically refreshed.
 - **Safety Engine (`AppInspector`)**: Automatically checks application bundles for virtualization entitlements, kernel/system extensions, and hardcoded relocation signals.
 - **Xcode DeviceSupport Management (`xcode`)**: Offload massive iOS DeviceSupport symbols while keeping Xcode functioning seamlessly. Preserves existing legacy links and cleans up unavailable simulators.
@@ -110,6 +111,38 @@ mb --version
 ---
 
 ## Quick Start
+
+### 0. Interactive TUI Mode (Default)
+
+Simply run `mb` without arguments in your terminal to open the keyboard-driven TUI:
+
+```sh
+mb
+# Or explicitly:
+mb tui
+```
+
+> [!NOTE]
+> In non-interactive environments (CI, scripts, pipes) or when `TERM` is unsupported, `mb` prints standard CLI help to stdout. Explicit `mb tui` in a non-interactive environment exits with an error explanation.
+
+#### Keyboard Controls
+
+| Key | Action |
+| --- | --- |
+| `↑` / `↓` or `j` / `k` | Navigate items and menus |
+| `Enter` | Select menu item or proceed with action |
+| `Esc` | Go back to previous screen |
+| `q` | Quit MacBay TUI |
+| `r` | Refresh current screen data |
+| `←` / `→` or `Tab` | Switch between buttons (Cancel / Confirm) |
+
+#### Version 1.0 TUI Scope
+
+- **Home**: Inspect internal/external disk capacity and managed application counts.
+- **Move Application (`dock`)**: Browse application candidates sorted by size with `[Safe]`, `[Review]`, and `[Blocked]` status badges. Inspect bundle details, review relocation risks, select session target volume, and preview dry-run space changes before confirming.
+- **Restore Application (`undock`)**: Restore connected MacBay-managed applications back to internal storage. Unmanaged or broken links display helpful status and CLI guidance (`mb adopt`, `mb doctor`).
+- **Diagnosis (`doctor`)**: Inspect doctor findings by category and status, with actionable recommendations highlighted for each issue.
+- *(Note: Multi-select, search, and Xcode/cache/adopt/repair execution will be introduced in subsequent versions. Use CLI commands for those workflows.)*
 
 ### 1. Check Storage Health
 
