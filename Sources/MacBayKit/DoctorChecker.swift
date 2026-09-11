@@ -13,6 +13,7 @@ public struct DoctorChecker {
     private let configStore: ConfigStore
     private let symlinkResolver: SymlinkResolver
     private let sizeCalculator: FileSizeCalculator
+    private let operationJournal: OperationJournal
 
     public init(
         fileManager: FileManager = .default,
@@ -30,6 +31,7 @@ public struct DoctorChecker {
         self.configStore = configStore ?? ConfigStore(fileManager: fileManager)
         self.symlinkResolver = SymlinkResolver(fileManager: fileManager)
         self.sizeCalculator = FileSizeCalculator(fileManager: fileManager)
+        self.operationJournal = OperationJournal(fileManager: fileManager)
     }
 
     public func check(
@@ -231,6 +233,20 @@ public struct DoctorChecker {
                 // 링크로 남아 있는 원본은 링크 검사에서 이미 보고되므로 기록 검사에서 제외한다.
                 guard !isSymbolicLink(at: item.sourcePath) else { continue }
                 findings.append(inspectRecord(item))
+            }
+
+            let volumeURL = URL(fileURLWithPath: volume.info.mountPoint)
+            let incomplete = operationJournal.listIncompleteOperations(on: volumeURL)
+            for record in incomplete {
+                findings.append(DoctorFinding(
+                    code: .incompleteOperation,
+                    status: .needsAttention,
+                    category: .applicationLink,
+                    name: record.appName,
+                    paths: [record.sourcePath, record.targetExternalPath, record.originalExternalPath],
+                    detail: "Incomplete adopt operation detected for \(record.appName) (interrupted at phase: \(record.phase.rawValue))",
+                    recommendation: "Run 'mb adopt \"\(record.appName)\"' to complete adoption, or inspect the paths manually."
+                ))
             }
         }
 

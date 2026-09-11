@@ -492,6 +492,7 @@ public enum MacBayError: Error, Equatable, LocalizedError, Sendable {
     case manifestFailed(path: String, details: String)
     case configFailed(path: String, details: String)
     case unsupportedOperation(String)
+    case unmanagedLinkDetected(path: String, targetPath: String)
     case compatibilityBlocked(path: String, assessment: CompatibilityAssessment)
     case forceRequired(path: String, assessment: CompatibilityAssessment)
     case insufficientSpace(path: String, neededBytes: UInt64, availableBytes: UInt64)
@@ -505,6 +506,7 @@ public enum MacBayError: Error, Equatable, LocalizedError, Sendable {
              .externalVolumeRequired,
              .invalidApplication,
              .applicationAlreadyDocked,
+             .unmanagedLinkDetected,
              .destinationExists,
              .pathMissing,
              .configFailed,
@@ -548,6 +550,8 @@ public enum MacBayError: Error, Equatable, LocalizedError, Sendable {
             return "Need \(OutputFormatter.humanBytes(neededBytes)), available \(OutputFormatter.humanBytes(availableBytes))"
         case let .spaceCheckFailed(_, details):
             return details
+        case let .unmanagedLinkDetected(path, targetPath):
+            return "Link: \(path) -> \(targetPath)"
         case let .invalidVolume(details),
              let .externalVolumeRequired(details),
              let .invalidApplication(details),
@@ -569,6 +573,8 @@ public enum MacBayError: Error, Equatable, LocalizedError, Sendable {
             return "Invalid application bundle: \(path)"
         case let .applicationAlreadyDocked(path):
             return "Application is already docked: \(path)"
+        case let .unmanagedLinkDetected(path, targetPath):
+            return "Application is already a symlink pointing to external storage (\(targetPath)). To register it with MacBay, use 'mb adopt \"\(URL(fileURLWithPath: path).lastPathComponent)\"'."
         case let .destinationExists(path):
             return "Destination already exists: \(path)"
         case let .pathMissing(path):
@@ -684,6 +690,7 @@ public enum DoctorCode: String, Codable, Equatable, Sendable {
     case defaultVolumeUnavailable = "default_volume_unavailable"
     case defaultVolumeIneligible = "default_volume_ineligible"
     case configUnreadable = "config_unreadable"
+    case incompleteOperation = "incomplete_operation"
 }
 
 public struct DoctorFinding: Codable, Equatable, Identifiable, Sendable {
@@ -825,3 +832,46 @@ public struct DoctorReport: Codable, Equatable, Sendable {
 public func macBayTimestamp() -> String {
     ISO8601DateFormatter().string(from: Date())
 }
+
+public struct AdoptOperationRecord: Codable, Equatable, Sendable {
+    public enum Phase: String, Codable, Sendable {
+        case started
+        case appMoved = "app_moved"
+        case linkReplaced = "link_replaced"
+        case registering
+        case completed
+    }
+
+    public let id: String
+    public let appName: String
+    public let sourcePath: String
+    public let originalExternalPath: String
+    public let targetExternalPath: String
+    public let originalLinkTarget: String
+    public let volumePath: String
+    public var phase: Phase
+    public let timestamp: String
+
+    public init(
+        id: String,
+        appName: String,
+        sourcePath: String,
+        originalExternalPath: String,
+        targetExternalPath: String,
+        originalLinkTarget: String,
+        volumePath: String,
+        phase: Phase,
+        timestamp: String
+    ) {
+        self.id = id
+        self.appName = appName
+        self.sourcePath = sourcePath
+        self.originalExternalPath = originalExternalPath
+        self.targetExternalPath = targetExternalPath
+        self.originalLinkTarget = originalLinkTarget
+        self.volumePath = volumePath
+        self.phase = phase
+        self.timestamp = timestamp
+    }
+}
+

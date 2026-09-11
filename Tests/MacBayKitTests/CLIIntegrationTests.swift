@@ -115,12 +115,45 @@ final class CLIIntegrationTests: XCTestCase {
         XCTAssertTrue(result.stdout.contains("scan"))
         XCTAssertTrue(result.stdout.contains("doctor"))
         XCTAssertTrue(result.stdout.contains("dock"))
+        XCTAssertTrue(result.stdout.contains("adopt"))
         XCTAssertTrue(result.stdout.contains("undock"))
         XCTAssertTrue(result.stdout.contains("xcode"))
         XCTAssertTrue(result.stdout.contains("cache"))
         XCTAssertTrue(result.stdout.contains("init"))
         XCTAssertTrue(result.stdout.contains("Choose and save the default external volume"))
         XCTAssertFalse(result.stdout.contains("clean"))
+    }
+
+    func testAdoptHelpOutput() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+
+        let result = try runCLI(arguments: ["adopt", "--help"])
+        XCTAssertEqual(result.status, 0)
+        XCTAssertTrue(result.stdout.contains("Adopt an externally located application"))
+        XCTAssertTrue(result.stdout.contains("--dry-run"))
+        XCTAssertTrue(result.stdout.contains("--force"))
+        XCTAssertTrue(result.stdout.contains("--json"))
+        XCTAssertTrue(result.stdout.contains("--yes"))
+    }
+
+    func testAdoptNonExistentAppJsonError() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+
+        let result = try runCLI(arguments: ["adopt", "DefinitelyMissingApp.app", "--volume", "/Volumes/ExternalSSD", "--json"])
+        XCTAssertNotEqual(result.status, 0)
+
+        guard let data = result.stderr.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let errorObj = json["error"] as? [String: Any] else {
+            return XCTFail("stderr was not valid error JSON envelope: \(result.stderr)")
+        }
+
+        XCTAssertEqual(errorObj["code"] as? String, "configuration_error")
+        XCTAssertNotNil(errorObj["message"] as? String)
     }
 
     func testCleanCommandIsRejectedAsUnknown() throws {

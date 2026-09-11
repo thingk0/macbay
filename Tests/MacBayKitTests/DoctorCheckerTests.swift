@@ -787,6 +787,30 @@ final class DoctorCheckerTests: XCTestCase {
         XCTAssertEqual(report.exitCode, 0)
     }
 
+    func testIncompleteOperationFinding() throws {
+        let journal = OperationJournal()
+        let record = AdoptOperationRecord(
+            id: UUID().uuidString,
+            appName: "Orphaned.app",
+            sourcePath: appsDir.appendingPathComponent("Orphaned.app").path,
+            originalExternalPath: volumeDir.appendingPathComponent("Applications/Orphaned.app").path,
+            targetExternalPath: volumeDir.appendingPathComponent("MacBay/Applications/Orphaned.app").path,
+            originalLinkTarget: volumeDir.appendingPathComponent("Applications/Orphaned.app").path,
+            volumePath: volumeDir.path,
+            phase: .appMoved,
+            timestamp: macBayTimestamp()
+        )
+        try journal.save(record, on: volumeDir)
+
+        let report = try check(makeChecker())
+        let matched = findings(report, code: .incompleteOperation)
+        XCTAssertEqual(matched.count, 1)
+        XCTAssertEqual(matched.first?.status, .needsAttention)
+        XCTAssertEqual(matched.first?.name, "Orphaned.app")
+        XCTAssertTrue(matched.first?.detail.contains("app_moved") == true)
+        XCTAssertEqual(report.exitCode, 1)
+    }
+
     private func snapshot(of root: URL) throws -> [String] {
         var entries: [String] = []
         let fileManager = FileManager.default

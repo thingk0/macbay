@@ -492,7 +492,7 @@ final class MockDiskInfoProvider: DiskInfoProvider, @unchecked Sendable {
         if let info = mapping[path] ?? mapping[stdPath] {
             return info
         }
-        for (key, val) in mapping {
+        for (key, val) in mapping.sorted(by: { $0.key.count > $1.key.count }) {
             let stdKey = URL(fileURLWithPath: key).standardizedFileURL.path
             if path.hasPrefix(key) || stdPath.hasPrefix(stdKey) || path.hasPrefix(stdKey) || stdPath.hasPrefix(key) {
                 return val

@@ -14,6 +14,7 @@ struct MacBay: ParsableCommand {
             ScanCommand.self,
             DoctorCommand.self,
             DockCommand.self,
+            AdoptCommand.self,
             UndockCommand.self,
             XcodeCommand.self,
             CacheCommand.self

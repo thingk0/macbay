@@ -22,7 +22,7 @@ MacBayは、Apple Silicon Mac向けに設計された開発者ファーストな
 
 ## 主な機能
 
-- **アプリケーションの外部化（`dock` / `undock`）**: 大容量アプリを外部ストレージへ移行し、元の位置にシンボリックリンクを作成します。DockアイコンやLaunchServicesの登録も自動的に更新されます。
+- **アプリケーションの外部化（`dock` / `undock` / `adopt`）**: 大容量アプリを外部ストレージへ移行・内蔵ディスクへ復元、または内蔵復元を経ることなく既存の外部アプリをMacBay標準構造へ取り込みます。DockアイコンやLaunchServicesの登録も自動的に更新されます。
 - **安全性判定エンジン（`AppInspector`）**: アプリケーションバンドルを自動検査し、仮想化エンタイトルメント、カーネル／システム拡張機能、ハードコードされた自己移動シグナルを検出します。
 - **Xcode DeviceSupportの管理（`xcode`）**: Xcodeの正常な動作を維持したまま、肥大化しやすいiOS DeviceSupportシンボルを外部ストレージへオフロードします。既存のレガシーリンクを保持し、利用不可となったシミュレータのクリーンアップも行います。
 - **開発者キャッシュのルーティング（`cache`）**: `~/.zshrc` 内に独立した管理ブロックを追加し、npm、uv、Gradle、Hugging Faceのキャッシュを外部ストレージへルーティングします。
@@ -240,7 +240,7 @@ Healthy · 2
 
 ### デフォルトボリュームの選択（`init`）
 
-`--volume` を省略したときに変更系コマンドが使用する外部ボリュームを保存します。`dock`、`undock`、`xcode`、`cache` が常に同じドライブを対象とするようになります:
+`--volume` を省略したときに変更系コマンドが使用する外部ボリュームを保存します。`dock`、`undock`、`adopt`、`xcode`、`cache` が常に同じドライブを対象とするようになります:
 
 ```sh
 # 適合するボリュームが1つだけならそのまま保存し、ターミナルでは番号付きリストから選択します
@@ -325,6 +325,9 @@ Dry run: dock Example.app
 > mb dock HeavyStudio.app --force --dry-run
 > ```
 
+> [!TIP]
+> `/Applications` 内のアプリケーションがすでにMacBay外部で外部ストレージへ接続されているシンボリックリンクである場合、`mb dock` はこれを検知し、代わりに `mb adopt` コマンドを使用するよう案内します。
+
 ### アプリケーションの復元（`undock`）
 
 外部化したアプリケーションを元の `/Applications` の場所へ復元し、外部ボリューム上のコピーを削除します:
@@ -338,6 +341,39 @@ mb undock Example.app
 ```
 
 復元時も必要な容量をプレビューします: 内蔵ボリュームの空き容量、コピー後の推定空き容量、不足量です。実行時には内蔵ボリュームを再確認し、容量が不足している場合や確認できない場合はコピー前に中止します。
+
+### 外部アプリケーションの管理取り込み（`adopt`）
+
+すでに外部ストレージに配置されているアプリケーションを内蔵ディスクへ復元することなく、MacBay標準配置（`<Volume>/MacBay/Applications/<App>.app`）へと再配置し、`/Applications/<App>.app` シンボリックリンクを更新して `manifest.json` に正式な管理対象として登録します:
+
+```sh
+# まずは --dry-run でプレビュー
+mb adopt ChatGPT.app --volume /Volumes/ExternalSSD --dry-run
+
+# 管理取り込みを実行
+mb adopt ChatGPT.app --volume /Volumes/ExternalSSD
+```
+
+プレビュー出力例:
+```text
+Dry run: adopt ChatGPT.app
+  Size: 120.5 MB
+  Source: /Volumes/ExternalSSD/Applications/ChatGPT.app
+  Destination: /Volumes/ExternalSSD/MacBay/Applications/ChatGPT.app
+  Symlink: /Applications/ChatGPT.app -> /Volumes/ExternalSSD/MacBay/Applications/ChatGPT.app
+  Space: no additional space required (same volume relocation)
+  Dry run: no files were changed
+```
+
+**動作の仕組み**:
+1. **リンク先の解決**: `/Applications/<App>.app` のシンボリックリンクを追跡し、外部APFSボリューム上の実際のアプリケーションバンドルの位置を特定します。
+2. **安全性と互換性の検証**: 実行中プロセス（`lsof`）、SQLiteロックファイル（`-wal`, `-shm`）、コード署名の整合性、移行不可シグナルを検査します。⚠️ **Review**（`POPUP_RISK`）と判定されたアプリには `--force` が必要です。
+3. **ジャーナリングとクラッシュ復旧**: 外部ボリューム上に操作ジャーナル（`.operations/adopt-<id>.json`）を記録します。中断された操作は `mb doctor` により未完了操作（`incomplete_operation`）として報告されます。
+4. **アトミック再配置**: 同一APFSボリューム内でバンドルを標準パスへアトミックに移動します（すでに標準パスにある場合は移動をスキップ）。
+5. **シンボリックリンクのアトミック更新**: `/Applications/<App>.app` のシンボリックリンクを新しい標準パスへアトミックに差し替えます。
+6. **マニフェスト登録**: プロセス間ファイルロック（`flock`）のもとで `MacBay/manifest.json` に記録します。
+7. **システムの更新**: LaunchServicesの登録情報（`lsregister -f`）を再構築し、Dockを再起動します。
+
 
 ### Xcodeのメンテナンス（`xcode`）
 

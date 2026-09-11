@@ -10,6 +10,7 @@ public struct BundleMigrator {
     private let volumeManager: VolumeManager
     private let appInspector: AppInspector
     private let spaceEstimator: SpaceEstimator
+    private let symlinkResolver: SymlinkResolver
 
     public init(
         fileManager: FileManager = .default,
@@ -38,6 +39,7 @@ public struct BundleMigrator {
             fileManager: fileManager,
             commandRunner: commandRunner
         )
+        self.symlinkResolver = SymlinkResolver(fileManager: fileManager)
     }
 
     public func dock(
@@ -54,7 +56,23 @@ public struct BundleMigrator {
         guard fileManager.fileExists(atPath: source.path) else {
             throw MacBayError.pathMissing(source.path)
         }
-        guard (try? fileManager.destinationOfSymbolicLink(atPath: source.path)) == nil else {
+        if (try? fileManager.destinationOfSymbolicLink(atPath: source.path)) != nil {
+            let resolution = symlinkResolver.resolve(at: source)
+            if case let .resolved(target, _, _) = resolution {
+                if let diskInfo = try? volumeManager.diskInfoProvider.diskInfo(for: target.path),
+                   !diskInfo.isInternal {
+                    let volumeURL = URL(fileURLWithPath: diskInfo.mountPoint)
+                    let isManaged = (try? manifestStore.load(on: volumeURL))?.items.contains { item in
+                        item.kind == .application &&
+                        URL(fileURLWithPath: item.sourcePath).standardizedFileURL.path.caseInsensitiveCompare(source.standardizedFileURL.path) == .orderedSame &&
+                        URL(fileURLWithPath: item.externalPath).standardizedFileURL.path.caseInsensitiveCompare(target.standardizedFileURL.path) == .orderedSame
+                    } ?? false
+
+                    if !isManaged {
+                        throw MacBayError.unmanagedLinkDetected(path: source.path, targetPath: target.path)
+                    }
+                }
+            }
             throw MacBayError.applicationAlreadyDocked(source.path)
         }
 

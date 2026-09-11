@@ -22,7 +22,7 @@ MacBay is a developer-first storage externalizer designed for Apple Silicon Macs
 
 ## Features
 
-- **Application Relocation (`dock` / `undock`)**: Migrate large apps to external storage and replace them with symbolic links. Dock icons and LaunchServices are automatically refreshed.
+- **Application Relocation (`dock` / `undock` / `adopt`)**: Migrate large apps to external storage, restore them to internal disk, or adopt already-externalized apps into standard MacBay layout without restoring first. Dock icons and LaunchServices are automatically refreshed.
 - **Safety Engine (`AppInspector`)**: Automatically checks application bundles for virtualization entitlements, kernel/system extensions, and hardcoded relocation signals.
 - **Xcode DeviceSupport Management (`xcode`)**: Offload massive iOS DeviceSupport symbols while keeping Xcode functioning seamlessly. Preserves existing legacy links and cleans up unavailable simulators.
 - **Developer Cache Routing (`cache`)**: Route npm, uv, Gradle, and Hugging Face caches to external storage via a clean, isolated block in `~/.zshrc`.
@@ -240,7 +240,7 @@ Exit codes: `0` when nothing needs attention, `1` when problems or unverifiable 
 
 ### Choosing the Default Volume (`init`)
 
-Saves the external volume that mutating commands use when `--volume` is omitted, so `dock`, `undock`, `xcode`, and `cache` keep targeting the same drive:
+Saves the external volume that mutating commands use when `--volume` is omitted, so `dock`, `undock`, `adopt`, `xcode`, and `cache` keep targeting the same drive:
 
 ```sh
 # Save the only eligible volume, or pick from a numbered list in a terminal
@@ -325,6 +325,9 @@ The preview also reports the destination free space, the estimated free space af
 > mb dock HeavyStudio.app --force --dry-run
 > ```
 
+> [!TIP]
+> If an application in `/Applications` is already a symlink pointing to external storage outside MacBay, `mb dock` detects this and suggests running `mb adopt` instead.
+
 ### Restoring an Application (`undock`)
 
 Restores an externalized application back to its original location in `/Applications` and cleans up the external copy:
@@ -338,6 +341,39 @@ mb undock Example.app
 ```
 
 Restoring also previews the space requirement: the internal volume's free space, the estimated free space after the copy, and any shortfall. The internal volume is re-checked at run time, and the restore stops before copying when space is insufficient or cannot be verified.
+
+### Adopting an External Application (`adopt`)
+
+Adopts an application that already resides on external storage into the standard MacBay layout (`<Volume>/MacBay/Applications/<App>.app`), updates `/Applications/<App>.app` symlink, and registers it in `manifest.json` without copying it back to the internal disk first:
+
+```sh
+# Preview adoption with --dry-run
+mb adopt ChatGPT.app --volume /Volumes/ExternalSSD --dry-run
+
+# Execute adoption
+mb adopt ChatGPT.app --volume /Volumes/ExternalSSD
+```
+
+Preview output example:
+```text
+Dry run: adopt ChatGPT.app
+  Size: 120.5 MB
+  Source: /Volumes/ExternalSSD/Applications/ChatGPT.app
+  Destination: /Volumes/ExternalSSD/MacBay/Applications/ChatGPT.app
+  Symlink: /Applications/ChatGPT.app -> /Volumes/ExternalSSD/MacBay/Applications/ChatGPT.app
+  Space: no additional space required (same volume relocation)
+  Dry run: no files were changed
+```
+
+**How it works**:
+1. **Target Resolution**: Resolves the unmanaged symlink at `/Applications/<App>.app` to locate the source bundle on external APFS storage.
+2. **Safety & Compatibility**: Checks for active processes (`lsof`), SQLite locks (`-wal`, `-shm`), codesign integrity, and migration blockers. Applications flagged with ⚠️ **Review** (`POPUP_RISK`) require `--force`.
+3. **Journaling & Crash Recovery**: Writes an operation record (`.operations/adopt-<id>.json`) on the external volume. If interrupted, `mb doctor` reports the incomplete operation (`incomplete_operation`).
+4. **Atomic Relocation**: Moves the bundle to `<Volume>/MacBay/Applications/<App>.app` within the same APFS volume, or skips the move if it is already at the standard destination.
+5. **Atomic Symlink Update**: Swaps the `/Applications/<App>.app` symlink to point to the new MacBay path atomically.
+6. **Manifest Registration**: Records the item in `MacBay/manifest.json` with multi-process file locking (`flock`).
+7. **System Refresh**: Rebuilds LaunchServices registration (`lsregister -f`) and restarts the Dock.
+
 
 ### Xcode Maintenance (`xcode`)
 

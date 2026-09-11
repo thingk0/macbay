@@ -8,6 +8,7 @@ public struct MacBayService {
     private let manifestStore: ManifestStore
     private let scanner: AppScanner
     private let bundleMigrator: BundleMigrator
+    private let appAdopter: AppAdopter
     private let xcodeDoctor: XcodeDoctor
     private let cacheManager: CacheManager
 
@@ -35,6 +36,12 @@ public struct MacBayService {
             fileManager: fileManager,
             commandRunner: commandRunner,
             volumeManager: self.volumeManager
+        )
+        self.appAdopter = AppAdopter(
+            fileManager: fileManager,
+            commandRunner: commandRunner,
+            volumeManager: self.volumeManager,
+            manifestStore: self.manifestStore
         )
         self.xcodeDoctor = XcodeDoctor(
             fileManager: fileManager,
@@ -155,6 +162,21 @@ public struct MacBayService {
     ) throws -> MigrationResult {
         let selection = try selectVolume(path: volumePath)
         return try bundleMigrator.dock(
+            appName: appName,
+            on: URL(fileURLWithPath: selection.volume.path),
+            dryRun: dryRun,
+            force: force
+        )
+    }
+
+    public func adopt(
+        appName: String,
+        volumePath: String?,
+        dryRun: Bool,
+        force: Bool = false
+    ) throws -> MigrationResult {
+        let selection = try selectVolume(path: volumePath)
+        return try appAdopter.adopt(
             appName: appName,
             on: URL(fileURLWithPath: selection.volume.path),
             dryRun: dryRun,

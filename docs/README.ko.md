@@ -22,7 +22,7 @@ MacBay는 Apple Silicon Mac을 위해 설계된 개발자 중심의 스토리지
 
 ## 주요 기능
 
-- **애플리케이션 이전 (`dock` / `undock`)**: 대용량 앱을 외장 스토리지로 마이그레이션하고 원본 위치를 심볼릭 링크로 대체합니다. Dock 아이콘과 LaunchServices 등록 정보가 자동으로 갱신됩니다.
+- **애플리케이션 이전 (`dock` / `undock` / `adopt`)**: 대용량 앱을 외장 스토리지로 마이그레이션하거나, 내장 복원 없이 기존 외장 앱을 MacBay 표준 구조로 수용합니다. Dock 아이콘과 LaunchServices 등록 정보가 자동으로 갱신됩니다.
 - **안전성 검사 엔진 (`AppInspector`)**: 앱 번들의 가상화 권한(entitlement), 커널/시스템 확장(KEXT/System Extension), 하드코딩된 자체 재배치 로직 여부를 자동으로 검사합니다.
 - **Xcode DeviceSupport 관리 (`xcode`)**: 방대한 용량을 차지하는 iOS DeviceSupport 심볼을 외장 드라이브로 이전하면서도 Xcode가 정상적으로 작동하도록 지원합니다. 기존 레거시 심볼릭 링크를 보존하고 사용 불가능한 시뮬레이터를 정리합니다.
 - **개발자 캐시 경로 재지정 (`cache`)**: `~/.zshrc` 내에 격리 관리되는 설정 블록을 통해 npm, uv, Gradle, Hugging Face 캐시 디렉터리를 외장 스토리지로 라우팅합니다.
@@ -240,7 +240,7 @@ Healthy · 2
 
 ### 기본 볼륨 선택 (`init`)
 
-`--volume`을 생략했을 때 변경 명령이 사용할 외장 볼륨을 저장합니다. `dock`, `undock`, `xcode`, `cache`가 항상 같은 드라이브를 대상으로 동작합니다:
+`--volume`을 생략했을 때 변경 명령이 사용할 외장 볼륨을 저장합니다. `dock`, `undock`, `adopt`, `xcode`, `cache`가 항상 같은 드라이브를 대상으로 동작합니다:
 
 ```sh
 # 적격 볼륨이 하나뿐이면 바로 저장하고, 터미널에서는 번호 목록으로 선택합니다
@@ -325,6 +325,9 @@ Dry run: dock Example.app
 > mb dock HeavyStudio.app --force --dry-run
 > ```
 
+> [!TIP]
+> `/Applications` 내의 애플리케이션이 이미 MacBay 외부에서 외장 스토리지로 연결된 심볼릭 링크인 경우, `mb dock`은 이를 감지하고 대신 `mb adopt` 명령을 사용할 것을 안내합니다.
+
 ### 애플리케이션 복원 (`undock`)
 
 외장화된 애플리케이션을 `/Applications`의 원래 위치로 복원하고 외장 드라이브의 복사본을 정리합니다:
@@ -338,6 +341,39 @@ mb undock Example.app
 ```
 
 복원 시에도 필요한 공간을 미리 보여줍니다: 내장 볼륨의 여유 공간, 복사 후 예상 여유 공간, 부족분입니다. 실제 실행 시 내장 볼륨을 다시 확인하며, 공간이 부족하거나 확인할 수 없으면 복사 전에 중단합니다.
+
+### 외장 애플리케이션 수용 (`adopt`)
+
+이미 외장 스토리지에 존재하는 애플리케이션을 내장 디스크로 다시 복원하지 않고도 MacBay 표준 경로(`<Volume>/MacBay/Applications/<App>.app`)로 재배치하고, `/Applications/<App>.app` 심볼릭 링크를 갱신하며, `manifest.json`에 정식 관리 대상으로 등록합니다:
+
+```sh
+# 먼저 --dry-run으로 시뮬레이션 확인
+mb adopt ChatGPT.app --volume /Volumes/ExternalSSD --dry-run
+
+# 실제 수용 실행
+mb adopt ChatGPT.app --volume /Volumes/ExternalSSD
+```
+
+미리보기 출력 예시:
+```text
+Dry run: adopt ChatGPT.app
+  Size: 120.5 MB
+  Source: /Volumes/ExternalSSD/Applications/ChatGPT.app
+  Destination: /Volumes/ExternalSSD/MacBay/Applications/ChatGPT.app
+  Symlink: /Applications/ChatGPT.app -> /Volumes/ExternalSSD/MacBay/Applications/ChatGPT.app
+  Space: no additional space required (same volume relocation)
+  Dry run: no files were changed
+```
+
+**동작 원리**:
+1. **대상 위치 탐색**: `/Applications/<App>.app` 심볼릭 링크를 추적하여 외장 APFS 볼륨 내 실제 원본 앱 번들 위치를 확인합니다.
+2. **안전성 및 호환성 검사**: 활성 프로세스(`lsof`), SQLite 잠금(`-wal`, `-shm`), 코드 서명 무결성 및 이전 차단 요소를 검사합니다. ⚠️ **Review** (`POPUP_RISK`) 등급 앱은 `--force`가 필요합니다.
+3. **저널링 및 복구 추적**: 작업 진행 상황을 외장 볼륨 내 저널(`.operations/adopt-<id>.json`)에 기록합니다. 도중 중단된 작업은 `mb doctor`가 감지하여 `incomplete_operation`으로 보고합니다.
+4. **원자적 재배치**: 동일 APFS 볼륨 내에서 번들을 표준 경로로 원자적 이동합니다 (이미 표준 위치에 있는 경우 이동 생략).
+5. **원자적 심볼릭 링크 갱신**: `/Applications/<App>.app` 심볼릭 링크를 새로운 표준 경로로 원자적 교체합니다.
+6. **매니페스트 등록**: 멀티 프로세스 파일 락(`flock`) 하에서 `MacBay/manifest.json`에 안전하게 등록합니다.
+7. **시스템 갱신**: LaunchServices 등록 정보(`lsregister -f`)를 갱신하고 Dock 프로세스를 재시작합니다.
+
 
 ### Xcode 유지 관리 (`xcode`)
 

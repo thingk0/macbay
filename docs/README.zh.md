@@ -22,7 +22,7 @@ MacBay 是一款专为 Apple Silicon Mac 设计的开发者优先存储外部化
 
 ## 特性
 
-- **应用程序迁移 (`dock` / `undock`)**：将大型应用迁移至外置存储并替换为符号链接。自动刷新 Dock 栏图标与 LaunchServices 注册。
+- **应用程序迁移 (`dock` / `undock` / `adopt`)**：将大型应用迁移至外置存储、恢复至内置磁盘，或在无需拷回内置磁盘的情况下将已有外置应用纳管至 MacBay 标准目录结构。自动刷新 Dock 栏图标与 LaunchServices 注册。
 - **安全检查引擎 (`AppInspector`)**：自动分析应用程序包（App Bundle）的虚拟化权限（Entitlements）、内核/系统扩展（KEXT/System Extensions）以及硬编码重定位信号。
 - **Xcode DeviceSupport 管理 (`xcode`)**：迁移庞大的 iOS DeviceSupport 符号文件，同时确保 Xcode 无缝正常运行。保留原有的历史链接，并清理不可用的模拟器。
 - **开发者缓存重定向 (`cache`)**：通过在 `~/.zshrc` 中注入清晰、隔离的配置块，将 npm、uv、Gradle 和 Hugging Face 的缓存路由至外置存储。
@@ -240,7 +240,7 @@ Healthy · 2
 
 ### 选择默认卷 (`init`)
 
-保存省略 `--volume` 时变更类命令所使用的默认外置卷，使 `dock`、`undock`、`xcode` 与 `cache` 始终作用于同一块驱动器：
+保存省略 `--volume` 时变更类命令所使用的默认外置卷，使 `dock`、`undock`、`adopt`、`xcode` 与 `cache` 始终作用于同一块驱动器：
 
 ```sh
 # 仅有一个符合条件的卷时直接保存，在终端中则通过编号列表选择
@@ -325,6 +325,9 @@ Dry run: dock Example.app
 > mb dock HeavyStudio.app --force --dry-run
 > ```
 
+> [!TIP]
+> 若 `/Applications` 下的应用程序已是指向 MacBay 外部外置存储的符号链接，`mb dock` 会检测到并提示改用 `mb adopt` 命令。
+
 ### 恢复应用程序 (`undock`)
 
 将已外置的应用程序恢复到 `/Applications` 下的原始位置，并清理外置磁盘上的副本：
@@ -338,6 +341,39 @@ mb undock Example.app
 ```
 
 恢复时同样会预览空间需求：内置卷的剩余空间、复制后的预计剩余空间以及缺口容量。实际执行时会重新检查内置卷，若空间不足或无法确认，将在复制前中止。
+
+### 纳管外置应用程序 (`adopt`)
+
+在无需将应用程序拷回内置磁盘的情况下，将已位于外置存储的应用程序纳管至 MacBay 标准目录结构（`<Volume>/MacBay/Applications/<App>.app`），更新 `/Applications/<App>.app` 符号链接，并在 `manifest.json` 中正式登记：
+
+```sh
+# 建议先使用 --dry-run 预览
+mb adopt ChatGPT.app --volume /Volumes/ExternalSSD --dry-run
+
+# 执行纳管
+mb adopt ChatGPT.app --volume /Volumes/ExternalSSD
+```
+
+预览输出示例：
+```text
+Dry run: adopt ChatGPT.app
+  Size: 120.5 MB
+  Source: /Volumes/ExternalSSD/Applications/ChatGPT.app
+  Destination: /Volumes/ExternalSSD/MacBay/Applications/ChatGPT.app
+  Symlink: /Applications/ChatGPT.app -> /Volumes/ExternalSSD/MacBay/Applications/ChatGPT.app
+  Space: no additional space required (same volume relocation)
+  Dry run: no files were changed
+```
+
+**工作流程**：
+1. **目标定位**：解析 `/Applications/<App>.app` 符号链接，在外置 APFS 卷上定位源应用包。
+2. **安全与兼容性检查**：检查活跃进程（`lsof`）、SQLite 锁（`-wal`、`-shm`）、代码签名完整性以及迁移阻断条件。标记为 ⚠️ **Review**（`POPUP_RISK`）的应用需要 `--force`。
+3. **日志与崩溃恢复**：在外置卷上写入操作日志（`.operations/adopt-<id>.json`）。若中断，`mb doctor` 将报告未完成的操作（`incomplete_operation`）。
+4. **原子重定位**：在同一 APFS 卷内将应用包原子移动至标准路径（若已在标准路径则跳过移动）。
+5. **原子符号链接更新**：以原子操作将 `/Applications/<App>.app` 符号链接更新为指向新的标准路径。
+6. **清单登记**：在跨进程文件锁（`flock`）保护下更新 `MacBay/manifest.json`。
+7. **系统刷新**：重建 LaunchServices 注册信息并重启 Dock。
+
 
 ### Xcode 维护管理 (`xcode`)
 
