@@ -133,7 +133,7 @@ final class PTYIntegrationTests: XCTestCase {
         return PTYSession(process: process, masterFD: masterFD)
     }
 
-    func testZeroArgumentLaunchesTUIAndQuitsCleanly() throws {
+    func testZeroArgumentOutputsHelpInPTYAndExitsCleanly() throws {
         guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
             throw XCTSkip("Binary not found at \(binaryURL.path)")
         }
@@ -141,21 +141,12 @@ final class PTYIntegrationTests: XCTestCase {
         let session = try spawnInPTY(arguments: [])
         defer { session.close() }
 
-        // Wait for MacBay header
-        let hasHeader = session.waitForOutput(containing: "MacBay", timeout: 2.0)
-        XCTAssertTrue(hasHeader, "TUI should output MacBay header on zero-arg in PTY")
-
-        // Send 'q' to quit
-        session.write("q")
-
-        // Wait for clean exit
-        XCTAssertTrue(session.waitForExit(timeout: 3.0), "TUI should exit within timeout after 'q'")
+        XCTAssertTrue(session.waitForExit(timeout: 3.0), "Zero-arg in PTY should exit cleanly with help")
         XCTAssertEqual(session.process.terminationStatus, 0)
 
         let totalOutput = session.output()
-        // Check terminal cleanup codes
-        XCTAssertTrue(totalOutput.contains("\u{001B}[?1049l") || totalOutput.contains("\u{001B}[?25h"),
-                      "Terminal must restore alt screen and cursor")
+        XCTAssertTrue(totalOutput.contains("OVERVIEW: The developer-first storage externalizer for macOS."))
+        XCTAssertTrue(totalOutput.contains("SUBCOMMANDS:"))
     }
 
     func testKeyInputNavigationInPTY() throws {
@@ -190,7 +181,7 @@ final class PTYIntegrationTests: XCTestCase {
             throw XCTSkip("Binary not found at \(binaryURL.path)")
         }
 
-        let session = try spawnInPTY(arguments: [])
+        let session = try spawnInPTY(arguments: ["tui"])
         defer { session.close() }
 
         XCTAssertTrue(session.waitForOutput(containing: "MacBay", timeout: 2.0))
@@ -211,7 +202,7 @@ final class PTYIntegrationTests: XCTestCase {
             throw XCTSkip("Binary not found at \(binaryURL.path)")
         }
 
-        let session = try spawnInPTY(arguments: [], initialCols: 80, initialRows: 24)
+        let session = try spawnInPTY(arguments: ["tui"], initialCols: 80, initialRows: 24)
         defer { session.close() }
 
         XCTAssertTrue(session.waitForOutput(containing: "MacBay", timeout: 2.0))

@@ -67,9 +67,12 @@ mb repair <AppName>.app --action redock
 mb repair <AppName>.app --action keep-local
 mb repair <AppName>.app --rollback
 
-# 6. Xcode DeviceSupport & Simulator cleanup
+# 6. Xcode Storage Externalization & Cache Purge
 mb xcode --dry-run
 mb xcode
+mb xcode --clean-derived-data --dry-run
+mb xcode --clean-caches --dry-run
+mb xcode --all --dry-run
 
 # 7. Developer caches (npm, uv, Gradle, HF)
 mb cache --enable --dry-run

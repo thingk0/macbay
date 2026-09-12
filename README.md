@@ -25,10 +25,9 @@ MacBay is a developer-first storage externalizer designed for Apple Silicon Macs
 
 ## Features
 
-- **Interactive TUI Mode (`mb` / `mb tui`)**: Launch a keyboard-driven Terminal User Interface directly by typing `mb` in an interactive terminal. Inspect storage capacity, browse applications with Safe/Review/Blocked status, safely preview and execute moves and restorations, and explore diagnostic findings with actionable recommendations.
+- **Interactive TUI Mode (`mb tui` / `mb ui`)**: Launch an interactive, keyboard-driven Terminal User Interface to visually inspect storage capacity, browse applications with Safe/Review/Blocked status, and preview moves and restorations.
 - **Application Relocation (`dock` / `undock` / `adopt`)**: Migrate large apps to external storage, restore them to internal disk, or adopt already-externalized apps into standard MacBay layout without restoring first. Dock icons and LaunchServices are automatically refreshed.
-- **Safety Engine (`AppInspector`)**: Automatically checks application bundles for virtualization entitlements, kernel/system extensions, and hardcoded relocation signals.
-- **Xcode DeviceSupport Management (`xcode`)**: Offload massive iOS DeviceSupport symbols while keeping Xcode functioning seamlessly. Preserves existing legacy links and cleans up unavailable simulators.
+- **Xcode Storage Optimization (`xcode`)**: Offload massive iOS DeviceSupport symbols and build Archives to external APFS storage, safely purge DerivedData and simulator/Xcode caches, and remove unavailable simulators. Preserves existing legacy symlinks.
 - **Developer Cache Routing (`cache`)**: Route npm, uv, Gradle, and Hugging Face caches to external storage via a clean, isolated block in `~/.zshrc`.
 - **Strict Volume Validation**: Automatically validates external APFS filesystems and rejects installer DMGs, read-only drives, and internal disks.
 
@@ -115,18 +114,22 @@ mb --version
 
 ## Quick Start
 
-### 0. Interactive TUI Mode (Default)
+### 0. Quick Help & Interactive TUI Mode
 
-Simply run `mb` without arguments in your terminal to open the keyboard-driven TUI:
+Running `mb` without arguments prints the command summary and help. To launch the keyboard-driven interactive TUI, run `mb tui` (or `mb ui`):
 
 ```sh
+# Print CLI help and subcommands
 mb
-# Or explicitly:
+
+# Launch interactive visual TUI
 mb tui
+# Or with alias:
+mb ui
 ```
 
 > [!NOTE]
-> In non-interactive environments (CI, scripts, pipes) or when `TERM` is unsupported, `mb` prints standard CLI help to stdout. Explicit `mb tui` in a non-interactive environment exits with an error explanation.
+> In non-interactive environments (CI, scripts, pipes) or when `TERM` is unsupported, explicit `mb tui` exits with an error explanation.
 
 #### Keyboard Controls
 
@@ -514,20 +517,36 @@ Available actions:
 - **Keep-Local**: `keep-local` removes only the item entry from `manifest.json`. Both local and external applications remain completely untouched, with the external copy becoming an unmanaged archive.
 
 
-### Xcode Maintenance (`xcode`)
-
-Externalizes `~/Library/Developer/Xcode/iOS DeviceSupport` to the external volume and cleans up unavailable iOS simulators:
+### Xcode Optimization & Maintenance (`xcode`)
+ 
+Externalizes `~/Library/Developer/Xcode/iOS DeviceSupport` and `~/Library/Developer/Xcode/Archives` to the external volume, cleans up unavailable iOS simulators, and safely purges DerivedData and application caches:
 
 ```sh
-# Preview Xcode externalization
+# Standard externalization (iOS DeviceSupport + Archives) and unavailable simulator cleanup
 mb xcode --dry-run
-
-# Execute Xcode maintenance
 mb xcode
+
+# Purge DerivedData build caches
+mb xcode --clean-derived-data --dry-run
+mb xcode --clean-derived-data
+
+# Purge CoreSimulator and Xcode caches
+mb xcode --clean-caches --dry-run
+mb xcode --clean-caches
+
+# Run standard externalization and purge all caches
+mb xcode --all --dry-run
+mb xcode --all
+
+# Advanced: externalize DerivedData to external storage
+mb xcode --externalize-derived-data --dry-run
 ```
 
 > [!TIP]
 > If you already have a symlink pointing to an external volume (e.g. `/Volumes/<Drive>/Developer/Xcode/iOS DeviceSupport`), MacBay recognizes and validates the link target without unnecessary relocation.
+
+> [!NOTE]
+> `mb xcode` checks whether `Xcode.app` is actively running before modifying its storage or deleting caches. To proceed anyway, pass `-f, --force`.
 
 ### Developer Cache Routing (`cache`)
 

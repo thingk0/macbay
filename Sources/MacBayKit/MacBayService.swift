@@ -330,9 +330,13 @@ public struct MacBayService {
         )
     }
 
-    public func xcode(volumePath: String?, dryRun: Bool) throws -> XcodeDoctorReport {
+    public func xcode(
+        volumePath: String?,
+        options: XcodeDoctorOptions = XcodeDoctorOptions(),
+        dryRun: Bool
+    ) throws -> XcodeDoctorReport {
         let selection = try selectVolume(path: volumePath)
-        return try xcodeDoctor.run(on: URL(fileURLWithPath: selection.volume.path), dryRun: dryRun)
+        return try xcodeDoctor.run(on: URL(fileURLWithPath: selection.volume.path), options: options, dryRun: dryRun)
     }
 
     public func cache(volumePath: String?, dryRun: Bool, reset: Bool) throws -> CacheReport {

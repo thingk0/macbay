@@ -27,18 +27,8 @@ struct MacBay: ParsableCommand {
 
     static func execute() {
         if CommandLine.arguments.count <= 1 {
-            if MacBayTUI.isInteractiveTerminal() {
-                do {
-                    try MacBayTUI.run()
-                    Darwin.exit(0)
-                } catch {
-                    fputs("Error: \(error.localizedDescription)\n", stderr)
-                    Darwin.exit(1)
-                }
-            } else {
-                print(helpMessage())
-                Darwin.exit(0)
-            }
+            print(helpMessage())
+            Darwin.exit(0)
         }
 
         do {

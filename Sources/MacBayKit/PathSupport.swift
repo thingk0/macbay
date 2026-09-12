@@ -29,6 +29,34 @@ public enum MacBayPaths {
         externalRoot(on: volume).appendingPathComponent("Xcode", isDirectory: true)
     }
 
+    public static func xcodeArchivesRoot(on volume: URL) -> URL {
+        xcodeRoot(on: volume).appendingPathComponent("Archives", isDirectory: true)
+    }
+
+    public static func xcodeDerivedDataRoot(on volume: URL) -> URL {
+        xcodeRoot(on: volume).appendingPathComponent("DerivedData", isDirectory: true)
+    }
+
+    public static func defaultXcodeDeviceSupportURL(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
+        homeDirectory.appendingPathComponent("Library/Developer/Xcode/iOS DeviceSupport")
+    }
+
+    public static func defaultXcodeArchivesURL(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
+        homeDirectory.appendingPathComponent("Library/Developer/Xcode/Archives")
+    }
+
+    public static func defaultXcodeDerivedDataURL(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
+        homeDirectory.appendingPathComponent("Library/Developer/Xcode/DerivedData")
+    }
+
+    public static func defaultCoreSimulatorCachesURL(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
+        homeDirectory.appendingPathComponent("Library/Developer/CoreSimulator/Caches")
+    }
+
+    public static func defaultXcodeCachesURL(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
+        homeDirectory.appendingPathComponent("Library/Caches/com.apple.dt.Xcode")
+    }
+
     public static func cachesRoot(on volume: URL) -> URL {
         externalRoot(on: volume).appendingPathComponent("Caches", isDirectory: true)
     }

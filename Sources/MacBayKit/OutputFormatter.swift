@@ -419,11 +419,32 @@ public struct OutputFormatter {
         } else {
             lines.append("iOS DeviceSupport: not present")
         }
+        if let archives = report.archives {
+            lines.append(migration(archives))
+        }
+        if let derivedData = report.derivedData {
+            lines.append(migration(derivedData))
+        }
         if let cleanup = report.simulatorCleanup {
             lines.append("Simulator cleanup: \(cleanup.succeeded ? "completed" : "failed")")
             if !cleanup.output.isEmpty {
                 lines.append(cleanup.output)
             }
+        }
+        if let derivedDataCleanup = report.derivedDataCleanup {
+            lines.append("DerivedData cleanup: \(derivedDataCleanup.succeeded ? "completed" : "failed")")
+            if !derivedDataCleanup.output.isEmpty {
+                lines.append(derivedDataCleanup.output)
+            }
+        }
+        if let cacheCleanup = report.cacheCleanup {
+            lines.append("Cache cleanup: \(cacheCleanup.succeeded ? "completed" : "failed")")
+            if !cacheCleanup.output.isEmpty {
+                lines.append(cacheCleanup.output)
+            }
+        }
+        if report.freedBytes > 0 {
+            lines.append(style("Total cache storage reclaimed: \(OutputFormatter.humanBytes(report.freedBytes))", color: "32", bold: true))
         }
         return lines.joined(separator: "\n")
     }

@@ -246,7 +246,15 @@ public struct AppScanner {
         [
             DeveloperCacheTarget(
                 name: "Xcode iOS DeviceSupport",
-                path: homeDirectory.appendingPathComponent("Library/Developer/Xcode/iOS DeviceSupport")
+                path: MacBayPaths.defaultXcodeDeviceSupportURL(homeDirectory: homeDirectory)
+            ),
+            DeveloperCacheTarget(
+                name: "Xcode Archives",
+                path: MacBayPaths.defaultXcodeArchivesURL(homeDirectory: homeDirectory)
+            ),
+            DeveloperCacheTarget(
+                name: "Xcode DerivedData",
+                path: MacBayPaths.defaultXcodeDerivedDataURL(homeDirectory: homeDirectory)
             ),
             DeveloperCacheTarget(
                 name: "CoreSimulator",

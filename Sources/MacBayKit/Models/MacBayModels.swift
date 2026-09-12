@@ -436,11 +436,29 @@ public struct MigrationResult: Codable, Equatable, Sendable {
 
 public struct XcodeDoctorReport: Codable, Equatable, Sendable {
     public let deviceSupport: MigrationResult?
+    public let archives: MigrationResult?
+    public let derivedData: MigrationResult?
     public let simulatorCleanup: CommandResultSummary?
+    public let derivedDataCleanup: CommandResultSummary?
+    public let cacheCleanup: CommandResultSummary?
+    public let freedBytes: UInt64
 
-    public init(deviceSupport: MigrationResult?, simulatorCleanup: CommandResultSummary?) {
+    public init(
+        deviceSupport: MigrationResult? = nil,
+        archives: MigrationResult? = nil,
+        derivedData: MigrationResult? = nil,
+        simulatorCleanup: CommandResultSummary? = nil,
+        derivedDataCleanup: CommandResultSummary? = nil,
+        cacheCleanup: CommandResultSummary? = nil,
+        freedBytes: UInt64 = 0
+    ) {
         self.deviceSupport = deviceSupport
+        self.archives = archives
+        self.derivedData = derivedData
         self.simulatorCleanup = simulatorCleanup
+        self.derivedDataCleanup = derivedDataCleanup
+        self.cacheCleanup = cacheCleanup
+        self.freedBytes = freedBytes
     }
 }
 
