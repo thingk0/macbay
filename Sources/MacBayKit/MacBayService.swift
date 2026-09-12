@@ -356,9 +356,17 @@ public struct MacBayService {
         purgeEngine.scan(options: options)
     }
 
+    public func purge(
+        items: [PurgeItem],
+        options: PurgeOptions = PurgeOptions(),
+        dryRun: Bool
+    ) throws -> PurgeReport {
+        try purgeEngine.execute(items: items, options: options, dryRun: dryRun)
+    }
+
     public func purge(options: PurgeOptions = PurgeOptions(), dryRun: Bool) throws -> PurgeReport {
         let items = purgeEngine.scan(options: options)
-        return try purgeEngine.execute(items: items, options: options, dryRun: dryRun)
+        return try purge(items: items, options: options, dryRun: dryRun)
     }
 
     public func initialize(

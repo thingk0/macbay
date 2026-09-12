@@ -500,6 +500,78 @@ public struct OutputFormatter {
         return lines.joined(separator: "\n")
     }
 
+    public func formatPurgeInteractivePreview(
+        groups: [PurgeAppGroup],
+        skippedItems: [PurgeItem],
+        totalEligibleBytes: UInt64
+    ) -> String {
+        var lines = [
+            style("MacBay cache purge", color: "36", bold: true),
+            bold("Available targets · \(groups.count) app(s) (\(groups.flatMap(\.items).count) caches), reclaiming approximately \(OutputFormatter.humanBytes(totalEligibleBytes))"),
+            ""
+        ]
+
+        let formattedTotal = OutputFormatter.humanBytes(totalEligibleBytes)
+        lines.append("  1) " + bold("[All] Purge all targets (\(formattedTotal))"))
+
+        for (index, group) in groups.enumerated() {
+            let optionNum = index + 2
+            let groupSize = OutputFormatter.humanBytes(group.totalSizeBytes)
+            let categoryStr = group.items.first.map { "[\($0.category.displayName)]" } ?? ""
+            let countStr = group.items.count > 1 ? " · \(group.items.count) caches" : ""
+            lines.append("  \(optionNum)) \(bold(group.appName)) (\(groupSize)\(countStr)) \(style(categoryStr, color: "34"))")
+
+            let sortedItems = group.items.sorted { $0.sizeBytes > $1.sizeBytes }
+            if sortedItems.count == 1 {
+                lines.append("     • \(sortedItems[0].path)")
+            } else {
+                for item in sortedItems.prefix(3) {
+                    var subpath = item.path
+                    if let range = item.path.range(of: group.appName + "/") {
+                        subpath = String(item.path[range.upperBound...])
+                    } else {
+                        subpath = (item.path as NSString).lastPathComponent
+                    }
+                    lines.append("     • \(subpath) (\(OutputFormatter.humanBytes(item.sizeBytes)))")
+                }
+                if sortedItems.count > 3 {
+                    let remaining = sortedItems.dropFirst(3)
+                    let remBytes = remaining.reduce(0) { $0 + $1.sizeBytes }
+                    lines.append("     • + \(remaining.count) other cache directories (\(OutputFormatter.humanBytes(remBytes)))")
+                }
+            }
+        }
+
+        if !skippedItems.isEmpty {
+            lines.append("")
+            let skippedGroups = PurgeAppGroup.group(items: skippedItems)
+            lines.append(style("Skipped items (running) · \(skippedGroups.count) app(s) (\(skippedItems.count) caches)", color: "33", bold: true))
+            for group in skippedGroups {
+                let sizeStr = OutputFormatter.humanBytes(group.totalSizeBytes)
+                lines.append("  • \(group.appName) (\(sizeStr)) — application is currently running")
+            }
+            lines.append("  (Pass --include-running to include caches of running applications)")
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    public func formatPurgeSkippedOnly(skippedItems: [PurgeItem]) -> String {
+        var lines = [
+            style("MacBay cache purge", color: "36", bold: true),
+            "No eligible caches found to purge without --include-running.",
+            ""
+        ]
+        let skippedGroups = PurgeAppGroup.group(items: skippedItems)
+        lines.append(style("Skipped items (running) · \(skippedGroups.count) app(s) (\(skippedItems.count) caches)", color: "33", bold: true))
+        for group in skippedGroups {
+            let sizeStr = OutputFormatter.humanBytes(group.totalSizeBytes)
+            lines.append("  • \(group.appName) (\(sizeStr)) — application is currently running")
+        }
+        lines.append("  (Pass --include-running to include caches of running applications)")
+        return lines.joined(separator: "\n")
+    }
+
     public func formatReviewRequired(appName: String, reasons: [String], commandToProceed: String) -> String {
         var lines = [
             style("Review required · \(appName)", color: "33", bold: true),

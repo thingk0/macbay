@@ -32,6 +32,7 @@ struct PurgeCommand: ParsableCommand {
 
     func run() throws {
         let service = MacBayService()
+        let formatter = CommandSupport.formatter(json: json)
         let purgeOptions = PurgeOptions(
             appFilter: appFilter,
             includeRunning: includeRunning,
@@ -50,18 +51,99 @@ struct PurgeCommand: ParsableCommand {
             return
         }
 
-        let totalEligibleBytes = previewItems
-            .filter { !($0.isRunning && !includeRunning) }
-            .reduce(UInt64(0)) { $0 + $1.sizeBytes }
-        let formattedSize = OutputFormatter.humanBytes(totalEligibleBytes)
+        let eligibleItems = previewItems.filter { !($0.isRunning && !includeRunning) }
+        let skippedItems = previewItems.filter { $0.isRunning && !includeRunning }
 
-        try CommandSupport.confirm(
-            "MacBay will purge \(previewItems.count) application cache target(s), reclaiming approximately \(formattedSize).",
-            yes: yes,
-            dryRun: dryRun
-        )
+        if eligibleItems.isEmpty {
+            if json {
+                let report = PurgeReport(
+                    dryRun: dryRun,
+                    purgedItems: [],
+                    skippedItems: skippedItems,
+                    totalReclaimedBytes: 0,
+                    messages: ["All discovered caches belong to running applications. Use --include-running to purge them."]
+                )
+                try CommandSupport.printValue(report, json: true) { $0.purge(report) }
+            } else {
+                print(formatter.formatPurgeSkippedOnly(skippedItems: skippedItems))
+            }
+            return
+        }
 
-        let report = try service.purge(options: purgeOptions, dryRun: dryRun)
-        try CommandSupport.printValue(report, json: json) { $0.purge(report) }
+        let totalEligibleBytes = eligibleItems.reduce(UInt64(0)) { $0 + $1.sizeBytes }
+
+        // 1. Dry run: execute with dryRun: true on all preview items and print report
+        if dryRun {
+            let report = try service.purge(items: previewItems, options: purgeOptions, dryRun: true)
+            try CommandSupport.printValue(report, json: json) { $0.purge(report) }
+            return
+        }
+
+        // 2. JSON mode without --yes requires confirmation
+        if json {
+            guard yes else {
+                let errPayload = MacBayErrorPayload(
+                    code: "configuration_error",
+                    message: "Confirmation required to execute purge for \(eligibleItems.count) cache target(s). Re-run with --yes in non-interactive mode.",
+                    details: "Reclaimable storage: \(OutputFormatter.humanBytes(totalEligibleBytes))"
+                )
+                if let jsonStr = try? formatter.json(errPayload) {
+                    fputs("\(jsonStr)\n", stderr)
+                }
+                throw ExitCode(1)
+            }
+            let report = try service.purge(items: previewItems, options: purgeOptions, dryRun: false)
+            try CommandSupport.printValue(report, json: true) { $0.purge(report) }
+            return
+        }
+
+        // 3. Interactive / unattended execution
+        let groups = PurgeAppGroup.group(items: eligibleItems)
+
+        let itemsToPurge: [PurgeItem]
+        if yes {
+            itemsToPurge = eligibleItems
+        } else {
+            print(formatter.formatPurgeInteractivePreview(
+                groups: groups,
+                skippedItems: skippedItems,
+                totalEligibleBytes: totalEligibleBytes
+            ))
+            print("")
+
+            var chosenItems: [PurgeItem]?
+            while true {
+                print("Select target(s) to purge [1 for all, comma-separated (e.g. 2, 4), or 'q' to cancel]: ", terminator: "")
+                guard let input = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines), !input.isEmpty else {
+                    print("Cancelled.")
+                    return
+                }
+
+                if let selectedIndices = PurgeAppGroup.parseSelection(input: input, groupCount: groups.count) {
+                    let chosenGroups = selectedIndices.sorted().map { groups[$0] }
+                    chosenItems = chosenGroups.flatMap(\.items)
+                    let names = chosenGroups.map(\.appName).joined(separator: ", ")
+                    print("")
+                    print("Purging selected targets: \(names)...")
+                    break
+                } else {
+                    let lower = input.lowercased()
+                    if lower == "q" || lower == "quit" || lower == "n" || lower == "no" || lower == "cancel" {
+                        print("Cancelled.")
+                        return
+                    }
+                    print("Invalid selection. Please enter 1 for all, numbers 2-\(groups.count + 1), or 'q' to cancel.")
+                }
+            }
+
+            guard let confirmedItems = chosenItems else {
+                print("Cancelled.")
+                return
+            }
+            itemsToPurge = confirmedItems
+        }
+
+        let report = try service.purge(items: itemsToPurge, options: purgeOptions, dryRun: false)
+        print(formatter.purge(report))
     }
 }

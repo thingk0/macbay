@@ -165,6 +165,61 @@ final class PurgeTests: XCTestCase {
         XCTAssertEqual(betaItems.count, 1)
         XCTAssertEqual(betaItems.first?.appName, "BetaApp")
     }
+
+    func testAppGroupingAndSelectionParsing() throws {
+        let item1 = PurgeItem(appName: "AppA", path: "/a/1", category: .chromiumCache, sizeBytes: 100, isRunning: false)
+        let item2 = PurgeItem(appName: "AppA", path: "/a/2", category: .chromiumCache, sizeBytes: 200, isRunning: false)
+        let item3 = PurgeItem(appName: "AppB", path: "/b/1", category: .chromiumCache, sizeBytes: 500, isRunning: false)
+        let item4 = PurgeItem(appName: "AppC", path: "/c/1", category: .chromiumCache, sizeBytes: 50, isRunning: false)
+
+        let groups = PurgeAppGroup.group(items: [item1, item2, item3, item4])
+        XCTAssertEqual(groups.count, 3)
+        XCTAssertEqual(groups[0].appName, "AppB") // 500 bytes
+        XCTAssertEqual(groups[1].appName, "AppA") // 300 bytes
+        XCTAssertEqual(groups[2].appName, "AppC") // 50 bytes
+
+        // Selection parser tests
+        // 1) All / affirmative keywords
+        XCTAssertEqual(PurgeAppGroup.parseSelection(input: "1", groupCount: 3), Set([0, 1, 2]))
+        XCTAssertEqual(PurgeAppGroup.parseSelection(input: "all", groupCount: 3), Set([0, 1, 2]))
+        XCTAssertEqual(PurgeAppGroup.parseSelection(input: "y", groupCount: 3), Set([0, 1, 2]))
+        XCTAssertEqual(PurgeAppGroup.parseSelection(input: "yes", groupCount: 3), Set([0, 1, 2]))
+
+        // 2) Single choice: Option 2 is group index 0 (AppB)
+        XCTAssertEqual(PurgeAppGroup.parseSelection(input: "2", groupCount: 3), Set([0]))
+
+        // 3) Multi choice: Option 2 and 4 (indices 0 and 2)
+        XCTAssertEqual(PurgeAppGroup.parseSelection(input: "2, 4", groupCount: 3), Set([0, 2]))
+        XCTAssertEqual(PurgeAppGroup.parseSelection(input: "2,4", groupCount: 3), Set([0, 2]))
+        XCTAssertEqual(PurgeAppGroup.parseSelection(input: "2 4", groupCount: 3), Set([0, 2]))
+
+        // 4) Range: Option 2-4
+        XCTAssertEqual(PurgeAppGroup.parseSelection(input: "2-4", groupCount: 3), Set([0, 1, 2]))
+
+        // 5) Cancellation and invalid inputs
+        XCTAssertNil(PurgeAppGroup.parseSelection(input: "q", groupCount: 3))
+        XCTAssertNil(PurgeAppGroup.parseSelection(input: "n", groupCount: 3))
+        XCTAssertNil(PurgeAppGroup.parseSelection(input: "no", groupCount: 3))
+        XCTAssertNil(PurgeAppGroup.parseSelection(input: "", groupCount: 3))
+        XCTAssertNil(PurgeAppGroup.parseSelection(input: "5", groupCount: 3)) // out of bounds
+        XCTAssertNil(PurgeAppGroup.parseSelection(input: "abc", groupCount: 3))
+    }
+
+    func testInteractivePreviewFormatting() throws {
+        let item1 = PurgeItem(appName: "AppA", path: "/Library/Application Support/AppA/Code Cache", category: .chromiumCache, sizeBytes: 1000, isRunning: false)
+        let item2 = PurgeItem(appName: "RunningApp", path: "/Library/Application Support/RunningApp/GPUCache", category: .chromiumCache, sizeBytes: 5000, isRunning: true)
+
+        let groups = PurgeAppGroup.group(items: [item1])
+        let formatter = OutputFormatter(useColor: false)
+        let preview = formatter.formatPurgeInteractivePreview(groups: groups, skippedItems: [item2], totalEligibleBytes: 1000)
+
+        XCTAssertTrue(preview.contains("MacBay cache purge"))
+        XCTAssertTrue(preview.contains("1) [All] Purge all targets"))
+        XCTAssertTrue(preview.contains("2) AppA"))
+        XCTAssertTrue(preview.contains("Code Cache"))
+        XCTAssertTrue(preview.contains("Skipped items (running)"))
+        XCTAssertTrue(preview.contains("RunningApp"))
+    }
 }
 
 private final class MockPsCommandRunner: CommandRunner, @unchecked Sendable {

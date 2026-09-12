@@ -83,3 +83,72 @@ public struct PurgeOptions: Sendable {
         self.includeHomebrew = includeHomebrew
     }
 }
+
+public struct PurgeAppGroup: Identifiable, Equatable, Sendable {
+    public var id: String { appName }
+    public let appName: String
+    public let items: [PurgeItem]
+    public var totalSizeBytes: UInt64 {
+        items.reduce(0) { $0 + $1.sizeBytes }
+    }
+
+    public init(appName: String, items: [PurgeItem]) {
+        self.appName = appName
+        self.items = items
+    }
+
+    public static func group(items: [PurgeItem]) -> [PurgeAppGroup] {
+        var dict: [String: [PurgeItem]] = [:]
+        for item in items {
+            dict[item.appName, default: []].append(item)
+        }
+        return dict.map { PurgeAppGroup(appName: $0.key, items: $0.value) }
+            .sorted { $0.totalSizeBytes > $1.totalSizeBytes }
+    }
+
+    public static func parseSelection(input: String, groupCount: Int) -> Set<Int>? {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !trimmed.isEmpty else { return nil }
+
+        let cancelKeywords: Set<String> = ["q", "quit", "n", "no", "cancel"]
+        if cancelKeywords.contains(trimmed) {
+            return nil
+        }
+
+        let allKeywords: Set<String> = ["1", "all", "a", "y", "yes"]
+        if allKeywords.contains(trimmed) {
+            return Set(0..<groupCount)
+        }
+
+        var selectedIndices = Set<Int>()
+        let tokens = trimmed.split { $0 == "," || $0 == " " }.map(String.init)
+        guard !tokens.isEmpty else { return nil }
+
+        for token in tokens {
+            if token.contains("-") {
+                let parts = token.split(separator: "-").compactMap { Int($0) }
+                guard parts.count == 2, parts[0] <= parts[1] else { return nil }
+                for num in parts[0]...parts[1] {
+                    if num == 1 {
+                        return Set(0..<groupCount)
+                    }
+                    let idx = num - 2
+                    guard idx >= 0 && idx < groupCount else { return nil }
+                    selectedIndices.insert(idx)
+                }
+            } else if let num = Int(token) {
+                if num == 1 {
+                    return Set(0..<groupCount)
+                }
+                let idx = num - 2
+                guard idx >= 0 && idx < groupCount else { return nil }
+                selectedIndices.insert(idx)
+            } else {
+                return nil
+            }
+        }
+
+        return selectedIndices.isEmpty ? nil : selectedIndices
+    }
+}
+
