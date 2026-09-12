@@ -152,7 +152,7 @@ public struct BundleMigrator {
         )
         do {
             progress?(.copying)
-            try runDitto(from: source, to: destination)
+            try runDitto(from: source, to: destination, totalBytes: sizeBytes, progress: progress)
             progress?(.verifyingSignature)
             try verifyCodeSignature(at: destination)
         } catch {
@@ -285,7 +285,7 @@ public struct BundleMigrator {
         )
         try fileManager.createDirectory(at: source.deletingLastPathComponent(), withIntermediateDirectories: true)
         progress?(.copying)
-        try runDitto(from: destination, to: restored)
+        try runDitto(from: destination, to: restored, totalBytes: sizeBytes, progress: progress)
         do {
             progress?(.verifyingSignature)
             try verifyCodeSignature(at: restored)
@@ -343,10 +343,14 @@ public struct BundleMigrator {
         }
     }
 
-    private func runDitto(from source: URL, to destination: URL) throws {
+    private func runDitto(from source: URL, to destination: URL, totalBytes: UInt64, progress: ProgressHandler?) throws {
+        var sampler = CopyProgressSampler(destination: destination, totalBytes: totalBytes)
         let result = try commandRunner.run(
             "/usr/bin/ditto",
-            arguments: ["--rsrc", "--extattr", "--acl", source.path, destination.path]
+            arguments: ["--rsrc", "--extattr", "--acl", source.path, destination.path],
+            heartbeat: {
+                if let progress, let sample = sampler.sample() { progress(.copyProgress(sample)) }
+            }
         )
         guard result.status == 0 else {
             throw MacBayError.commandFailed(

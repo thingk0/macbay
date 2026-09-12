@@ -2,12 +2,29 @@ import Foundation
 
 public protocol CommandRunner: Sendable {
     func run(_ executable: String, arguments: [String]) throws -> CommandResult
+    func run(_ executable: String, arguments: [String], heartbeat: () -> Void) throws -> CommandResult
+}
+
+public extension CommandRunner {
+    func run(_ executable: String, arguments: [String], heartbeat: () -> Void) throws -> CommandResult {
+        try run(executable, arguments: arguments)
+    }
 }
 
 public struct SystemCommandRunner: CommandRunner {
     public init() {}
 
     public func run(_ executable: String, arguments: [String]) throws -> CommandResult {
+        try runProcess(executable, arguments: arguments, heartbeat: nil)
+    }
+
+    public func run(_ executable: String, arguments: [String], heartbeat: () -> Void) throws -> CommandResult {
+        try withoutActuallyEscaping(heartbeat) { callback in
+            try runProcess(executable, arguments: arguments, heartbeat: callback)
+        }
+    }
+
+    private func runProcess(_ executable: String, arguments: [String], heartbeat: (() -> Void)?) throws -> CommandResult {
         let fileManager = FileManager.default
         let temporaryDirectory = fileManager.temporaryDirectory
         let identifier = UUID().uuidString
@@ -64,6 +81,12 @@ public struct SystemCommandRunner: CommandRunner {
             )
         }
 
+        if let heartbeat {
+            while process.isRunning {
+                heartbeat()
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+        }
         process.waitUntilExit()
         try? outputHandle?.close()
         try? errorHandle?.close()

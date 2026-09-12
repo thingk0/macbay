@@ -5,7 +5,8 @@ struct DoctorCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "doctor",
         abstract: "Diagnose external links and volume records without changing files.",
-        discussion: "Inspects application links under /Applications, known developer cache links, and the MacBay records on connected external volumes. Exit codes: 0 when nothing needs attention, 1 when problems or unverifiable items were found, 2 when the check itself failed."
+        discussion: "Inspects application links under /Applications, known developer cache links, and the MacBay records on connected external volumes. Exit codes: 0 when nothing needs attention, 1 when problems or unverifiable items were found, 2 when the check itself failed.",
+        aliases: ["doc"]
     )
 
     @OptionGroup var options: DoctorOptions

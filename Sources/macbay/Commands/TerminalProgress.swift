@@ -8,6 +8,7 @@ final class TerminalProgress: @unchecked Sendable {
     private let enabled: Bool
     private let interactive: Bool
     private var timer: DispatchSourceTimer?
+    private var copyLabel: String?
     private var label = "Starting"
     private var started = Date()
     private var active = true
@@ -29,6 +30,13 @@ final class TerminalProgress: @unchecked Sendable {
         defer { lock.unlock() }
         guard enabled, active else { return }
 
+        if case .copyProgress(let sample) = event {
+            let speed = sample.bytesPerSecond.map { " · ~" + OutputFormatter.humanBytes($0) + "/s" } ?? ""
+            copyLabel = "Copy estimate: \(OutputFormatter.humanBytes(sample.observedBytes)) / \(OutputFormatter.humanBytes(sample.totalBytes)) (\(Int(sample.fraction * 100))%)" + speed
+            if interactive, let copyLabel { write("\r\u{001B}[2K" + copyLabel) }
+            return
+        }
+        copyLabel = nil
         if label != "Starting" {
             let elapsed = Date().timeIntervalSince(started)
             let elapsedStr = String(format: "%.1fs", elapsed)
@@ -40,6 +48,7 @@ final class TerminalProgress: @unchecked Sendable {
         }
 
         switch event {
+        case .copyProgress: return
         case .selectingVolume: label = "Selecting volume"
         case .validating: label = "Validating application and links"
         case .checkingProcesses: label = "Checking running processes and locks"
@@ -60,7 +69,7 @@ final class TerminalProgress: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         guard active else { return }
-        write("\r\u{001B}[2K\(label)… \(Int(Date().timeIntervalSince(started)))s elapsed")
+        write("\r\u{001B}[2K\(copyLabel ?? label)… \(Int(Date().timeIntervalSince(started)))s elapsed")
     }
 
     func stop() {

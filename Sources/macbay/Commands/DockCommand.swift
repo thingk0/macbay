@@ -4,7 +4,8 @@ import MacBayKit
 struct DockCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "dock",
-        abstract: "Move an application to external storage and symlink it back."
+        abstract: "Move an application to external storage and symlink it back.",
+        aliases: ["dk"]
     )
 
     @Argument(help: "Application name, such as Example.app, or an application path.")

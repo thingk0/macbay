@@ -75,6 +75,36 @@ public final class FakeTUIService: @unchecked Sendable, TUIServiceProtocol {
         self.defaultVolumeToReturn = defaultVolume
     }
 
+    var repairComparison: RepairComparison?
+    var repairPlan: RepairPlan?
+    var rollbackRecord: RepairJournalRecord?
+    var repairError: Error?
+    var repairExecutions: [(RepairPlan, Bool)] = []
+    var rollbackExecutions = 0
+
+    public func compareRepair(finding: DoctorFinding) throws -> RepairComparison {
+        simulateWorkload()
+        guard let value = repairComparison else { throw MacBayError.unsupportedOperation("No comparison") }
+        return value
+    }
+    public func planRepair(comparison: RepairComparison, action: RepairAction) throws -> RepairPlan {
+        guard let value = repairPlan else { throw MacBayError.unsupportedOperation("No plan") }
+        return value
+    }
+    public func executeRepair(plan: RepairPlan, force: Bool) throws -> RepairExecutionResult {
+        repairExecutions.append((plan, force))
+        if let repairError { throw repairError }
+        return RepairExecutionResult(action: plan.action, appName: plan.appName, outcome: .completed, localPath: plan.localURL.path, externalPath: plan.externalURL.path)
+    }
+    public func previewRollback(finding: DoctorFinding) throws -> RepairJournalRecord {
+        guard let value = rollbackRecord else { throw MacBayError.unsupportedOperation("No repair journal") }
+        return value
+    }
+    public func executeRollback(record: RepairJournalRecord) throws -> RepairExecutionResult {
+        rollbackExecutions += 1
+        return RepairExecutionResult(action: .redock, appName: record.appName, outcome: .completed, localPath: record.localPath, externalPath: record.externalPath)
+    }
+
     private func simulateWorkload() {
         if artificialDelay > 0 {
             Thread.sleep(forTimeInterval: artificialDelay)
