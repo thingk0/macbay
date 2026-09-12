@@ -69,6 +69,10 @@ public enum MacBayPaths {
         externalRoot(on: volume).appendingPathComponent(".manifest.lock")
     }
 
+    public static func operationLockURL(on volume: URL) -> URL {
+        externalRoot(on: volume).appendingPathComponent(".macbay.lock")
+    }
+
     public static func operationsRoot(on volume: URL) -> URL {
         externalRoot(on: volume).appendingPathComponent(".operations", isDirectory: true)
     }
@@ -141,28 +145,37 @@ public struct FileLock: Sendable {
         self.url = url
     }
 
-    public func withLock<T>(_ body: () throws -> T) throws -> T {
+    public func withLock<T>(blocking: Bool = true, _ body: () throws -> T) throws -> T {
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
         let fd = open(url.path, O_CREAT | O_RDWR, 0o644)
         guard fd >= 0 else {
+            let code = errno
             throw MacBayError.commandFailed(
                 executable: "open",
-                status: errno,
-                details: "Failed to open lock file at \(url.path): \(String(cString: strerror(errno)))"
+                status: code,
+                details: "Failed to open lock file at \(url.path): \(String(cString: strerror(code)))"
             )
         }
         defer {
             close(fd)
         }
 
-        guard flock(fd, LOCK_EX) == 0 else {
+        let operation = blocking ? LOCK_EX : (LOCK_EX | LOCK_NB)
+        if flock(fd, operation) != 0 {
+            let code = errno
+            if !blocking, code == EWOULDBLOCK || code == EAGAIN {
+                throw MacBayError.operationInProgress(
+                    path: url.path,
+                    details: "Wait for it to finish and retry."
+                )
+            }
             throw MacBayError.commandFailed(
                 executable: "flock",
-                status: errno,
-                details: "Failed to acquire lock on \(url.path): \(String(cString: strerror(errno)))"
+                status: code,
+                details: "Failed to acquire lock on \(url.path): \(String(cString: strerror(code)))"
             )
         }
         defer {

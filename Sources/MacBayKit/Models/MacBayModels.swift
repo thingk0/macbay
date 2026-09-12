@@ -479,6 +479,9 @@ public struct CacheReport: Codable, Equatable, Sendable {
     public let reset: Bool
     public let targets: [MigrationResult]
     public let shellConfigurationPath: String
+    public let shellConfigurationPaths: [String]
+    public let environmentFilePath: String?
+    public let guardPath: String?
     public let dryRun: Bool
 
     public init(
@@ -486,13 +489,43 @@ public struct CacheReport: Codable, Equatable, Sendable {
         reset: Bool,
         targets: [MigrationResult],
         shellConfigurationPath: String,
+        shellConfigurationPaths: [String] = [],
+        environmentFilePath: String? = nil,
+        guardPath: String? = nil,
         dryRun: Bool
     ) {
         self.enabled = enabled
         self.reset = reset
         self.targets = targets
         self.shellConfigurationPath = shellConfigurationPath
+        self.shellConfigurationPaths = shellConfigurationPaths.isEmpty ? [shellConfigurationPath] : shellConfigurationPaths
+        self.environmentFilePath = environmentFilePath
+        self.guardPath = guardPath
         self.dryRun = dryRun
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled
+        case reset
+        case targets
+        case shellConfigurationPath
+        case shellConfigurationPaths
+        case environmentFilePath
+        case guardPath
+        case dryRun
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.enabled = try container.decode(Bool.self, forKey: .enabled)
+        self.reset = try container.decode(Bool.self, forKey: .reset)
+        self.targets = try container.decode([MigrationResult].self, forKey: .targets)
+        let primaryPath = try container.decode(String.self, forKey: .shellConfigurationPath)
+        self.shellConfigurationPath = primaryPath
+        self.shellConfigurationPaths = try container.decodeIfPresent([String].self, forKey: .shellConfigurationPaths) ?? [primaryPath]
+        self.environmentFilePath = try container.decodeIfPresent(String.self, forKey: .environmentFilePath)
+        self.guardPath = try container.decodeIfPresent(String.self, forKey: .guardPath)
+        self.dryRun = try container.decode(Bool.self, forKey: .dryRun)
     }
 }
 
@@ -515,6 +548,8 @@ public enum MacBayError: Error, Equatable, LocalizedError, Sendable {
     case forceRequired(path: String, assessment: CompatibilityAssessment)
     case insufficientSpace(path: String, neededBytes: UInt64, availableBytes: UInt64)
     case spaceCheckFailed(path: String, details: String)
+    case operationInProgress(path: String, details: String)
+    case volumeBusy(path: String, locks: [String])
 
     public var errorCode: String {
         switch self {
@@ -532,7 +567,9 @@ public enum MacBayError: Error, Equatable, LocalizedError, Sendable {
             return "configuration_error"
         case .activeProcesses,
              .sqliteLockDetected,
-             .insufficientSpace:
+             .insufficientSpace,
+             .operationInProgress,
+             .volumeBusy:
             return "retryable_error"
         case .signatureVerificationFailed,
              .commandFailed,
@@ -570,6 +607,10 @@ public enum MacBayError: Error, Equatable, LocalizedError, Sendable {
             return details
         case let .unmanagedLinkDetected(path, targetPath):
             return "Link: \(path) -> \(targetPath)"
+        case let .operationInProgress(_, details):
+            return details
+        case let .volumeBusy(_, locks):
+            return locks.joined(separator: ", ")
         case let .invalidVolume(details),
              let .externalVolumeRequired(details),
              let .invalidApplication(details),
@@ -623,6 +664,11 @@ public enum MacBayError: Error, Equatable, LocalizedError, Sendable {
             return "Not enough space on \(path): need \(OutputFormatter.humanBytes(neededBytes)), available \(OutputFormatter.humanBytes(availableBytes))"
         case let .spaceCheckFailed(path, details):
             return "Unable to verify free space on \(path): \(details)"
+        case let .operationInProgress(path, details):
+            return "Another MacBay operation is already running on \(path). \(details)"
+        case let .volumeBusy(path, locks):
+            let lockDetails = locks.isEmpty ? "" : " (\(locks.joined(separator: ", ")))"
+            return "Volume \(path) is busy with another MacBay operation\(lockDetails). Retry once it completes."
         }
     }
 }

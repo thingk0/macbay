@@ -220,6 +220,59 @@ final class PurgeTests: XCTestCase {
         XCTAssertTrue(preview.contains("Skipped items (running)"))
         XCTAssertTrue(preview.contains("RunningApp"))
     }
+
+    func testHonestAccountingMeasuresActualDeletedBytes() throws {
+        let app = appSupportDir.appendingPathComponent("HonestApp")
+        let codeCache = app.appendingPathComponent("Code Cache")
+        try FileManager.default.createDirectory(at: codeCache, withIntermediateDirectories: true)
+        try Data(repeating: 0x41, count: 100).write(to: codeCache.appendingPathComponent("v8_1.bin"))
+
+        let engine = PurgeEngine(homeDirectory: homeDir)
+        let scanned = engine.scan()
+        XCTAssertEqual(scanned.count, 1)
+        XCTAssertEqual(scanned.first?.sizeBytes, 100)
+
+        // Add more files after scan
+        try Data(repeating: 0x42, count: 200).write(to: codeCache.appendingPathComponent("v8_2.bin"))
+
+        let report = try engine.execute(items: scanned, dryRun: false)
+        XCTAssertEqual(report.purgedItems.count, 1)
+        XCTAssertEqual(report.totalReclaimedBytes, 300, "Measured reclaim should reflect actual removed bytes")
+        XCTAssertEqual(report.purgedItems.first?.sizeBytes, 300)
+    }
+
+    func testBackwardCompatibleReportDecoding() throws {
+        let legacyJSON = """
+        {
+            "generatedAt": "2026-09-01T00:00:00Z",
+            "dryRun": false,
+            "purgedItems": [],
+            "totalReclaimedBytes": 0,
+            "messages": ["Purge completed successfully"]
+        }
+        """
+        let data = legacyJSON.data(using: .utf8)!
+        let report = try JSONDecoder().decode(PurgeReport.self, from: data)
+        XCTAssertEqual(report.failedItems, [])
+        XCTAssertEqual(report.skippedItems, [])
+        XCTAssertEqual(report.messages, ["Purge completed successfully"])
+    }
+
+    func testRoundTripReportEncodingPreservesFailedItems() throws {
+        let failure = PurgeFailure(appName: "TestApp", path: "/tmp/failed", reason: "Permission denied", unreclaimedBytes: 500)
+        let report = PurgeReport(
+            dryRun: false,
+            purgedItems: [],
+            skippedItems: [],
+            failedItems: [failure],
+            totalReclaimedBytes: 0,
+            messages: ["Errors encountered"]
+        )
+
+        let data = try JSONEncoder().encode(report)
+        let decoded = try JSONDecoder().decode(PurgeReport.self, from: data)
+        XCTAssertEqual(decoded.failedItems, [failure])
+    }
 }
 
 private final class MockPsCommandRunner: CommandRunner, @unchecked Sendable {

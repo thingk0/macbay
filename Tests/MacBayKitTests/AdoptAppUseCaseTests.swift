@@ -30,7 +30,8 @@ final class AdoptAppUseCaseTests: XCTestCase {
             manifestRepository: manifestRepository,
             operationJournal: operationJournal,
             systemRefresher: systemRefresher,
-            volumeInspector: volumeInspector
+            volumeInspector: volumeInspector,
+            operationLock: NoOpVolumeOperationLock()
         )
 
         // 기본 정상 상태 구성

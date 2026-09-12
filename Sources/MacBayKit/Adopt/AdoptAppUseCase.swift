@@ -21,6 +21,7 @@ public final class AdoptAppUseCase: AdoptAppUseCaseProtocol, @unchecked Sendable
     private let operationJournal: any OperationJournaling
     private let systemRefresher: any SystemEnvironmentRefresher
     private let volumeInspector: any VolumeStorageInspector
+    private let operationLock: any VolumeOperationLocking
 
     public init(
         safetyInspector: any AppSafetyInspector,
@@ -28,7 +29,8 @@ public final class AdoptAppUseCase: AdoptAppUseCaseProtocol, @unchecked Sendable
         manifestRepository: any ManifestRepository,
         operationJournal: any OperationJournaling,
         systemRefresher: any SystemEnvironmentRefresher,
-        volumeInspector: any VolumeStorageInspector
+        volumeInspector: any VolumeStorageInspector,
+        operationLock: any VolumeOperationLocking = VolumeOperationLock()
     ) {
         self.safetyInspector = safetyInspector
         self.fileOperations = fileOperations
@@ -36,6 +38,7 @@ public final class AdoptAppUseCase: AdoptAppUseCaseProtocol, @unchecked Sendable
         self.operationJournal = operationJournal
         self.systemRefresher = systemRefresher
         self.volumeInspector = volumeInspector
+        self.operationLock = operationLock
     }
 
     public func plan(
@@ -291,96 +294,98 @@ public final class AdoptAppUseCase: AdoptAppUseCaseProtocol, @unchecked Sendable
             timestamp: ISO8601DateFormatter().string(from: Date())
         )
 
-        do {
-            progress?(.savingManifest)
-            try operationJournal.record(operation: record, on: plan.volumeURL)
+        return try operationLock.withVolumeLock(on: plan.volumeURL) {
+            do {
+                progress?(.savingManifest)
+                try operationJournal.record(operation: record, on: plan.volumeURL)
 
-            if plan.mode == .moveAndAdopt {
-                progress?(.moving)
-                try fileOperations.moveBundle(from: plan.targetURL, to: plan.destinationURL)
-                movedBundle = true
-                try operationJournal.record(operation: record.updatingPhase(.appMoved), on: plan.volumeURL)
-            }
-
-            progress?(.updatingLink)
-            symlinkToken = try fileOperations.atomicReplaceSymlink(at: plan.symlinkURL, pointingTo: plan.destinationURL)
-            try operationJournal.record(operation: record.updatingPhase(.linkReplaced), on: plan.volumeURL)
-
-            progress?(.savingManifest)
-            try manifestRepository.update(on: plan.volumeURL) { manifest in
-                manifest.items.removeAll {
-                    URL(fileURLWithPath: $0.sourcePath).standardizedFileURL.path.caseInsensitiveCompare(plan.symlinkURL.path) == .orderedSame ||
-                    URL(fileURLWithPath: $0.externalPath).standardizedFileURL.path.caseInsensitiveCompare(plan.destinationURL.path) == .orderedSame
+                if plan.mode == .moveAndAdopt {
+                    progress?(.moving)
+                    try fileOperations.moveBundle(from: plan.targetURL, to: plan.destinationURL)
+                    movedBundle = true
+                    try operationJournal.record(operation: record.updatingPhase(.appMoved), on: plan.volumeURL)
                 }
-                let item = DockedItem(
-                    name: plan.appName,
-                    sourcePath: plan.symlinkURL.path,
-                    externalPath: plan.destinationURL.path,
+
+                progress?(.updatingLink)
+                symlinkToken = try fileOperations.atomicReplaceSymlink(at: plan.symlinkURL, pointingTo: plan.destinationURL)
+                try operationJournal.record(operation: record.updatingPhase(.linkReplaced), on: plan.volumeURL)
+
+                progress?(.savingManifest)
+                try manifestRepository.update(on: plan.volumeURL) { manifest in
+                    manifest.items.removeAll {
+                        URL(fileURLWithPath: $0.sourcePath).standardizedFileURL.path.caseInsensitiveCompare(plan.symlinkURL.path) == .orderedSame ||
+                        URL(fileURLWithPath: $0.externalPath).standardizedFileURL.path.caseInsensitiveCompare(plan.destinationURL.path) == .orderedSame
+                    }
+                    let item = DockedItem(
+                        name: plan.appName,
+                        sourcePath: plan.symlinkURL.path,
+                        externalPath: plan.destinationURL.path,
+                        sizeBytes: plan.sizeBytes,
+                        kind: .application,
+                        dockedAt: ISO8601DateFormatter().string(from: Date())
+                    )
+                    manifest.items.append(item)
+                    manifest.items.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+                }
+                try operationJournal.record(operation: record.updatingPhase(.registering), on: plan.volumeURL)
+
+                progress?(.refreshingDock)
+                systemRefresher.refreshLaunchServices(for: plan.destinationURL)
+                systemRefresher.restartDock()
+
+                try? operationJournal.remove(appName: plan.appName, on: plan.volumeURL)
+
+                return AdoptExecutionResult(
+                    outcome: .completed,
+                    appName: plan.appName,
+                    sourcePath: plan.targetURL.path,
+                    destinationPath: plan.destinationURL.path,
+                    symlinkPath: plan.symlinkURL.path,
                     sizeBytes: plan.sizeBytes,
-                    kind: .application,
-                    dockedAt: ISO8601DateFormatter().string(from: Date())
+                    mode: plan.mode,
+                    rollback: .notRequired
                 )
-                manifest.items.append(item)
-                manifest.items.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-            }
-            try operationJournal.record(operation: record.updatingPhase(.registering), on: plan.volumeURL)
+            } catch {
+                var rollbackActions: [String] = []
+                var rollbackErrors: [String] = []
 
-            progress?(.refreshingDock)
-            systemRefresher.refreshLaunchServices(for: plan.destinationURL)
-            systemRefresher.restartDock()
-
-            try? operationJournal.remove(appName: plan.appName, on: plan.volumeURL)
-
-            return AdoptExecutionResult(
-                outcome: .completed,
-                appName: plan.appName,
-                sourcePath: plan.targetURL.path,
-                destinationPath: plan.destinationURL.path,
-                symlinkPath: plan.symlinkURL.path,
-                sizeBytes: plan.sizeBytes,
-                mode: plan.mode,
-                rollback: .notRequired
-            )
-        } catch {
-            var rollbackActions: [String] = []
-            var rollbackErrors: [String] = []
-
-            if let token = symlinkToken {
-                do {
-                    try fileOperations.rollbackSymlink(using: token)
-                    rollbackActions.append("Restored original symlink at \(token.symlinkURL.path)")
-                } catch {
-                    rollbackErrors.append("Failed to restore symlink at \(token.symlinkURL.path): \(error.localizedDescription)")
+                if let token = symlinkToken {
+                    do {
+                        try fileOperations.rollbackSymlink(using: token)
+                        rollbackActions.append("Restored original symlink at \(token.symlinkURL.path)")
+                    } catch {
+                        rollbackErrors.append("Failed to restore symlink at \(token.symlinkURL.path): \(error.localizedDescription)")
+                    }
                 }
-            }
 
-            if movedBundle {
-                do {
-                    try fileOperations.rollbackMove(from: plan.destinationURL, to: plan.targetURL)
-                    rollbackActions.append("Moved bundle back to \(plan.targetURL.path)")
-                } catch {
-                    rollbackErrors.append("Failed to move bundle back to \(plan.targetURL.path): \(error.localizedDescription)")
+                if movedBundle {
+                    do {
+                        try fileOperations.rollbackMove(from: plan.destinationURL, to: plan.targetURL)
+                        rollbackActions.append("Moved bundle back to \(plan.targetURL.path)")
+                    } catch {
+                        rollbackErrors.append("Failed to move bundle back to \(plan.targetURL.path): \(error.localizedDescription)")
+                    }
                 }
-            }
 
-            let rollbackStatus: RollbackStatus
-            if rollbackErrors.isEmpty {
-                rollbackStatus = .succeeded(actions: rollbackActions)
-            } else {
-                rollbackStatus = .failed(
-                    error: rollbackErrors.joined(separator: "; "),
-                    manualInterventionNeeded: [
-                        "Inspect application bundle at \(plan.destinationURL.path)",
-                        "Inspect application symlink at \(plan.symlinkURL.path)"
-                    ]
+                let rollbackStatus: RollbackStatus
+                if rollbackErrors.isEmpty {
+                    rollbackStatus = .succeeded(actions: rollbackActions)
+                } else {
+                    rollbackStatus = .failed(
+                        error: rollbackErrors.joined(separator: "; "),
+                        manualInterventionNeeded: [
+                            "Inspect application bundle at \(plan.destinationURL.path)",
+                            "Inspect application symlink at \(plan.symlinkURL.path)"
+                        ]
+                    )
+                }
+
+                throw AdoptExecutionError(
+                    stage: "execution",
+                    underlyingError: error,
+                    rollback: rollbackStatus
                 )
             }
-
-            throw AdoptExecutionError(
-                stage: "execution",
-                underlyingError: error,
-                rollback: rollbackStatus
-            )
         }
     }
 }

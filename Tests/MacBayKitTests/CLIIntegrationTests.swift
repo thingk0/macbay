@@ -257,6 +257,22 @@ final class CLIIntegrationTests: XCTestCase {
         XCTAssertNotNil(errorObj["details"] as? String)
     }
 
+    func testJsonFlagAfterTerminatorIsTreatedAsPositional() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+
+        // dock with terminator before --json: mb dock --dry-run -- --json
+        let result = try runCLI(arguments: ["dock", "--dry-run", "--", "--json"])
+        XCTAssertNotEqual(result.status, 0)
+        XCTAssertTrue(result.stderr.contains("Error: "))
+
+        if let data = result.stderr.data(using: .utf8) {
+            let json = try? JSONSerialization.jsonObject(with: data)
+            XCTAssertNil(json, "stderr must not be a JSON envelope when --json is after terminator '--'")
+        }
+    }
+
     func testRemovedDryRunOptionOnStatusFails() throws {
         guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
             throw XCTSkip("Binary not found at \(binaryURL.path)")

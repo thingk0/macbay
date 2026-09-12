@@ -6,6 +6,8 @@ public struct PurgeEngine {
     private let sizeCalculator: FileSizeCalculator
     private let homeDirectory: URL
 
+    public static let maxScanEntriesPerDirectory = PurgeSafety.maxScanEntriesPerDirectory
+
     public static let whitelistedChromiumDirectories: Set<String> = [
         "CacheStorage",
         "Code Cache",
@@ -24,6 +26,21 @@ public struct PurgeEngine {
         self.commandRunner = commandRunner
         self.sizeCalculator = FileSizeCalculator(fileManager: fileManager)
         self.homeDirectory = homeDirectory
+    }
+
+    private func children(of directory: URL) throws -> (entries: [URL], truncated: Bool) {
+        let contents = try fileManager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+        ).sorted { $0.lastPathComponent < $1.lastPathComponent }
+        return (
+            Array(contents.prefix(Self.maxScanEntriesPerDirectory)),
+            contents.count > Self.maxScanEntriesPerDirectory
+        )
+    }
+
+    private func safeChildren(of directory: URL) -> [URL] {
+        ((try? children(of: directory))?.entries) ?? []
     }
 
     public func scan(options: PurgeOptions = PurgeOptions()) -> [PurgeItem] {
@@ -63,6 +80,16 @@ public struct PurgeEngine {
         // 6. Exclude zero-byte caches to keep output clean and actionable
         discoveredItems = discoveredItems.filter { $0.sizeBytes > 0 }
 
+        // 7. Authority validation gate
+        discoveredItems = discoveredItems.filter { item in
+            PurgeSafety.validate(
+                URL(fileURLWithPath: item.path),
+                category: item.category,
+                homeDirectory: homeDirectory,
+                fileManager: fileManager
+            ) == nil
+        }
+
         return discoveredItems.sorted { $0.sizeBytes > $1.sizeBytes }
     }
 
@@ -73,11 +100,27 @@ public struct PurgeEngine {
     ) throws -> PurgeReport {
         var purged: [PurgeItem] = []
         var skipped: [PurgeItem] = []
+        var failed: [PurgeFailure] = []
+        var truncatedPaths: [String] = []
         var totalReclaimed: UInt64 = 0
 
         for item in items {
             let url = URL(fileURLWithPath: item.path)
-            guard fileManager.fileExists(atPath: url.path) else { continue }
+            if let rejection = PurgeSafety.validate(
+                url,
+                category: item.category,
+                homeDirectory: homeDirectory,
+                fileManager: fileManager
+            ) {
+                if rejection == .missing { continue }
+                failed.append(PurgeFailure(
+                    appName: item.appName,
+                    path: item.path,
+                    reason: rejection.reason,
+                    unreclaimedBytes: item.sizeBytes
+                ))
+                continue
+            }
 
             if item.isRunning && !options.includeRunning {
                 skipped.append(item)
@@ -87,13 +130,56 @@ public struct PurgeEngine {
             if dryRun {
                 purged.append(item)
                 totalReclaimed += item.sizeBytes
-            } else {
-                let children = (try? fileManager.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)) ?? []
-                for child in children {
-                    try? fileManager.removeItem(at: child)
+                continue
+            }
+
+            let listing: (entries: [URL], truncated: Bool)
+            do {
+                listing = try children(of: url)
+            } catch {
+                failed.append(PurgeFailure(
+                    appName: item.appName,
+                    path: item.path,
+                    reason: "Unable to list directory: \(error.localizedDescription)",
+                    unreclaimedBytes: item.sizeBytes
+                ))
+                continue
+            }
+
+            var reclaimed: UInt64 = 0
+            var itemFailures: [PurgeFailure] = []
+            var removedAny = false
+
+            for child in listing.entries {
+                let childSize = (try? sizeCalculator.size(of: child)) ?? 0
+                do {
+                    try fileManager.removeItem(at: child)
+                    reclaimed += childSize
+                    removedAny = true
+                } catch {
+                    itemFailures.append(PurgeFailure(
+                        appName: item.appName,
+                        path: child.path,
+                        reason: error.localizedDescription,
+                        unreclaimedBytes: childSize
+                    ))
                 }
-                purged.append(item)
-                totalReclaimed += item.sizeBytes
+            }
+
+            if listing.truncated {
+                truncatedPaths.append(item.path)
+            }
+
+            failed.append(contentsOf: itemFailures)
+            if removedAny || itemFailures.isEmpty {
+                purged.append(PurgeItem(
+                    appName: item.appName,
+                    path: item.path,
+                    category: item.category,
+                    sizeBytes: reclaimed,
+                    isRunning: item.isRunning
+                ))
+                totalReclaimed += reclaimed
             }
         }
 
@@ -108,10 +194,19 @@ public struct PurgeEngine {
             messages.append("Skipped \(skipped.count) cache(s) because the associated application is currently running (use --include-running to override)")
         }
 
+        if !failed.isEmpty {
+            messages.append("Could not remove \(failed.count) item(s); see failedItems for details")
+        }
+
+        if !truncatedPaths.isEmpty {
+            messages.append("Processed only the first \(Self.maxScanEntriesPerDirectory) entries in \(truncatedPaths.count) directory(ies); re-run to continue")
+        }
+
         return PurgeReport(
             dryRun: dryRun,
             purgedItems: purged,
             skippedItems: skipped,
+            failedItems: failed,
             totalReclaimedBytes: totalReclaimed,
             messages: messages
         )
@@ -121,23 +216,22 @@ public struct PurgeEngine {
 
     private func scanApplicationSupport(options: PurgeOptions, runningProcesses: Set<String>) -> [PurgeItem] {
         let appSupportURL = homeDirectory.appendingPathComponent("Library/Application Support")
-        guard fileManager.fileExists(atPath: appSupportURL.path),
-              let appDirs = try? fileManager.contentsOfDirectory(at: appSupportURL, includingPropertiesForKeys: [.isDirectoryKey]) else {
+        guard fileManager.fileExists(atPath: appSupportURL.path) else {
             return []
         }
 
         var items: [PurgeItem] = []
+        let appDirs = safeChildren(of: appSupportURL)
 
         for appDir in appDirs {
-            var isDir: ObjCBool = false
-            guard fileManager.fileExists(atPath: appDir.path, isDirectory: &isDir), isDir.boolValue else {
+            let values = try? appDir.resourceValues(forKeys: [.isSymbolicLinkKey, .isDirectoryKey])
+            guard values?.isSymbolicLink != true, values?.isDirectory == true else {
                 continue
             }
 
             let appName = appDir.lastPathComponent
             let isRunning = isAppRunning(appName: appName, runningProcesses: runningProcesses)
 
-            // Search depth 1 to 3 for whitelisted folders
             let foundTargets = findWhitelistedFolders(in: appDir, depth: 1, maxDepth: 3)
             for target in foundTargets {
                 let size = (try? sizeCalculator.size(of: target)) ?? 0
@@ -155,21 +249,28 @@ public struct PurgeEngine {
     }
 
     private func findWhitelistedFolders(in directory: URL, depth: Int, maxDepth: Int) -> [URL] {
-        guard depth <= maxDepth,
-              let contents = try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isDirectoryKey]) else {
+        guard depth <= maxDepth else {
             return []
         }
 
         var results: [URL] = []
+        let contents = safeChildren(of: directory)
         for item in contents {
-            var isDir: ObjCBool = false
-            guard fileManager.fileExists(atPath: item.path, isDirectory: &isDir), isDir.boolValue else {
+            let values = try? item.resourceValues(forKeys: [.isSymbolicLinkKey, .isDirectoryKey])
+            guard values?.isSymbolicLink != true, values?.isDirectory == true else {
                 continue
             }
 
             let name = item.lastPathComponent
             if Self.whitelistedChromiumDirectories.contains(name) {
-                results.append(item)
+                if PurgeSafety.validate(
+                    item,
+                    category: .chromiumCache,
+                    homeDirectory: homeDirectory,
+                    fileManager: fileManager
+                ) == nil {
+                    results.append(item)
+                }
             } else if depth < maxDepth {
                 results.append(contentsOf: findWhitelistedFolders(in: item, depth: depth + 1, maxDepth: maxDepth))
             }
@@ -179,15 +280,27 @@ public struct PurgeEngine {
 
     private func scanShipItCaches(options: PurgeOptions, runningProcesses: Set<String>) -> [PurgeItem] {
         let cachesURL = homeDirectory.appendingPathComponent("Library/Caches")
-        guard fileManager.fileExists(atPath: cachesURL.path),
-              let subDirs = try? fileManager.contentsOfDirectory(at: cachesURL, includingPropertiesForKeys: [.isDirectoryKey]) else {
+        guard fileManager.fileExists(atPath: cachesURL.path) else {
             return []
         }
 
         var items: [PurgeItem] = []
+        let subDirs = safeChildren(of: cachesURL)
         for subDir in subDirs {
+            let values = try? subDir.resourceValues(forKeys: [.isSymbolicLinkKey, .isDirectoryKey])
+            guard values?.isSymbolicLink != true, values?.isDirectory == true else {
+                continue
+            }
+
             let shipItURL = subDir.appendingPathComponent("ShipIt")
-            guard fileManager.fileExists(atPath: shipItURL.path) else { continue }
+            guard PurgeSafety.validate(
+                shipItURL,
+                category: .updateArchive,
+                homeDirectory: homeDirectory,
+                fileManager: fileManager
+            ) == nil else {
+                continue
+            }
 
             let appName = subDir.lastPathComponent
             let isRunning = isAppRunning(appName: appName, runningProcesses: runningProcesses)
@@ -207,7 +320,14 @@ public struct PurgeEngine {
 
     private func scanHomebrewCache() -> PurgeItem? {
         let brewCacheURL = homeDirectory.appendingPathComponent("Library/Caches/Homebrew")
-        guard fileManager.fileExists(atPath: brewCacheURL.path) else { return nil }
+        guard PurgeSafety.validate(
+            brewCacheURL,
+            category: .homebrewCache,
+            homeDirectory: homeDirectory,
+            fileManager: fileManager
+        ) == nil else {
+            return nil
+        }
 
         let size = (try? sizeCalculator.size(of: brewCacheURL)) ?? 0
         return PurgeItem(
@@ -221,7 +341,14 @@ public struct PurgeEngine {
 
     private func scanDiagnosticLogs() -> PurgeItem? {
         let logsURL = homeDirectory.appendingPathComponent("Library/Logs/DiagnosticReports")
-        guard fileManager.fileExists(atPath: logsURL.path) else { return nil }
+        guard PurgeSafety.validate(
+            logsURL,
+            category: .diagnosticLog,
+            homeDirectory: homeDirectory,
+            fileManager: fileManager
+        ) == nil else {
+            return nil
+        }
 
         let size = (try? sizeCalculator.size(of: logsURL)) ?? 0
         return PurgeItem(

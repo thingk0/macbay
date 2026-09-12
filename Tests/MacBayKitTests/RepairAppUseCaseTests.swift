@@ -29,7 +29,8 @@ final class RepairAppUseCaseTests: XCTestCase {
             manifestRepository: manifestRepository,
             journal: journal,
             volumeInspector: volumeInspector,
-            systemRefresher: systemRefresher
+            systemRefresher: systemRefresher,
+            operationLock: NoOpVolumeOperationLock()
         )
 
         // Setup base valid state
@@ -263,6 +264,39 @@ final class RepairAppUseCaseTests: XCTestCase {
         }
 
         XCTAssertNil(journal.journal["Kiro CLI.app"])
+    }
+
+    func testExecuteThrowsOperationInProgressWhenPendingJournalExists() throws {
+        let plan = try useCase.plan(appName: "Kiro CLI.app", action: .redock, on: volumeURL)
+        let originalItem = DockedItem(
+            name: "Kiro CLI.app",
+            sourcePath: localURL.path,
+            externalPath: externalURL.path,
+            sizeBytes: 100_000_000,
+            kind: .application,
+            dockedAt: "2026-09-01T00:00:00Z"
+        )
+        journal.journal["Kiro CLI.app"] = RepairJournalRecord(
+            id: "op-pending",
+            appName: "Kiro CLI.app",
+            localPath: localURL.path,
+            externalPath: externalURL.path,
+            backupPath: "/tmp/backup",
+            stagingPath: "/tmp/staging",
+            localBackupPath: "/tmp/localBackup",
+            volumePath: volumeURL.path,
+            phase: .started,
+            timestamp: "2026-09-01T00:00:00Z",
+            originalManifestItem: originalItem
+        )
+
+        XCTAssertThrowsError(try useCase.execute(plan: plan, force: false)) { error in
+            guard case let MacBayError.operationInProgress(path, details) = error else {
+                return XCTFail("Expected operationInProgress but got \(error)")
+            }
+            XCTAssertEqual(path, volumeURL.path)
+            XCTAssertTrue(details.contains("mb repair \"Kiro CLI.app\" --rollback"))
+        }
     }
 }
 

@@ -26,6 +26,14 @@ struct MacBay: ParsableCommand {
         ]
     )
 
+    static func wantsJSONOutput(_ arguments: [String]) -> Bool {
+        for argument in arguments.dropFirst() {
+            if argument == "--" { return false }   // everything after the terminator is a value, not a flag
+            if argument == "--json" { return true }
+        }
+        return false
+    }
+
     static func execute() {
         if CommandLine.arguments.count <= 1 {
             print(helpMessage())
@@ -41,7 +49,7 @@ struct MacBay: ParsableCommand {
             let code = exitCode(for: error)
             if code.isSuccess {
                 exit(withError: error)
-            } else if CommandLine.arguments.contains("--json") {
+            } else if wantsJSONOutput(CommandLine.arguments) {
                 let payload = MacBayErrorPayload(error: error)
                 if let jsonString = try? OutputFormatter(useColor: false).json(payload) {
                     fputs("\(jsonString)\n", stderr)

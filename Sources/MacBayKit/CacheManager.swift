@@ -8,9 +8,6 @@ public struct CacheManager {
         let environmentVariable: String
     }
 
-    private static let beginMarker = "# >>> macbay cache >>>"
-    private static let endMarker = "# <<< macbay cache <<<"
-
     private let fileManager: FileManager
     private let directoryMigrator: DirectoryMigrator
     private let homeDirectory: URL
@@ -72,39 +69,57 @@ public struct CacheManager {
         }
 
         let shellConfigurationURL = home.appendingPathComponent(".zshrc")
-        if !dryRun {
-            try updateShellConfiguration(
-                at: shellConfigurationURL,
-                targets: targets,
-                externalRoot: externalRoot
+        let writer = ShellEnvironmentWriter(fileManager: fileManager, homeDirectory: home)
+        let variables = targets.map { target in
+            ShellEnvironmentWriter.Variable(
+                name: target.environmentVariable,
+                value: externalRoot.appendingPathComponent(target.externalDirectoryName).path
             )
         }
 
-        return CacheReport(
-            enabled: true,
-            reset: false,
-            targets: migrations,
-            shellConfigurationPath: shellConfigurationURL.path,
-            dryRun: dryRun
-        )
+        if !dryRun {
+            let writeResult = try writer.write(variables: variables, guardPath: externalRoot)
+            return CacheReport(
+                enabled: true,
+                reset: false,
+                targets: migrations,
+                shellConfigurationPath: shellConfigurationURL.path,
+                shellConfigurationPaths: writeResult.updatedShellConfigurationPaths,
+                environmentFilePath: writeResult.environmentFilePath,
+                guardPath: writeResult.guardPath,
+                dryRun: dryRun
+            )
+        } else {
+            let envURL = home.appendingPathComponent(".config/macbay/cache-env.sh")
+            let previewPaths = ShellEnvironmentWriter.plannedTargets(homeDirectory: home, fileManager: fileManager)
+
+            return CacheReport(
+                enabled: true,
+                reset: false,
+                targets: migrations,
+                shellConfigurationPath: shellConfigurationURL.path,
+                shellConfigurationPaths: previewPaths,
+                environmentFilePath: envURL.path,
+                guardPath: externalRoot.path,
+                dryRun: dryRun
+            )
+        }
     }
 
     public func reset(dryRun: Bool) throws -> CacheReport {
-        let shellConfigurationURL = homeDirectory.appendingPathComponent(".zshrc")
-        let resolvedURL = shellConfigurationURL.resolvingSymlinksInPath()
-        if !dryRun, fileManager.fileExists(atPath: resolvedURL.path) {
-            let contents = try String(contentsOf: resolvedURL, encoding: .utf8)
-            let updated = Self.removingManagedBlock(from: contents)
-            guard let data = updated.data(using: .utf8) else {
-                throw MacBayError.unsupportedOperation("Unable to encode \(resolvedURL.path)")
-            }
-            try data.write(to: resolvedURL, options: .atomic)
+        let home = homeDirectory
+        let shellConfigurationURL = home.appendingPathComponent(".zshrc")
+        let writer = ShellEnvironmentWriter(fileManager: fileManager, homeDirectory: home)
+        var cleanedPaths: [String] = []
+        if !dryRun {
+            cleanedPaths = try writer.remove()
         }
         return CacheReport(
             enabled: false,
             reset: true,
             targets: [],
             shellConfigurationPath: shellConfigurationURL.path,
+            shellConfigurationPaths: cleanedPaths.isEmpty ? [shellConfigurationURL.path] : cleanedPaths,
             dryRun: dryRun
         )
     }
@@ -138,67 +153,9 @@ public struct CacheManager {
         ]
     }
 
-    private func updateShellConfiguration(
-        at url: URL,
-        targets: [Target],
-        externalRoot: URL
-    ) throws {
-        // ~/.zshrc가 dotfiles 저장소 등으로 향하는 심볼릭 링크인 경우, 원자적 쓰기는 링크 자체를
-        // 일반 파일로 교체해 버린다. 실제 파일을 따라가서 그 파일을 수정한다.
-        let url = url.resolvingSymlinksInPath()
-        // 파일이 없을 때만 빈 내용으로 시작한다. 읽기·인코딩 실패를 빈 문자열로 취급하면
-        // 사용자의 기존 설정을 통째로 덮어쓸 수 있으므로 반드시 중단한다.
-        let existing: String
-        if fileManager.fileExists(atPath: url.path) {
-            do {
-                existing = try String(contentsOf: url, encoding: .utf8)
-            } catch {
-                throw MacBayError.unsupportedOperation(
-                    "Unable to read \(url.path) as UTF-8; refusing to overwrite it (\(error.localizedDescription))"
-                )
-            }
-        } else {
-            existing = ""
-        }
-        let block = Self.managedBlock(targets: targets, externalRoot: externalRoot)
-        let withoutBlock = Self.removingManagedBlock(from: existing)
-        let separator = withoutBlock.isEmpty || withoutBlock.hasSuffix("\n") ? "" : "\n"
-        let updated = withoutBlock + separator + block + "\n"
-        guard let data = updated.data(using: .utf8) else {
-            throw MacBayError.unsupportedOperation("Unable to encode \(url.path)")
-        }
-        try data.write(to: url, options: .atomic)
-    }
-
-    private static func managedBlock(
-        targets: [Target],
-        externalRoot: URL
-    ) -> String {
-        var lines = [beginMarker]
-        for target in targets {
-            let path = externalRoot.appendingPathComponent(target.externalDirectoryName).path
-            lines.append("export \(target.environmentVariable)=\(shellQuoted(path))")
-        }
-        lines.append(endMarker)
-        return lines.joined(separator: "\n")
-    }
-
     /// 경로를 작은따옴표로 감싸 셸이 `$()`, 백틱, `$VAR` 등을 해석하지 않도록 한다.
     static func shellQuoted(_ value: String) -> String {
-        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
-    }
-
-    private static func removingManagedBlock(from contents: String) -> String {
-        guard let start = contents.range(of: beginMarker),
-              let end = contents.range(of: endMarker, range: start.upperBound..<contents.endIndex) else {
-            return contents
-        }
-        var updated = contents
-        updated.removeSubrange(start.lowerBound..<end.upperBound)
-        while updated.hasSuffix("\n\n") {
-            updated.removeLast()
-        }
-        return updated
+        ShellEnvironmentWriter.shellQuoted(value)
     }
 
     private func isSymbolicLink(_ url: URL) -> Bool {

@@ -47,11 +47,16 @@ final class CacheManagerTests: XCTestCase {
         let content1 = try String(contentsOf: zshrc, encoding: .utf8)
         XCTAssertTrue(content1.contains("alias ll='ls -l'"))
         XCTAssertTrue(content1.contains("# >>> macbay cache >>>"))
-        XCTAssertTrue(content1.contains("npm_config_cache"))
-        XCTAssertTrue(content1.contains("UV_CACHE_DIR"))
-        XCTAssertTrue(content1.contains("GRADLE_USER_HOME"))
-        XCTAssertTrue(content1.contains("HF_HOME"))
+        XCTAssertTrue(content1.contains("[ -d "))
+        XCTAssertTrue(content1.contains("cache-env.sh"))
         XCTAssertTrue(content1.contains("# <<< macbay cache <<<"))
+
+        let envPath = try XCTUnwrap(report1.environmentFilePath)
+        let envContent1 = try String(contentsOfFile: envPath, encoding: .utf8)
+        XCTAssertTrue(envContent1.contains("npm_config_cache"))
+        XCTAssertTrue(envContent1.contains("UV_CACHE_DIR"))
+        XCTAssertTrue(envContent1.contains("GRADLE_USER_HOME"))
+        XCTAssertTrue(envContent1.contains("HF_HOME"))
 
         // Calling enable a second time must NOT duplicate blocks
         let report2 = try manager.enable(on: volumeURL, dryRun: false)
@@ -67,11 +72,14 @@ final class CacheManagerTests: XCTestCase {
         try "# Initial config\nalias ll='ls -l'\n".write(to: zshrc, atomically: true, encoding: .utf8)
 
         let manager = CacheManager(homeDirectory: homeDir)
-        _ = try manager.enable(on: volumeURL, dryRun: false)
+        let report = try manager.enable(on: volumeURL, dryRun: false)
+        let envPath = try XCTUnwrap(report.environmentFilePath)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: envPath))
 
         let reportReset = try manager.reset(dryRun: false)
         XCTAssertTrue(reportReset.reset)
         XCTAssertFalse(reportReset.enabled)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: envPath))
 
         let contentAfterReset = try String(contentsOf: zshrc, encoding: .utf8)
         XCTAssertTrue(contentAfterReset.contains("alias ll='ls -l'"))
@@ -115,12 +123,16 @@ final class CacheManagerTests: XCTestCase {
         try FileManager.default.createDirectory(at: trickyVolume, withIntermediateDirectories: true)
 
         let manager = CacheManager(homeDirectory: homeDir)
-        _ = try manager.enable(on: trickyVolume, dryRun: false)
+        let report = try manager.enable(on: trickyVolume, dryRun: false)
 
-        let content = try String(contentsOf: homeDir.appendingPathComponent(".zshrc"), encoding: .utf8)
-        XCTAssertFalse(content.contains("export HF_HOME=\""))
-        XCTAssertTrue(content.contains("export HF_HOME='"))
-        XCTAssertTrue(content.contains("it'\\''s"))
+        let envPath = try XCTUnwrap(report.environmentFilePath)
+        let envContent = try String(contentsOfFile: envPath, encoding: .utf8)
+        XCTAssertFalse(envContent.contains("export HF_HOME=\""))
+        XCTAssertTrue(envContent.contains("export HF_HOME='"))
+        XCTAssertTrue(envContent.contains("it'\\''s"))
+
+        let zshrcContent = try String(contentsOf: homeDir.appendingPathComponent(".zshrc"), encoding: .utf8)
+        XCTAssertTrue(zshrcContent.contains("it'\\''s"))
         XCTAssertEqual(CacheManager.shellQuoted("a'b"), "'a'\\''b'")
     }
 
@@ -145,5 +157,43 @@ final class CacheManagerTests: XCTestCase {
         let afterReset = try String(contentsOf: real, encoding: .utf8)
         XCTAssertTrue(afterReset.contains("alias ll='ls -l'"))
         XCTAssertFalse(afterReset.contains("# >>> macbay cache >>>"))
+    }
+
+    func testCacheReportBackwardCompatibleDecode() throws {
+        let legacyJSON = """
+        {
+            "enabled": true,
+            "reset": false,
+            "targets": [],
+            "shellConfigurationPath": "/Users/test/.zshrc",
+            "dryRun": false
+        }
+        """.data(using: .utf8)!
+
+        let decoded = try JSONDecoder().decode(CacheReport.self, from: legacyJSON)
+        XCTAssertTrue(decoded.enabled)
+        XCTAssertFalse(decoded.reset)
+        XCTAssertEqual(decoded.shellConfigurationPath, "/Users/test/.zshrc")
+        XCTAssertEqual(decoded.shellConfigurationPaths, ["/Users/test/.zshrc"])
+        XCTAssertNil(decoded.environmentFilePath)
+        XCTAssertNil(decoded.guardPath)
+        XCTAssertFalse(decoded.dryRun)
+    }
+
+    func testCacheReportRoundTripWithNewFields() throws {
+        let report = CacheReport(
+            enabled: true,
+            reset: false,
+            targets: [],
+            shellConfigurationPath: "/Users/test/.zshrc",
+            shellConfigurationPaths: ["/Users/test/.zshrc", "/Users/test/.bashrc"],
+            environmentFilePath: "/Users/test/.config/macbay/cache-env.sh",
+            guardPath: "/Volumes/Ext/MacBay/Caches",
+            dryRun: false
+        )
+
+        let data = try JSONEncoder().encode(report)
+        let decoded = try JSONDecoder().decode(CacheReport.self, from: data)
+        XCTAssertEqual(decoded, report)
     }
 }

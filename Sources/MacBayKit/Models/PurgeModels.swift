@@ -40,11 +40,32 @@ public struct PurgeItem: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+public struct PurgeFailure: Codable, Equatable, Identifiable, Sendable {
+    public var id: String { path }
+    public let appName: String
+    public let path: String
+    public let reason: String
+    public let unreclaimedBytes: UInt64
+
+    public init(
+        appName: String,
+        path: String,
+        reason: String,
+        unreclaimedBytes: UInt64 = 0
+    ) {
+        self.appName = appName
+        self.path = path
+        self.reason = reason
+        self.unreclaimedBytes = unreclaimedBytes
+    }
+}
+
 public struct PurgeReport: Codable, Equatable, Sendable {
     public let generatedAt: String
     public let dryRun: Bool
     public let purgedItems: [PurgeItem]
     public let skippedItems: [PurgeItem]
+    public let failedItems: [PurgeFailure]
     public let totalReclaimedBytes: UInt64
     public let messages: [String]
 
@@ -53,6 +74,7 @@ public struct PurgeReport: Codable, Equatable, Sendable {
         dryRun: Bool,
         purgedItems: [PurgeItem],
         skippedItems: [PurgeItem] = [],
+        failedItems: [PurgeFailure] = [],
         totalReclaimedBytes: UInt64,
         messages: [String] = []
     ) {
@@ -60,8 +82,30 @@ public struct PurgeReport: Codable, Equatable, Sendable {
         self.dryRun = dryRun
         self.purgedItems = purgedItems
         self.skippedItems = skippedItems
+        self.failedItems = failedItems
         self.totalReclaimedBytes = totalReclaimedBytes
         self.messages = messages
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case generatedAt
+        case dryRun
+        case purgedItems
+        case skippedItems
+        case failedItems
+        case totalReclaimedBytes
+        case messages
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.generatedAt = try container.decodeIfPresent(String.self, forKey: .generatedAt) ?? macBayTimestamp()
+        self.dryRun = try container.decode(Bool.self, forKey: .dryRun)
+        self.purgedItems = try container.decode([PurgeItem].self, forKey: .purgedItems)
+        self.skippedItems = try container.decodeIfPresent([PurgeItem].self, forKey: .skippedItems) ?? []
+        self.failedItems = try container.decodeIfPresent([PurgeFailure].self, forKey: .failedItems) ?? []
+        self.totalReclaimedBytes = try container.decode(UInt64.self, forKey: .totalReclaimedBytes)
+        self.messages = try container.decodeIfPresent([String].self, forKey: .messages) ?? []
     }
 }
 

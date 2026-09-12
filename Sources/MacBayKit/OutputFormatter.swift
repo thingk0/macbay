@@ -452,10 +452,30 @@ public struct OutputFormatter {
     public func cache(_ report: CacheReport) -> String {
         var lines = [style("MacBay cache configuration", color: "36", bold: true)]
         if report.reset {
-            lines.append("Removed MacBay cache settings from \(report.shellConfigurationPath)")
+            if report.shellConfigurationPaths.count > 1 {
+                lines.append("Removed MacBay cache settings from:")
+                for path in report.shellConfigurationPaths {
+                    lines.append("  • \(path)")
+                }
+            } else {
+                lines.append("Removed MacBay cache settings from \(report.shellConfigurationPath)")
+            }
         } else {
             lines.append("Cache routing: \(report.enabled ? "enabled" : "preview")")
-            lines.append("Shell configuration: \(report.shellConfigurationPath)")
+            if let guardPath = report.guardPath {
+                lines.append("Guard path: \(guardPath)")
+            }
+            if let envPath = report.environmentFilePath {
+                lines.append("Environment file: \(envPath)")
+            }
+            if report.shellConfigurationPaths.count > 1 {
+                lines.append("Shell configurations:")
+                for path in report.shellConfigurationPaths {
+                    lines.append("  • \(path)")
+                }
+            } else {
+                lines.append("Shell configuration: \(report.shellConfigurationPath)")
+            }
             lines.append(contentsOf: report.targets.map { migration($0) })
         }
         return lines.joined(separator: "\n")
@@ -464,7 +484,7 @@ public struct OutputFormatter {
     public func purge(_ report: PurgeReport) -> String {
         var lines = [style("MacBay cache purge", color: "36", bold: true)]
 
-        if report.purgedItems.isEmpty && report.skippedItems.isEmpty {
+        if report.purgedItems.isEmpty && report.skippedItems.isEmpty && report.failedItems.isEmpty {
             lines.append("No purgeable caches found.")
             return lines.joined(separator: "\n")
         }
@@ -486,6 +506,15 @@ public struct OutputFormatter {
             for item in report.skippedItems {
                 let sizeStr = OutputFormatter.humanBytes(item.sizeBytes)
                 lines.append("  • \(item.appName) (\(sizeStr)) — application is currently running")
+            }
+        }
+
+        if !report.failedItems.isEmpty {
+            lines.append("")
+            lines.append(style("Failed items · \(report.failedItems.count)", color: "31", bold: true))
+            for item in report.failedItems {
+                lines.append("  ! \(item.appName) — \(item.reason)")
+                lines.append("    \(item.path)")
             }
         }
 
