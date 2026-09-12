@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="Assets/macbay-icon-concept.png" width="140" alt="MacBay logo">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="Assets/brand/macbay-symbol-dark.svg">
+    <img src="Assets/brand/macbay-symbol-color.svg" width="140" height="140" alt="MacBay logo">
+  </picture>
 </p>
 
 <h1 align="center">MacBay</h1>
