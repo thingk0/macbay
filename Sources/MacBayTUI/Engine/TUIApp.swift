@@ -8,6 +8,7 @@ public final class TUIApp: @unchecked Sendable {
         case doctor
         case preview
         case adoptPlan
+        case recovery
 
         var loadingMessage: String {
             switch self {
@@ -19,6 +20,7 @@ public final class TUIApp: @unchecked Sendable {
                 return "Diagnosing MacBay links and volume records…"
             case .preview:
                 return "Preparing dry-run preview…"
+            case .recovery: return "Preparing recovery preview…"
             case .adoptPlan:
                 return "Preparing adoption plan…"
             }
@@ -172,6 +174,10 @@ public final class TUIApp: @unchecked Sendable {
                 self.lock.lock()
                 self.state.cachedScan = report
                 self.state.scanLoaded = true
+                self.state.moveListIndex = min(self.state.moveListIndex, max(0, self.state.moveCandidates.count - 1))
+                self.state.moveListScrollOffset = min(self.state.moveListScrollOffset, self.state.moveListIndex)
+                self.state.restoreListIndex = min(self.state.restoreListIndex, max(0, self.state.restoreItems.count - 1))
+                self.state.restoreListScrollOffset = min(self.state.restoreListScrollOffset, self.state.restoreListIndex)
                 self.lock.unlock()
             } catch {
                 self.recordRequestError(error)
@@ -277,7 +283,7 @@ public final class TUIApp: @unchecked Sendable {
         }
 
         let isWindowTooSmall = (controller?.getWindowSize().cols ?? 80) < 80 || (controller?.getWindowSize().rows ?? 24) < 24
-        if isWindowTooSmall && (key == .char("q") || key == .char("Q")) {
+        if isWindowTooSmall && !state.isSearching && (key == .char("q") || key == .char("Q")) {
             if state.isMutating {
                 state.quitDeferred = true
             } else {
@@ -313,6 +319,8 @@ public final class TUIApp: @unchecked Sendable {
             handleDoctorSummaryKey(key)
         case .doctorFindingDetail:
             handleDoctorFindingDetailKey(key)
+        case .recovery(let view):
+            handleRecoveryKey(key, view: view)
         }
     }
 
@@ -362,7 +370,38 @@ public final class TUIApp: @unchecked Sendable {
         state.detailScrollOffset = min(max(0, state.detailScrollOffset + delta), maxOffset)
     }
 
+    private func handleListControls(_ key: Key, restoring: Bool) -> Bool {
+        if state.isSearching {
+            var query = restoring ? state.restoreSearch : state.moveSearch
+            switch key {
+            case .enter: state.isSearching = false
+            case .escape: query = ""; state.isSearching = false
+            case .backspace: if !query.isEmpty { query.removeLast() }
+            case .char(let character):
+                if query.count < 100 { query.append(character) }
+            default: return true
+            }
+            if restoring { state.restoreSearch = query } else { state.moveSearch = query }
+        } else {
+            switch key {
+            case .char("/"): state.isSearching = true
+            case .char("f"), .char("F"):
+                if restoring { state.restoreManagedOnly.toggle() } else { state.moveEligibleOnly.toggle() }
+            case .char("s"), .char("S"):
+                if restoring { state.restoreSortBySize.toggle() } else { state.moveSortByName.toggle() }
+            case .char("c"), .char("C"):
+                if restoring { state.restoreSearch = ""; state.restoreManagedOnly = false }
+                else { state.moveSearch = ""; state.moveEligibleOnly = false }
+            default: return false
+            }
+        }
+        if restoring { state.restoreListIndex = 0; state.restoreListScrollOffset = 0 }
+        else { state.moveListIndex = 0; state.moveListScrollOffset = 0 }
+        return true
+    }
+
     private func handleAppMoveListKey(_ key: Key) {
+        if handleListControls(key, restoring: false) { return }
         let candidates = state.moveCandidates
         let listHeight = listRowCapacity(for: .appMoveList)
 
@@ -599,8 +638,14 @@ public final class TUIApp: @unchecked Sendable {
         defer { lock.unlock() }
         defer { needsRedraw = true }
 
+        if case .copyProgress(let sample) = step {
+            state.copyProgress = sample
+            return
+        }
+        state.copyProgress = nil
         let label: String
         switch step {
+        case .copyProgress: return
         case .selectingVolume: label = "Selecting volume"
         case .validating: label = "Validating application and links"
         case .checkingProcesses: label = "Checking running processes and locks"
@@ -686,6 +731,7 @@ public final class TUIApp: @unchecked Sendable {
     }
 
     private func handleAppRestoreListKey(_ key: Key) {
+        if handleListControls(key, restoring: true) { return }
         let items = state.restoreItems
         let listHeight = listRowCapacity(for: .appRestoreList)
 
@@ -1101,11 +1147,111 @@ public final class TUIApp: @unchecked Sendable {
     }
 
     private func handleDoctorFindingDetailKey(_ key: Key) {
+        guard case .doctorFindingDetail(let finding) = state.currentScreen else { return }
         switch key {
-        case .escape, .enter:
+        case .escape, .enter: state.popScreen()
+        case .up, .char("k"): scrollDetail(by: -1)
+        case .down, .char("j"): scrollDetail(by: 1)
+        case .char("r"):
             state.popScreen()
-        default:
-            break
+            loadDoctor(force: true)
+        case .char("p") where finding.code == .localDataDetected:
+            prepareRecovery { .comparison(try self.service.compareRepair(finding: finding)) }
+        case .char("b") where finding.code == .incompleteOperation:
+            prepareRecovery { .rollback(try self.service.previewRollback(finding: finding)) }
+        default: break
+        }
+    }
+
+    private func prepareRecovery(_ work: @escaping () throws -> RecoveryView) {
+        guard !state.isMutating, !state.isLoading else { return }
+        let origin = state.currentScreen
+        enqueueRequest(.recovery) { [weak self] in
+            guard let self else { return }
+            let view: RecoveryView
+            do { view = try work() }
+            catch { view = .result(self.describe(error: error)) }
+            self.lock.lock()
+            defer { self.lock.unlock() }
+            // A user can navigate away while a read-only plan is loading.
+            guard self.state.currentScreen == origin else { return }
+            self.state.recoveryFocus = 0
+            self.state.pushScreen(.recovery(view))
+        }
+    }
+
+    private func handleRecoveryKey(_ key: Key, view: RecoveryView) {
+        switch key {
+        case .escape: state.popScreen(); state.recoveryFocus = 0
+        case .up, .char("k"): scrollDetail(by: -1)
+        case .down, .char("j"): scrollDetail(by: 1)
+        case .left: state.recoveryFocus = max(0, state.recoveryFocus - 1)
+        case .right, .tab:
+            let maximum: Int
+            if case .comparison = view { maximum = 2 }
+            else if case .preview(let plan) = view, case .blocked = plan.status { maximum = 0 }
+            else { maximum = 1 }
+            state.recoveryFocus = (state.recoveryFocus + 1) % (maximum + 1)
+        case .enter:
+            guard !state.isLoading else { return }
+            if state.recoveryFocus == 0 { state.popScreen(); return }
+            switch view {
+            case .comparison(let comparison):
+                let action: RepairAction = state.recoveryFocus == 1 ? .redock : .keepLocal
+                guard comparison.suggestedActions.contains(action), action != .redock || comparison.canRedock else { return }
+                prepareRecovery { .preview(try self.service.planRepair(comparison: comparison, action: action)) }
+            case .preview(let plan):
+                if case .blocked = plan.status { return }
+                executeRecovery(view: view, appName: plan.appName)
+            case .rollback(let record): executeRecovery(view: view, appName: record.appName)
+            case .result:
+                state.currentScreen = .doctorSummary
+                state.navigationStack = [.home]
+                state.detailScrollOffset = 0
+                loadDoctor(force: true)
+            }
+        default: break
+        }
+    }
+
+    private func executeRecovery(view: RecoveryView, appName: String) {
+        guard !state.isMutating, !state.isLoading else { return }
+        state.isMutating = true
+        state.copyProgress = nil
+        state.completedSteps = []
+        state.operationStarted = Date()
+        state.operationElapsed = 0
+        state.currentStepLabel = "Applying reviewed recovery"
+        state.currentStepStarted = Date()
+        state.currentScreen = .mutatingProgress(operation: "recovery", appName: appName)
+        workerQueue.async { [weak self] in
+            guard let self else { return }
+            let message: String
+            do {
+                let result: RepairExecutionResult
+                switch view {
+                case .preview(let plan):
+                    let force: Bool
+                    if case .reviewRequired = plan.status { force = true } else { force = false }
+                    result = try self.service.executeRepair(plan: plan, force: force)
+                case .rollback(let record): result = try self.service.executeRollback(record: record)
+                default: throw MacBayError.unsupportedOperation("No confirmed recovery plan")
+                }
+                message = OutputFormatter(useColor: false).formatRepairExecutionResult(result)
+            } catch { message = "Recovery failed: \(self.describe(error: error))\nRun diagnosis again before retrying." }
+            self.lock.lock()
+            self.state.isMutating = false
+            self.state.currentStepLabel = nil
+            self.state.currentScreen = .recovery(.result(message))
+            self.state.navigationStack = [.home, .doctorSummary]
+            self.state.detailScrollOffset = 0
+            self.state.recoveryFocus = 0
+            if self.state.quitDeferred { self.shouldExit = true }
+            self.lock.unlock()
+            self.requestRedraw()
+            self.loadStatus(force: true)
+            self.loadScan(force: true)
+            self.loadDoctor(force: true)
         }
     }
 

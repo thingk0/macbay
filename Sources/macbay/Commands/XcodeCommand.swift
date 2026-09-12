@@ -4,7 +4,8 @@ import MacBayKit
 struct XcodeCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "xcode",
-        abstract: "Externalize Xcode DeviceSupport and remove unavailable simulators."
+        abstract: "Externalize Xcode DeviceSupport and remove unavailable simulators.",
+        aliases: ["xc"]
     )
 
     @OptionGroup var options: MutatingOptions

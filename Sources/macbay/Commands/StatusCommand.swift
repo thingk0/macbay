@@ -4,7 +4,8 @@ import MacBayKit
 struct StatusCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "status",
-        abstract: "Show storage health and docked items."
+        abstract: "Show storage health and docked items.",
+        aliases: ["st"]
     )
 
     @OptionGroup var options: StatusOptions

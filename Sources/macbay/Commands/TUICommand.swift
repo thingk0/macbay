@@ -7,7 +7,8 @@ import Darwin
 struct TUICommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "tui",
-        abstract: "Launch the interactive terminal user interface."
+        abstract: "Launch the interactive terminal user interface.",
+        aliases: ["ui"]
     )
 
     func run() throws {

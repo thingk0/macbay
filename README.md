@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="Assets/macbay-icon-concept.png" width="140" alt="MacBay logo">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="Assets/brand/macbay-symbol-dark.svg">
+    <img src="Assets/brand/macbay-symbol-color.svg" width="140" height="140" alt="MacBay logo">
+  </picture>
 </p>
 
 <h1 align="center">MacBay</h1>
@@ -142,7 +145,10 @@ mb tui
 - **Move Application (`dock`)**: Browse application candidates sorted by size with `[Safe]`, `[Review]`, and `[Blocked]` status badges. Inspect bundle details, review relocation risks, select session target volume, and preview dry-run space changes before confirming.
 - **Restore Application (`undock`)**: Restore connected MacBay-managed applications back to internal storage. Unmanaged apps can be adopted straight from this screen: review the current location, standard storage path, link change, and whether the bundle actually moves, then confirm. Adoption targets the volume that really holds the app, never the configured default, and the restore preview is prepared only after that confirmation. Unconfirmed or broken links display status and `mb doctor` guidance.
 - **Diagnosis (`doctor`)**: Inspect externalized apps and developer data for broken links, missing targets, record mismatches, and interrupted operations, with actionable recommendations highlighted for each issue.
-- *(Note: Multi-select, search, and Xcode/cache/repair execution will be introduced in subsequent versions. Use CLI commands for those workflows.)*
+- **Search and filters**: In move/restore lists, `/` starts a case-insensitive name search; Enter applies it and Esc clears it. `f` toggles compatibility-check-passed apps (move) or managed apps (restore), `s` toggles name/size sorting, and `c` clears the search and filter. Existing risk reviews still apply.
+- **Copy progress**: During app move/restore, MacBay samples destination file lengths and shows estimated copied bytes, percentage, and average growth rate. These are estimates, not verified bytes or guaranteed disk throughput: preallocation can lead the actual transfer. The display stays below 100% until the copy stage ends; signature verification is a separate stage. If sampling is unavailable or too expensive, stage and elapsed time remain visible.
+- **Diagnosis to recovery**: From a duplicate-app finding, `p` compares local/external copies and opens a redock or keep-local preview. From an interrupted repair finding, `b` reviews its matching repair journal before rollback. Every mutation requires a separate confirmation (Cancel by default); risk-required repairs explicitly ask for acceptance. `r` returns to refreshed diagnosis. Interrupted adoption is not treated as a repair rollback.
+- Multi-select and Xcode/cache execution in the TUI remain planned; use their CLI commands today.
 
 ### 1. Check Storage Health
 
@@ -270,6 +276,32 @@ Exit codes: `0` when nothing needs attention, `1` when problems or unverifiable 
 ---
 
 ## Commands & Usage
+
+### Command aliases
+
+Short aliases accept the same arguments and options as the full commands. Run `mb --help` to see them.
+
+| Command | Alias |
+| --- | --- |
+| `init` | `i` |
+| `status` | `st` |
+| `scan` | `sc` |
+| `doctor` | `doc` |
+| `references` | `refs` |
+| `dock` | `dk` |
+| `adopt` | `ad` |
+| `undock` | `ud` |
+| `repair` | `rep` |
+| `xcode` | `xc` |
+| `cache` | `c` |
+| `tui` | `ui` |
+
+```sh
+mb st
+mb sc --json
+mb doc
+mb dk --help
+```
 
 ### Choosing the Default Volume (`init`)
 

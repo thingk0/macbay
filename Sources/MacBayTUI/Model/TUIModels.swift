@@ -139,3 +139,10 @@ public struct CompletedStep: Equatable, Sendable {
         self.duration = duration
     }
 }
+
+public enum RecoveryView: Equatable {
+    case comparison(RepairComparison)
+    case preview(RepairPlan)
+    case rollback(RepairJournalRecord)
+    case result(String)
+}
