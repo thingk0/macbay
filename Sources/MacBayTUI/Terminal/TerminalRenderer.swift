@@ -48,7 +48,7 @@ public struct TerminalRenderer {
         let contentHeight = terminalHeight - 5
         switch screen {
         case .appMoveList, .appRestoreList:
-            return max(5, contentHeight - 9)
+            return max(4, contentHeight - 10)
         case .doctorSummary:
             return max(4, contentHeight - 10)
         default:
@@ -61,6 +61,10 @@ public struct TerminalRenderer {
         guard width >= 80, height >= 24 else { return nil }
         let contentHeight = height - 5
         switch state.currentScreen {
+        case .recovery(let view):
+            return (max(1, contentHeight - 2), recoveryBody(view, width: width).count)
+        case .doctorFindingDetail(let finding):
+            return (max(1, contentHeight - 1), wrapped(renderDoctorFindingDetail(finding: finding, width: width, height: contentHeight), width: width).count)
         case .riskReview(let candidate):
             let body = riskReviewBody(candidate: candidate, width: width)
             return (max(1, contentHeight - Self.confirmFooterHeight), body.count)
@@ -114,7 +118,7 @@ public struct TerminalRenderer {
     }
 
     private func renderHeader(state: TUIState, width: Int) -> String {
-        let left = "\u{001B}[1;36mMacBay\u{001B}[0m \u{001B}[2mv1.2.1\u{001B}[0m · Developer Storage Externalizer"
+        let left = "\u{001B}[1;36mMacBay\u{001B}[0m \u{001B}[2mv\(MacBayVersion.current)\u{001B}[0m · Developer Storage Externalizer"
         let leftLen = displayWidth(left)
 
         let right: String
@@ -165,6 +169,8 @@ public struct TerminalRenderer {
             }
         case .infoModal(let title, _, _):
             breadcrumb = "\u{001B}[1;33mNotice: \(title)\u{001B}[0m"
+        case .recovery:
+            breadcrumb = "Home > Diagnosis > Recovery"
         case .doctorSummary:
             breadcrumb = "\u{001B}[2mHome >\u{001B}[0m \u{001B}[1;35mDoctor Diagnosis\u{001B}[0m"
         case .doctorFindingDetail(let finding):
@@ -192,7 +198,9 @@ public struct TerminalRenderer {
         case .home:
             text = "\u{001B}[1m[↑/↓/j/k]\u{001B}[0m Navigate  \u{001B}[1m[Enter]\u{001B}[0m Select  \u{001B}[1m[r]\u{001B}[0m Refresh  \u{001B}[1m[q]\u{001B}[0m Quit"
         case .appMoveList, .appRestoreList:
-            text = "\u{001B}[1m[↑/↓/j/k]\u{001B}[0m Navigate  \u{001B}[1m[Enter]\u{001B}[0m Select  \u{001B}[1m[Esc]\u{001B}[0m Back  \u{001B}[1m[r]\u{001B}[0m Refresh  \u{001B}[1m[q]\u{001B}[0m Quit"
+            text = state.isSearching
+                ? "Type to search · [Enter] Apply · [Esc] Clear · [Backspace] Delete"
+                : "[↑/↓] Move [Enter] Select [/] Search [f] Filter [s] Sort [c] Clear [Esc] Back"
         case .riskReview:
             text = "\u{001B}[1m[↑/↓]\u{001B}[0m Scroll  \u{001B}[1m[←/→/Tab]\u{001B}[0m Button  \u{001B}[1m[Enter]\u{001B}[0m Select  \u{001B}[1m[Esc]\u{001B}[0m Cancel"
         case .volumeSelect:
@@ -209,8 +217,11 @@ public struct TerminalRenderer {
             text = "\u{001B}[1m[Enter / Esc]\u{001B}[0m Return to application list"
         case .doctorSummary:
             text = "\u{001B}[1m[↑/↓/j/k]\u{001B}[0m Navigate  \u{001B}[1m[Enter]\u{001B}[0m View  \u{001B}[1m[r]\u{001B}[0m Re-run  \u{001B}[1m[Esc]\u{001B}[0m Back  \u{001B}[1m[q]\u{001B}[0m Quit"
-        case .doctorFindingDetail:
-            text = "\u{001B}[1m[Esc / Enter]\u{001B}[0m Return to Findings"
+        case .recovery:
+            text = "[↑/↓] Scroll [←/→/Tab] Choose [Enter] Select [Esc] Cancel"
+        case .doctorFindingDetail(let finding):
+            let action = finding.code == .localDataDetected ? "[p] Compare copies " : (finding.code == .incompleteOperation ? "[b] Review rollback " : "")
+            text = action + "[r] Recheck [↑/↓] Scroll [Esc] Back"
         }
         return text
     }
@@ -256,7 +267,10 @@ public struct TerminalRenderer {
         case .doctorSummary:
             return renderDoctorSummary(state: state, width: width, height: height)
         case .doctorFindingDetail(let finding):
-            return renderDoctorFindingDetail(finding: finding, width: width, height: height)
+            let body = wrapped(renderDoctorFindingDetail(finding: finding, width: width, height: height), width: width)
+            return composeDetail(body: body, footer: [scrollIndicator(bodyCount: body.count, viewport: height - 1, scrollOffset: state.detailScrollOffset)], height: height, scrollOffset: state.detailScrollOffset)
+        case .recovery(let view):
+            return renderRecovery(state: state, view: view, width: width, height: height)
         }
     }
 
@@ -324,9 +338,10 @@ public struct TerminalRenderer {
     private func renderAppMoveList(state: TUIState, width: Int, height: Int) -> [String] {
         var lines: [String] = []
         let candidates = state.moveCandidates
+        lines.append("  / \(state.moveSearch.isEmpty ? "Search apps" : state.moveSearch)\(state.isSearching ? "▏" : "") | \(state.moveEligibleOnly ? "Passed only" : "All") | \(state.moveSortByName ? "Name" : "Size") | \(candidates.count) apps")
 
         if candidates.isEmpty {
-            lines.append(center("No candidate applications discovered under /Applications.", width: width))
+            lines.append(center("No matching applications. Clear filters with [c] or refresh with [r].", width: width))
             lines.append(center("Press [r] to refresh or [Esc] to return.", width: width))
             return lines
         }
@@ -379,7 +394,7 @@ public struct TerminalRenderer {
         if let comp = sel.compatibility {
             switch comp.grade {
             case .safe:
-                lines.append("  \u{001B}[32mCompatibility:\u{001B}[0m Safe to dock. No relocation or hypervisor signals detected.")
+                lines.append("  \u{001B}[32mCompatibility:\u{001B}[0m Checks passed. No known relocation risks detected; app behavior can vary.")
             case .popupRisk:
                 let reasons = comp.reasons.joined(separator: ", ")
                 lines.append("  \u{001B}[33mCompatibility Review Required:\u{001B}[0m \(reasons)")
@@ -532,7 +547,7 @@ public struct TerminalRenderer {
         if state.completedSteps.isEmpty {
             lines.append("    Starting migration…")
         } else {
-            for step in state.completedSteps {
+            for step in state.completedSteps.suffix(max(1, height - 13)) {
                 let durationStr = String(format: "%.1fs", step.duration)
                 lines.append("    \u{001B}[32m✔\u{001B}[0m \(step.label) (\(durationStr))")
             }
@@ -541,6 +556,13 @@ public struct TerminalRenderer {
         lines.append("")
         if let current = state.currentStepLabel {
             lines.append("  \u{001B}[1;36m➜ Current:\u{001B}[0m \(current)…")
+        }
+
+        if let sample = state.copyProgress {
+            lines.append("  Copy estimate: \(Int(sample.fraction * 100))% · \(OutputFormatter.humanBytes(sample.observedBytes)) / \(OutputFormatter.humanBytes(sample.totalBytes))")
+            if let speed = sample.bytesPerSecond {
+                lines.append("  Average growth: \(OutputFormatter.humanBytes(speed))/s · verification follows")
+            }
         }
 
         if state.quitDeferred {
@@ -599,14 +621,15 @@ public struct TerminalRenderer {
     private func renderAppRestoreList(state: TUIState, width: Int, height: Int) -> [String] {
         var lines: [String] = []
         let items = state.restoreItems
+        lines.append("  / \(state.restoreSearch.isEmpty ? "Search apps" : state.restoreSearch)\(state.isSearching ? "▏" : "") | \(state.restoreManagedOnly ? "Managed only" : "All") | \(state.restoreSortBySize ? "Size" : "Name") | \(items.count) apps")
 
         if items.isEmpty {
-            lines.append(center("No docked or external applications found.", width: width))
+            lines.append(center("No matching external apps. Clear filters with [c] or refresh with [r].", width: width))
             lines.append(center("Press [r] to refresh or [Esc] to return.", width: width))
             return lines
         }
 
-        let listHeight = max(5, height - 9)
+        let listHeight = listVisibleRows(for: .appRestoreList, terminalHeight: height + 5)
         let selectedIndex = min(max(0, state.restoreListIndex), items.count - 1)
 
         lines.append("\u{001B}[1m  Status        Application Name                     Size\u{001B}[0m")
@@ -970,6 +993,74 @@ public struct TerminalRenderer {
         }
 
         return lines
+    }
+
+    private func wrapped(_ lines: [String], width: Int) -> [String] {
+        let capacity = max(1, width - 2)
+        return lines.flatMap { line -> [String] in
+            guard !line.isEmpty else { return [""] }
+            let plain = line.replacingOccurrences(of: "\u{001B}\\[[0-9;]*[A-Za-z]", with: "", options: .regularExpression)
+            var result: [String] = []
+            var row = ""
+            var columns = 0
+            for character in plain {
+                let nextWidth = characterWidth(character)
+                if columns + nextWidth > capacity, !row.isEmpty {
+                    result.append(row)
+                    row = ""
+                    columns = 0
+                }
+                row.append(character)
+                columns += nextWidth
+            }
+            result.append(row)
+            return result
+        }
+    }
+
+    private func recoveryBody(_ view: RecoveryView, width: Int) -> [String] {
+        let formatter = OutputFormatter(useColor: false)
+        let text: String
+        switch view {
+        case .comparison(let comparison):
+            func describe(_ label: String, _ copy: AppCopyInfo) -> String {
+                "\(label): \(copy.path)\n  Version: \(copy.version ?? "Unknown") · Build: \(copy.buildNumber ?? "Unknown")\n  Identifier: \(copy.bundleIdentifier ?? "Unknown")\n  Size: \(OutputFormatter.humanBytes(copy.sizeBytes))\n  Signature: \(copy.signatureStatus)\n  Compatibility: \(copy.compatibilityGrade)"
+            }
+            text = "Compare copies · \(comparison.appName)\nVolume: \(comparison.volumePath)\n\n" + describe("Local", comparison.localCopy) + "\n\n" + describe("External", comparison.externalCopy) + "\n" + comparison.redockBlockers.joined(separator: "\n") + "\n\nRedock: move the local app externally; archive the old external copy.\nKeep local: retain both copies; remove the management record.\nChoose an action to preview. No files have changed."
+        case .preview(let plan):
+            var warning = ""
+            switch plan.status {
+            case .blocked(let reason, let solution): warning = "Blocked: \(reason)\n\(solution)"
+            case .reviewRequired(let reasons, let evidence): warning = "Risk acceptance required:\n" + (reasons + evidence).joined(separator: "\n")
+            case .ready: break
+            }
+            text = warning + "\n" + formatter.formatRepairPlan(plan: plan, force: false, dryRun: true) + "\n" + plan.warnings.joined(separator: "\n")
+        case .rollback(let record):
+            text = "Review interrupted repair rollback: \(record.appName)\nPhase: \(record.phase.rawValue)\nVolume: \(record.volumePath)\nLocal: \(record.localPath)\nExternal: \(record.externalPath)\nExternal backup: \(record.backupPath)\nLocal backup: \(record.localBackupPath)\nStaging: \(record.stagingPath)\n\nRollback uses this journal to restore previous paths and records, and may remove staged files. No changes have been made yet."
+        case .result(let message): text = message
+        }
+        return wrapped(text.components(separatedBy: "\n"), width: width)
+    }
+
+    private func renderRecovery(state: TUIState, view: RecoveryView, width: Int, height: Int) -> [String] {
+        let body = recoveryBody(view, width: width)
+        let labels: [String]
+        switch view {
+        case .comparison(let comparison):
+            labels = ["Cancel", comparison.canRedock ? "Preview redock" : "Redock unavailable", "Preview keep local"]
+        case .preview(let plan):
+            switch plan.status {
+            case .blocked: labels = ["Close"]
+            case .reviewRequired: labels = ["Cancel", "Accept risk & repair"]
+            case .ready: labels = ["Cancel", "Confirm repair"]
+            }
+        case .rollback: labels = ["Cancel", "Confirm rollback"]
+        case .result: labels = ["Back", "Recheck diagnosis"]
+        }
+        let buttons = labels.enumerated().map { index, label in
+            index == state.recoveryFocus ? "\u{001B}[7m [ \(label) ] \u{001B}[0m" : " [ \(label) ] "
+        }.joined(separator: "  ")
+        return composeDetail(body: body, footer: [scrollIndicator(bodyCount: body.count, viewport: height - 2, scrollOffset: state.detailScrollOffset), buttons], height: height, scrollOffset: state.detailScrollOffset)
     }
 
     private func renderDoctorFindingDetail(finding: DoctorFinding, width: Int, height: Int) -> [String] {

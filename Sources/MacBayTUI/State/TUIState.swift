@@ -13,6 +13,7 @@ public enum TUIScreen: Equatable {
     case adoptReview(plan: AdoptPlan)
     case adoptOutcome(AdoptOutcome)
     case infoModal(title: String, message: String, guidance: String?)
+    case recovery(RecoveryView)
     case doctorSummary
     case doctorFindingDetail(DoctorFinding)
 }
@@ -39,6 +40,7 @@ public struct TUIState: Equatable {
     public var errorMessage: String?
 
     // In-progress mutating operation tracking
+    public var copyProgress: CopyProgress?
     public var currentStepLabel: String?
     public var currentStepStarted: Date?
     public var completedSteps: [CompletedStep] = []
@@ -46,6 +48,14 @@ public struct TUIState: Equatable {
     public var operationElapsed: TimeInterval = 0
 
     // List indices and scrolling
+    public var moveSearch = ""
+    public var restoreSearch = ""
+    public var isSearching = false
+    public var moveEligibleOnly = false
+    public var restoreManagedOnly = false
+    public var moveSortByName = false
+    public var restoreSortBySize = false
+
     public var homeMenuIndex = 0
     public var moveListIndex = 0
     public var moveListScrollOffset = 0
@@ -63,6 +73,7 @@ public struct TUIState: Equatable {
     public var riskFocusIndex = 0
     public var adoptReviewFocusIndex = 0
     public var adoptRiskAccepted = false
+    public var recoveryFocus = 0
 
     public init() {}
 
@@ -70,7 +81,12 @@ public struct TUIState: Equatable {
         guard let scan = cachedScan else { return [] }
         return scan.candidates
             .filter { $0.kind == .application }
-            .sorted { $0.sizeBytes > $1.sizeBytes }
+            .filter { moveSearch.isEmpty || $0.name.localizedCaseInsensitiveContains(moveSearch) }
+            .filter { !moveEligibleOnly || $0.compatibility?.grade == .safe }
+            .sorted {
+                if !moveSortByName, $0.sizeBytes != $1.sizeBytes { return $0.sizeBytes > $1.sizeBytes }
+                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
     }
 
     public var restoreItems: [RestoreItem] {
@@ -122,7 +138,12 @@ public struct TUIState: Equatable {
                 }
             }
         }
-        return items.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        return items.filter { restoreSearch.isEmpty || $0.name.localizedCaseInsensitiveContains(restoreSearch) }
+            .filter { !restoreManagedOnly || $0.status == .managed }
+            .sorted {
+                if restoreSortBySize, $0.sizeBytes != $1.sizeBytes { return ($0.sizeBytes ?? 0) > ($1.sizeBytes ?? 0) }
+                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
     }
 
     public var doctorFindings: [DoctorFinding] {
