@@ -506,6 +506,7 @@ final class MockFileManager: FileManager, @unchecked Sendable {
     let mountedPaths: [String]
     var unreadableLinkPaths: Set<String> = []
     var unreadableDirectoryPaths: Set<String> = []
+    var unreadableFilePaths: Set<String> = []
 
     init(mountedPaths: [String]) {
         self.mountedPaths = mountedPaths
@@ -543,5 +544,16 @@ final class MockFileManager: FileManager, @unchecked Sendable {
             )
         }
         return try super.contentsOfDirectory(at: url, includingPropertiesForKeys: keys, options: mask)
+    }
+
+    override func attributesOfItem(atPath path: String) throws -> [FileAttributeKey: Any] {
+        if unreadableFilePaths.contains(path) {
+            throw NSError(
+                domain: NSPOSIXErrorDomain,
+                code: Int(EACCES),
+                userInfo: [NSLocalizedDescriptionKey: "Operation not permitted"]
+            )
+        }
+        return try super.attributesOfItem(atPath: path)
     }
 }

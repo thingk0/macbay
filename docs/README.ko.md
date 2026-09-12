@@ -141,7 +141,7 @@ mb tui
 - **홈**: 내장 및 외장 APFS 디스크 용량, MacBay 관리 중인 앱 수 조회.
 - **앱 이동 (`dock`)**: 스캔 기준을 사용한 크기순 목록, `[Safe]` / `[Review]` / `[Blocked]` 호환성 뱃지 표시. 상세 경로·호환성 근거 확인, 세션 대상 볼륨 선택, 공간 추정치를 포함한 dry-run 미리보기 후 실행 확인. (Review 대상은 위험 수락 후 `--force`로 안전하게 연결)
 - **앱 복원 (`undock`)**: 연결된 볼륨의 MacBay 관리 앱을 내장 디스크로 안전하게 복원. 비관리 앱은 이 화면에서 바로 등록할 수 있습니다. 현재 위치, 표준 저장 경로, 링크 변경, 파일 이동 여부를 검토하고 확인하면 복원 미리보기가 준비됩니다. 등록 대상은 앱이 실제로 있는 볼륨이며 설정된 기본 볼륨으로 임의 변경하지 않습니다. 확인 불가 항목 및 깨진 링크는 상태 안내와 `mb doctor` 안내를 표시합니다.
-- **진단 (`doctor`)**: 링크 및 볼륨 레코드 검사 결과 탐색 및 문제별 권장 조치 확인.
+- **진단 (`doctor`)**: 외장화한 앱과 개발 데이터의 링크 끊김, 대상 누락, 기록 불일치, 중단된 작업을 살펴보고 문제별 권장 조치를 확인합니다.
 - *(참고: 다중 선택, 검색, Xcode·캐시·repair 실행은 후속 버전에 추가될 예정이며 현재 버전에서는 CLI 명령으로 제공됩니다.)*
 
 ### 1. 스토리지 상태 확인
@@ -293,7 +293,7 @@ mb init --reset
 
 ### 링크·기록 진단 (`doctor`)
 
-`/Applications`의 링크, 알려진 개발자 캐시 링크, 연결된 외장 볼륨(읽기 전용 포함)의 MacBay 기록을 검사합니다. 파일과 설정을 변경하지 않습니다:
+/Applications의 링크, 알려진 개발자 캐시 링크, 연결된 외장 볼륨(읽기 전용 포함)의 MacBay 기록을 검사합니다. 파일과 설정을 변경하지 않습니다:
 
 ```sh
 # 연결된 볼륨과 로컬 링크 진단
@@ -308,6 +308,7 @@ mb doctor --volume /Volumes/Archive
 2. **개발자 캐시 링크**: `~/Library/Developer/Xcode/iOS DeviceSupport`, `~/Library/Developer/CoreSimulator`, `~/.npm`, `~/.cache/uv`, `~/.gradle`, `~/.cache/huggingface`.
 3. **볼륨 기록**: 연결된 볼륨의 `MacBay/manifest.json`과 실제 원본·대상 경로를 대조합니다.
 4. **내부 데이터**: 기록된 원본 경로가 링크가 아니라 일반 파일·디렉터리로 존재하면 `Local data detected`로 보고하고 두 경로와 현재 크기를 표시합니다. 외장 복사본까지 사라졌다면 단순 중복으로 분류하지 않고 기록과 실제 상태가 다름으로 보고합니다.
+5. **중단된 작업**: 볼륨에 남은 미완료 `adopt`·`repair` 작업을 롤백·완료에 필요한 명령과 함께 보고합니다.
 
 > [!NOTE]
 > `doctor`는 삭제·덮어쓰기·재이동을 수행하지 않으며, "업데이트 때문에 재생성됐다"거나 "두 복사본이 동일하다"고 단정하지 않습니다. 수동 이동 항목은 MacBay 이력이 없어 내부 데이터 검사에서 제외되며, 이 범위는 `notes`에 명시됩니다.
@@ -318,6 +319,30 @@ mb doctor --volume /Volumes/Archive
 
 > [!IMPORTANT]
 > `doctor`는 읽기 전용입니다. 삭제·이동·복구를 수행하지 않으며 내부 디스크에 별도 기록을 저장하지 않으므로, 분리된 외장 볼륨은 다시 연결하기 전까지 검증할 수 없습니다.
+
+### 저장된 앱 경로 검사 (`references`)
+
+특정 설정 파일 안에 저장된 앱 경로를 검사합니다. `--path`로 지정한 파일만 읽고 디스크의 다른 위치는 탐색하지 않습니다:
+
+```sh
+# 파일 하나 검사
+mb references --path ~/.cursor/mcp.json
+
+# 여러 파일 검사 (반복 가능)
+mb references --path ~/.cursor/mcp.json --path ~/Library/LaunchAgents/com.example.tool.plist
+```
+
+JSON과 XML·바이너리 plist는 Foundation으로 읽고, TOML·YAML·INI·셸 등 텍스트 파일에서는 `.app` 경계를 포함하는 절대 경로를 추출합니다. 상대 경로는 현재 디렉터리 기준, `~`는 홈 기준이며, 중복 지정한 경로는 한 번만 검사합니다. 저장된 경로가 실제로 존재하는지와 대체 후보를 확인하기 위해 `/Applications`와 `~/Applications`를 조회합니다. 볼륨·매니페스트 검사는 실행하지 않습니다.
+
+저장된 경로가 없으면 `/Applications`와 `~/Applications`에서 같은 이름의 앱을 찾습니다(같은 실제 앱이면 `/Applications`를 우선). 동일한 내부 경로가 있으면 `external_reference_stale_candidate`와 현재 후보를 보고하고, 대응 앱이나 내부 파일이 없으면 `external_reference_missing`입니다. 접근 오류·순환 링크·동명 앱 모호는 `external_reference_unverified`, 읽기 한도는 `external_reference_scan_incomplete`입니다.
+
+> [!NOTE]
+> 참조 검사는 읽기 전용입니다. 경로처럼 보이는 문자열의 휴리스틱 추출은 지원되는 검사 방식이며, MacBay는 셸 변수를 확장하거나 스크립트를 실행하지 않고, 설정이 있다고 해서 현재 사용 중이라고 단정하지 않습니다. 알려진 MCP 영역(TOML의 `mcp_servers`, JSON의 `mcpServers`)에서는 비활성 서버를 건너뛰고, 지원하지 않는 TOML 구성은 부분 검사로 보고합니다. 보고된 경로는 후보일 뿐이며, 앱이 이동·삭제됐다거나 두 복사본이 같은 버전인지, 해당 설정이 현재 사용되는지는 확정하지 않습니다. 경로 와일드카드, `<AppName>` 같은 템플릿 토큰, 문자 그대로의 `AppName.app` 자리는 파일 참조로 검사하지 않으며, 해당 제외 정책에 걸린 항목은 finding에서 제외하고 `notes`에 설명합니다. 외장 볼륨 미연결은 가능한 원인으로만 안내합니다. 저장된 경로가 잘못된 것 같으면 해당 설정이 현재 사용되는지 먼저 확인한 뒤 파일을 백업하고 경로를 수정하세요(예: `/Applications/<App>.app/...`). MacBay는 그 파일을 편집하지 않습니다.
+
+> [!NOTE]
+> 한도는 설정 파일 10,000개, 파일당 2 MiB, 총 읽기 64 MiB입니다. 백업 파일은 건너뜁니다.
+
+**종료 코드**: 저장된 경로가 모두 정상이면 `0`, 누락 경로·읽기 실패·읽기 누락이 있으면 `1`, 인자가 잘못되었거나 검사 자체가 실패하면 `2`.
 
 ### 애플리케이션 이전 (`dock`)
 
@@ -547,6 +572,8 @@ mb status --json
 ```
 
 `mb doctor --json`은 `volumes`, `findings`, `summary`, `warnings`, `notes`를 보고합니다. 각 항목에는 안정적인 `code`(예: `link_target_unavailable`, `link_unmanaged`, `local_data_detected`, `record_source_missing`, `manifest_unreadable`), `status`(`healthy`, `needs_attention`, `unable_to_verify`), 관련 경로와 크기(해당되는 경우), 권장 행동이 포함됩니다.
+
+`mb references --json`은 `generatedAt`, `findings`, `notes`를 보고합니다. 각 항목에는 안정적인 `code`(예: `external_reference_stale_candidate`, `external_reference_missing`, `external_reference_unverified`, `external_reference_scan_incomplete`, `external_config_unreadable`, `external_config_partially_checked`), `status`, 원본 파일, 저장된 경로, 확인된 대체 후보(있는 경우), 선택적 `referenceLocations`, 권장 행동이 포함됩니다.
 
 오류 발생 시 MacBay는 `stderr`로 구조화된 에러 봉투(envelope)를 출력하고 0이 아닌 종료 상태 코드를 반환합니다:
 

@@ -772,13 +772,70 @@ public struct OutputFormatter {
         return sections.map { $0.joined(separator: "\n") }.joined(separator: "\n\n")
     }
 
+    public func references(_ report: ReferenceReport) -> String {
+        var sections: [[String]] = []
+
+        sections.append([style("MacBay references", color: "36", bold: true)])
+
+        let attention = report.findings.filter { $0.status == .needsAttention }
+        let unverified = report.findings.filter { $0.status == .unableToVerify }
+        let healthy = report.findings.filter { $0.status == .healthy }
+
+        if report.findings.isEmpty {
+            sections.append([
+                bold("No stored app paths to report"),
+                "  " + dim("Every app path stored in the specified files exists, or no app paths were found.")
+            ])
+        } else {
+            if !attention.isEmpty {
+                sections.append(findingSection(title: "Missing paths", color: "31", findings: attention))
+            }
+            if !unverified.isEmpty {
+                sections.append(findingSection(title: "Unable to verify", color: "33", findings: unverified))
+            }
+            if !healthy.isEmpty {
+                sections.append(healthySection(healthy))
+            }
+        }
+
+        if !report.notes.isEmpty {
+            var noteLines = [bold("Notes · \(report.notes.count)")]
+            for note in report.notes {
+                noteLines.append("  • " + note)
+            }
+            sections.append(noteLines)
+        }
+
+        return sections.map { $0.joined(separator: "\n") }.joined(separator: "\n\n")
+    }
+
     private func findingSection(title: String, color: String, findings: [DoctorFinding]) -> [String] {
         var lines = [bold("\(title) · \(findings.count)")]
         for finding in findings {
             lines.append("  " + bold(finding.name) + " — " + style(finding.detail, color: color))
+            if finding.category == .externalReference {
+                lines.append(contentsOf: externalReferenceLines(finding))
+            }
             if !finding.recommendation.isEmpty {
                 lines.append("    " + dim("Next:") + " " + finding.recommendation)
             }
+        }
+        return lines
+    }
+
+    private func externalReferenceLines(_ finding: DoctorFinding) -> [String] {
+        var lines: [String] = []
+        if let file = finding.paths.first, !file.isEmpty {
+            lines.append("    File: \(file)")
+        }
+        if let locations = finding.referenceLocations, !locations.isEmpty {
+            lines.append("    Locations: \(locations.joined(separator: ", "))")
+        }
+        if finding.paths.count > 1 {
+            lines.append("    Path: \(finding.paths[1])")
+        }
+        if finding.paths.count > 2 {
+            lines.append("    Candidate: \(finding.paths[2])")
         }
         return lines
     }

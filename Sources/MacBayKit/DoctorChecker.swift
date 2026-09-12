@@ -561,7 +561,9 @@ public struct DoctorChecker {
         case .applicationLink: return 0
         case .developerDataLink: return 1
         case .record: return 2
-        case .volume: return 3
+        case .externalReference: return 3
+        case .volume: return 4
+        @unknown default: return 5
         }
     }
 }
