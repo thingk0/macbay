@@ -48,7 +48,7 @@ public struct TerminalRenderer {
         let contentHeight = terminalHeight - 5
         switch screen {
         case .appMoveList, .appRestoreList:
-            return max(4, contentHeight - 10)
+            return max(4, contentHeight - 13)
         case .doctorSummary:
             return max(4, contentHeight - 10)
         default:
@@ -333,12 +333,26 @@ public struct TerminalRenderer {
         return lines
     }
 
+    private func renderListSearch(query: String, editing: Bool, filter: String, sort: String, count: Int) -> [String] {
+        let field = query.isEmpty ? (editing ? "Type an app name" : "Search apps") : query
+        let hint = editing ? "▏  [Enter] Apply · [Esc] Clear" : "  [/] Search"
+        let color = editing ? "\u{001B}[1;36m" : "\u{001B}[1m"
+        return [
+            "",
+            "  \(color)Search  [ \(field) ]\u{001B}[0m\(hint)",
+            "  \u{001B}[2m[f] Filter: \(filter)   [s] Sort: \(sort)   · \(count) apps\u{001B}[0m",
+            ""
+        ]
+    }
+
     // MARK: - App Move List View
 
     private func renderAppMoveList(state: TUIState, width: Int, height: Int) -> [String] {
         var lines: [String] = []
         let candidates = state.moveCandidates
-        lines.append("  / \(state.moveSearch.isEmpty ? "Search apps" : state.moveSearch)\(state.isSearching ? "▏" : "") | \(state.moveEligibleOnly ? "Passed only" : "All") | \(state.moveSortByName ? "Name" : "Size") | \(candidates.count) apps")
+        lines.append(contentsOf: renderListSearch(query: state.moveSearch, editing: state.isSearching,
+                                                   filter: state.moveEligibleOnly ? "Passed only" : "All",
+                                                   sort: state.moveSortByName ? "Name" : "Size", count: candidates.count))
 
         if candidates.isEmpty {
             lines.append(center("No matching applications. Clear filters with [c] or refresh with [r].", width: width))
@@ -621,7 +635,9 @@ public struct TerminalRenderer {
     private func renderAppRestoreList(state: TUIState, width: Int, height: Int) -> [String] {
         var lines: [String] = []
         let items = state.restoreItems
-        lines.append("  / \(state.restoreSearch.isEmpty ? "Search apps" : state.restoreSearch)\(state.isSearching ? "▏" : "") | \(state.restoreManagedOnly ? "Managed only" : "All") | \(state.restoreSortBySize ? "Size" : "Name") | \(items.count) apps")
+        lines.append(contentsOf: renderListSearch(query: state.restoreSearch, editing: state.isSearching,
+                                                   filter: state.restoreManagedOnly ? "Managed only" : "All",
+                                                   sort: state.restoreSortBySize ? "Size" : "Name", count: items.count))
 
         if items.isEmpty {
             lines.append(center("No matching external apps. Clear filters with [c] or refresh with [r].", width: width))

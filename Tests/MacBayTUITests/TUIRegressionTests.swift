@@ -242,7 +242,7 @@ final class TUIRegressionTests: XCTestCase {
             app.handleKey(.enter)
 
             let initial = app.renderString(width: 80, height: 24).components(separatedBy: "\r\n")
-            let detailRow = 3 + 3 + TerminalRenderer().listVisibleRows(for: .appMoveList, terminalHeight: 24) + 2
+            let detailRow = 3 + 6 + TerminalRenderer().listVisibleRows(for: .appMoveList, terminalHeight: 24) + 2
             for key in Array(repeating: Key.down, count: 35) + Array(repeating: Key.up, count: 35) {
                 app.handleKey(key)
                 let frame = app.renderString(width: 80, height: 24)
