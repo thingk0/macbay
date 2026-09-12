@@ -277,6 +277,32 @@ Healthy · 2
 
 ## 명령어 및 사용법
 
+### 명령어 축약
+
+축약 명령은 기존 명령과 같은 인자와 옵션을 사용합니다. `mb --help`에서도 확인할 수 있습니다.
+
+| Command | Alias |
+| --- | --- |
+| `init` | `i` |
+| `status` | `st` |
+| `scan` | `sc` |
+| `doctor` | `doc` |
+| `references` | `refs` |
+| `dock` | `dk` |
+| `adopt` | `ad` |
+| `undock` | `ud` |
+| `repair` | `rep` |
+| `xcode` | `xc` |
+| `cache` | `c` |
+| `tui` | `ui` |
+
+```sh
+mb st
+mb sc --json
+mb doc
+mb dk --help
+```
+
 ### 기본 볼륨 선택 (`init`)
 
 `--volume`을 생략했을 때 변경 명령이 사용할 외장 볼륨을 저장합니다. `dock`, `undock`, `adopt`, `xcode`, `cache`가 항상 같은 드라이브를 대상으로 동작합니다:

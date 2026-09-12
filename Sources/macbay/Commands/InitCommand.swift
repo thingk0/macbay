@@ -7,7 +7,8 @@ struct InitCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "init",
         abstract: "Choose and save the default external volume.",
-        discussion: "Saves the external volume that commands use when --volume is not given. With no options the only eligible volume is selected automatically, and an interactive terminal offers a numbered list when several are available. Use --show to print the saved default and --reset to remove it."
+        discussion: "Saves the external volume that commands use when --volume is not given. With no options the only eligible volume is selected automatically, and an interactive terminal offers a numbered list when several are available. Use --show to print the saved default and --reset to remove it.",
+        aliases: ["i"]
     )
 
     @Option(name: [.customShort("v"), .long], help: "External volume mount path to save as the default.")

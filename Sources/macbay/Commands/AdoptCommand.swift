@@ -6,7 +6,8 @@ import Darwin
 struct AdoptCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "adopt",
-        abstract: "Adopt an externally located application into MacBay standard storage and manifest."
+        abstract: "Adopt an externally located application into MacBay standard storage and manifest.",
+        aliases: ["ad"]
     )
 
     @Argument(help: "Application name, such as Example.app, or an application path.")

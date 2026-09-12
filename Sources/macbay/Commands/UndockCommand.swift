@@ -4,7 +4,8 @@ import MacBayKit
 struct UndockCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "undock",
-        abstract: "Restore an application to internal /Applications."
+        abstract: "Restore an application to internal /Applications.",
+        aliases: ["ud"]
     )
 
     @Argument(help: "Application name, such as Example.app, or an application path.")

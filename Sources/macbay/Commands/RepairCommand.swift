@@ -6,7 +6,8 @@ import Darwin
 struct RepairCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "repair",
-        abstract: "Compare duplicate local/external application copies and execute recovery (redock or keep-local)."
+        abstract: "Compare duplicate local/external application copies and execute recovery (redock or keep-local).",
+        aliases: ["rep"]
     )
 
     @Argument(help: "Name or path of the application bundle to repair (e.g. 'Kiro CLI.app').")

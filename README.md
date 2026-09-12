@@ -277,6 +277,32 @@ Exit codes: `0` when nothing needs attention, `1` when problems or unverifiable 
 
 ## Commands & Usage
 
+### Command aliases
+
+Short aliases accept the same arguments and options as the full commands. Run `mb --help` to see them.
+
+| Command | Alias |
+| --- | --- |
+| `init` | `i` |
+| `status` | `st` |
+| `scan` | `sc` |
+| `doctor` | `doc` |
+| `references` | `refs` |
+| `dock` | `dk` |
+| `adopt` | `ad` |
+| `undock` | `ud` |
+| `repair` | `rep` |
+| `xcode` | `xc` |
+| `cache` | `c` |
+| `tui` | `ui` |
+
+```sh
+mb st
+mb sc --json
+mb doc
+mb dk --help
+```
+
 ### Choosing the Default Volume (`init`)
 
 Saves the external volume that mutating commands use when `--volume` is omitted, so `dock`, `undock`, `adopt`, `xcode`, and `cache` keep targeting the same drive:

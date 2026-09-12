@@ -277,6 +277,32 @@ Healthy · 2
 
 ## コマンドと使い方
 
+### コマンドの短縮形
+
+短縮形でも同じ引数とオプションを使用できます。`mb --help` でも確認できます。
+
+| Command | Alias |
+| --- | --- |
+| `init` | `i` |
+| `status` | `st` |
+| `scan` | `sc` |
+| `doctor` | `doc` |
+| `references` | `refs` |
+| `dock` | `dk` |
+| `adopt` | `ad` |
+| `undock` | `ud` |
+| `repair` | `rep` |
+| `xcode` | `xc` |
+| `cache` | `c` |
+| `tui` | `ui` |
+
+```sh
+mb st
+mb sc --json
+mb doc
+mb dk --help
+```
+
 ### デフォルトボリュームの選択（`init`）
 
 `--volume` を省略したときに変更系コマンドが使用する外部ボリュームを保存します。`dock`、`undock`、`adopt`、`xcode`、`cache` が常に同じドライブを対象とするようになります:

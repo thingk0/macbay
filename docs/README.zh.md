@@ -277,6 +277,32 @@ Healthy · 2
 
 ## 命令与用法
 
+### 命令别名
+
+简写支持与完整命令相同的参数和选项。运行 `mb --help` 可查看别名。
+
+| Command | Alias |
+| --- | --- |
+| `init` | `i` |
+| `status` | `st` |
+| `scan` | `sc` |
+| `doctor` | `doc` |
+| `references` | `refs` |
+| `dock` | `dk` |
+| `adopt` | `ad` |
+| `undock` | `ud` |
+| `repair` | `rep` |
+| `xcode` | `xc` |
+| `cache` | `c` |
+| `tui` | `ui` |
+
+```sh
+mb st
+mb sc --json
+mb doc
+mb dk --help
+```
+
 ### 选择默认卷 (`init`)
 
 保存省略 `--volume` 时变更类命令所使用的默认外置卷，使 `dock`、`undock`、`adopt`、`xcode` 与 `cache` 始终作用于同一块驱动器：
