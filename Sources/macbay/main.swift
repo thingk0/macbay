@@ -1,26 +1,46 @@
 import Foundation
 import ArgumentParser
 import MacBayKit
+import MacBayTUI
 import Darwin
 
 struct MacBay: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "mb",
         abstract: "The developer-first storage externalizer for macOS.",
-        version: "1.1.0",
+        version: "1.3.0",
         subcommands: [
             InitCommand.self,
             StatusCommand.self,
             ScanCommand.self,
             DoctorCommand.self,
+            ReferencesCommand.self,
             DockCommand.self,
+            AdoptCommand.self,
             UndockCommand.self,
+            RepairCommand.self,
             XcodeCommand.self,
-            CacheCommand.self
+            CacheCommand.self,
+            TUICommand.self
         ]
     )
 
     static func execute() {
+        if CommandLine.arguments.count <= 1 {
+            if MacBayTUI.isInteractiveTerminal() {
+                do {
+                    try MacBayTUI.run()
+                    Darwin.exit(0)
+                } catch {
+                    fputs("Error: \(error.localizedDescription)\n", stderr)
+                    Darwin.exit(1)
+                }
+            } else {
+                print(helpMessage())
+                Darwin.exit(0)
+            }
+        }
+
         do {
             var command = try parseAsRoot()
             try command.run()

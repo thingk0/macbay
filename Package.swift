@@ -12,6 +12,10 @@ let package = Package(
             name: "MacBayKit",
             targets: ["MacBayKit"]
         ),
+        .library(
+            name: "MacBayTUI",
+            targets: ["MacBayTUI"]
+        ),
         .executable(
             name: "macbay",
             targets: ["macbay"]
@@ -31,16 +35,25 @@ let package = Package(
         .target(
             name: "MacBayKit"
         ),
+        .target(
+            name: "MacBayTUI",
+            dependencies: ["MacBayKit"]
+        ),
         .executableTarget(
             name: "macbay",
             dependencies: [
                 "MacBayKit",
+                "MacBayTUI",
                 .product(name: "ArgumentParser", package: "swift-argument-parser")
             ]
         ),
         .testTarget(
             name: "MacBayKitTests",
             dependencies: ["MacBayKit"]
+        ),
+        .testTarget(
+            name: "MacBayTUITests",
+            dependencies: ["MacBayTUI", "MacBayKit"]
         )
     ],
     swiftLanguageVersions: [.v5]

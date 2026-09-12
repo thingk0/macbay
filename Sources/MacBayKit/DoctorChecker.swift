@@ -13,6 +13,7 @@ public struct DoctorChecker {
     private let configStore: ConfigStore
     private let symlinkResolver: SymlinkResolver
     private let sizeCalculator: FileSizeCalculator
+    private let operationJournal: OperationJournal
 
     public init(
         fileManager: FileManager = .default,
@@ -30,7 +31,12 @@ public struct DoctorChecker {
         self.configStore = configStore ?? ConfigStore(fileManager: fileManager)
         self.symlinkResolver = SymlinkResolver(fileManager: fileManager)
         self.sizeCalculator = FileSizeCalculator(fileManager: fileManager)
+        self.operationJournal = OperationJournal(fileManager: fileManager)
+        self.repairJournal = DarwinRepairJournal(fileManager: fileManager)
     }
+
+    private let repairJournal: any RepairJournaling
+
 
     public func check(
         volumePath: String? = nil,
@@ -232,6 +238,33 @@ public struct DoctorChecker {
                 guard !isSymbolicLink(at: item.sourcePath) else { continue }
                 findings.append(inspectRecord(item))
             }
+
+            let volumeURL = URL(fileURLWithPath: volume.info.mountPoint)
+            let incomplete = operationJournal.listIncompleteOperations(on: volumeURL)
+            for record in incomplete {
+                findings.append(DoctorFinding(
+                    code: .incompleteOperation,
+                    status: .needsAttention,
+                    category: .applicationLink,
+                    name: record.appName,
+                    paths: [record.sourcePath, record.targetExternalPath, record.originalExternalPath],
+                    detail: "Incomplete adopt operation detected for \(record.appName) (interrupted at phase: \(record.phase.rawValue))",
+                    recommendation: "Run 'mb adopt \"\(record.appName)\"' to complete adoption, or inspect the paths manually."
+                ))
+            }
+
+            let incompleteRepair = repairJournal.listIncomplete(on: volumeURL)
+            for record in incompleteRepair {
+                findings.append(DoctorFinding(
+                    code: .incompleteOperation,
+                    status: .needsAttention,
+                    category: .applicationLink,
+                    name: record.appName,
+                    paths: [record.localPath, record.externalPath, record.backupPath],
+                    detail: "Incomplete repair operation detected for \(record.appName) (interrupted at phase: \(record.phase.rawValue))",
+                    recommendation: "Run 'mb repair \"\(record.appName)\" --rollback' to restore, or inspect the paths manually."
+                ))
+            }
         }
 
         findings.sort(by: Self.isOrderedBefore)
@@ -270,7 +303,7 @@ public struct DoctorChecker {
                 name: item.name,
                 paths: [item.sourcePath, item.externalPath],
                 detail: "Local data detected at \(item.sourcePath)\(Self.sizeNote(localSize)); recorded copy exists at \(item.externalPath)\(Self.sizeNote(externalSize))",
-                recommendation: "Compare the two copies manually; MacBay does not delete, overwrite, or re-move anything.",
+                recommendation: "Compare the two copies with 'mb repair \"\(item.name)\"'; MacBay does not delete, overwrite, or re-move anything.",
                 localSizeBytes: localSize,
                 externalSizeBytes: externalSize
             )
@@ -528,7 +561,9 @@ public struct DoctorChecker {
         case .applicationLink: return 0
         case .developerDataLink: return 1
         case .record: return 2
-        case .volume: return 3
+        case .externalReference: return 3
+        case .volume: return 4
+        @unknown default: return 5
         }
     }
 }

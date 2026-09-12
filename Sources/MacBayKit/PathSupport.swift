@@ -37,6 +37,18 @@ public enum MacBayPaths {
         externalRoot(on: volume).appendingPathComponent("manifest.json")
     }
 
+    public static func manifestLockURL(on volume: URL) -> URL {
+        externalRoot(on: volume).appendingPathComponent(".manifest.lock")
+    }
+
+    public static func operationsRoot(on volume: URL) -> URL {
+        externalRoot(on: volume).appendingPathComponent(".operations", isDirectory: true)
+    }
+
+    public static func backupsRoot(on volume: URL) -> URL {
+        externalRoot(on: volume).appendingPathComponent("Backups", isDirectory: true)
+    }
+
     public static func applicationURL(named name: String) -> URL {
         if name.hasPrefix("/") || name.hasPrefix("~/") || name.contains("/") {
             return expandedURL(name)
@@ -94,6 +106,45 @@ public struct FileSizeCalculator {
     }
 }
 
+public struct FileLock: Sendable {
+    public let url: URL
+
+    public init(url: URL) {
+        self.url = url
+    }
+
+    public func withLock<T>(_ body: () throws -> T) throws -> T {
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let fd = open(url.path, O_CREAT | O_RDWR, 0o644)
+        guard fd >= 0 else {
+            throw MacBayError.commandFailed(
+                executable: "open",
+                status: errno,
+                details: "Failed to open lock file at \(url.path): \(String(cString: strerror(errno)))"
+            )
+        }
+        defer {
+            close(fd)
+        }
+
+        guard flock(fd, LOCK_EX) == 0 else {
+            throw MacBayError.commandFailed(
+                executable: "flock",
+                status: errno,
+                details: "Failed to acquire lock on \(url.path): \(String(cString: strerror(errno)))"
+            )
+        }
+        defer {
+            flock(fd, LOCK_UN)
+        }
+
+        return try body()
+    }
+}
+
 public struct ManifestStore {
     private let fileManager: FileManager
     private let encoder: JSONEncoder
@@ -137,8 +188,102 @@ public struct ManifestStore {
         on volume: URL,
         _ update: (inout DockManifest) throws -> Void
     ) throws {
-        var manifest = try load(on: volume)
-        try update(&manifest)
-        try save(manifest, on: volume)
+        let lock = FileLock(url: MacBayPaths.manifestLockURL(on: volume))
+        try lock.withLock {
+            var manifest = try load(on: volume)
+            try update(&manifest)
+            try save(manifest, on: volume)
+        }
     }
 }
+
+public struct OperationJournal {
+    private let fileManager: FileManager
+    private let encoder: JSONEncoder
+    private let decoder: JSONDecoder
+
+    public init(fileManager: FileManager = .default) {
+        self.fileManager = fileManager
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        self.encoder = encoder
+        self.decoder = JSONDecoder()
+    }
+
+    public func recordURL(for appName: String, on volume: URL) -> URL {
+        MacBayPaths.operationsRoot(on: volume).appendingPathComponent("adopt-\(appName).json")
+    }
+
+    public func save(_ record: AdoptOperationRecord, on volume: URL) throws {
+        let dir = MacBayPaths.operationsRoot(on: volume)
+        try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = recordURL(for: record.appName, on: volume)
+        let data = try encoder.encode(record)
+        try data.write(to: url, options: .atomic)
+    }
+
+    public func remove(for appName: String, on volume: URL) {
+        let url = recordURL(for: appName, on: volume)
+        try? fileManager.removeItem(at: url)
+    }
+
+    public func load(for appName: String, on volume: URL) -> AdoptOperationRecord? {
+        let url = recordURL(for: appName, on: volume)
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? decoder.decode(AdoptOperationRecord.self, from: data)
+    }
+
+    public func listIncompleteOperations(on volume: URL) -> [AdoptOperationRecord] {
+        let dir = MacBayPaths.operationsRoot(on: volume)
+        guard fileManager.fileExists(atPath: dir.path),
+              let files = try? fileManager.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else {
+            return []
+        }
+        return files.filter { $0.pathExtension == "json" }.compactMap { file in
+            guard let data = try? Data(contentsOf: file),
+                  let record = try? decoder.decode(AdoptOperationRecord.self, from: data),
+                  record.phase != .completed else {
+                return nil
+            }
+            return record
+        }
+    }
+}
+
+public struct DockRefresher {
+    private let fileManager: FileManager
+    private let commandRunner: any CommandRunner
+
+    public init(
+        fileManager: FileManager = .default,
+        commandRunner: any CommandRunner = SystemCommandRunner()
+    ) {
+        self.fileManager = fileManager
+        self.commandRunner = commandRunner
+    }
+
+    public func refresh(for appURL: URL) -> [String] {
+        var warnings: [String] = []
+        let lsregisterPath = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+        if fileManager.isExecutableFile(atPath: lsregisterPath) {
+            do {
+                let result = try commandRunner.run(lsregisterPath, arguments: ["-f", appURL.path])
+                if result.status != 0 {
+                    warnings.append("Warning: lsregister failed with status \(result.status)")
+                }
+            } catch {
+                warnings.append("Warning: lsregister failed: \(error.localizedDescription)")
+            }
+        }
+        do {
+            let result = try commandRunner.run("/usr/bin/killall", arguments: ["Dock"])
+            if result.status != 0 {
+                warnings.append("Warning: killall Dock failed with status \(result.status)")
+            }
+        } catch {
+            warnings.append("Warning: killall Dock failed: \(error.localizedDescription)")
+        }
+        return warnings
+    }
+}
+

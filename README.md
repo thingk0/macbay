@@ -22,7 +22,8 @@ MacBay is a developer-first storage externalizer designed for Apple Silicon Macs
 
 ## Features
 
-- **Application Relocation (`dock` / `undock`)**: Migrate large apps to external storage and replace them with symbolic links. Dock icons and LaunchServices are automatically refreshed.
+- **Interactive TUI Mode (`mb` / `mb tui`)**: Launch a keyboard-driven Terminal User Interface directly by typing `mb` in an interactive terminal. Inspect storage capacity, browse applications with Safe/Review/Blocked status, safely preview and execute moves and restorations, and explore diagnostic findings with actionable recommendations.
+- **Application Relocation (`dock` / `undock` / `adopt`)**: Migrate large apps to external storage, restore them to internal disk, or adopt already-externalized apps into standard MacBay layout without restoring first. Dock icons and LaunchServices are automatically refreshed.
 - **Safety Engine (`AppInspector`)**: Automatically checks application bundles for virtualization entitlements, kernel/system extensions, and hardcoded relocation signals.
 - **Xcode DeviceSupport Management (`xcode`)**: Offload massive iOS DeviceSupport symbols while keeping Xcode functioning seamlessly. Preserves existing legacy links and cleans up unavailable simulators.
 - **Developer Cache Routing (`cache`)**: Route npm, uv, Gradle, and Hugging Face caches to external storage via a clean, isolated block in `~/.zshrc`.
@@ -104,12 +105,44 @@ Verify installation:
 
 ```sh
 mb --version
-# Output: 1.1.0
+# Output: 1.2.1
 ```
 
 ---
 
 ## Quick Start
+
+### 0. Interactive TUI Mode (Default)
+
+Simply run `mb` without arguments in your terminal to open the keyboard-driven TUI:
+
+```sh
+mb
+# Or explicitly:
+mb tui
+```
+
+> [!NOTE]
+> In non-interactive environments (CI, scripts, pipes) or when `TERM` is unsupported, `mb` prints standard CLI help to stdout. Explicit `mb tui` in a non-interactive environment exits with an error explanation.
+
+#### Keyboard Controls
+
+| Key | Action |
+| --- | --- |
+| `↑` / `↓` or `j` / `k` | Navigate items and menus |
+| `Enter` | Select menu item or proceed with action |
+| `Esc` | Go back to previous screen |
+| `q` | Quit MacBay TUI |
+| `r` | Refresh current screen data |
+| `←` / `→` or `Tab` | Switch between buttons (Cancel / Confirm) |
+
+#### TUI Scope
+
+- **Home**: Inspect internal/external disk capacity and managed application counts.
+- **Move Application (`dock`)**: Browse application candidates sorted by size with `[Safe]`, `[Review]`, and `[Blocked]` status badges. Inspect bundle details, review relocation risks, select session target volume, and preview dry-run space changes before confirming.
+- **Restore Application (`undock`)**: Restore connected MacBay-managed applications back to internal storage. Unmanaged apps can be adopted straight from this screen: review the current location, standard storage path, link change, and whether the bundle actually moves, then confirm. Adoption targets the volume that really holds the app, never the configured default, and the restore preview is prepared only after that confirmation. Unconfirmed or broken links display status and `mb doctor` guidance.
+- **Diagnosis (`doctor`)**: Inspect externalized apps and developer data for broken links, missing targets, record mismatches, and interrupted operations, with actionable recommendations highlighted for each issue.
+- *(Note: Multi-select, search, and Xcode/cache/repair execution will be introduced in subsequent versions. Use CLI commands for those workflows.)*
 
 ### 1. Check Storage Health
 
@@ -240,7 +273,7 @@ Exit codes: `0` when nothing needs attention, `1` when problems or unverifiable 
 
 ### Choosing the Default Volume (`init`)
 
-Saves the external volume that mutating commands use when `--volume` is omitted, so `dock`, `undock`, `xcode`, and `cache` keep targeting the same drive:
+Saves the external volume that mutating commands use when `--volume` is omitted, so `dock`, `undock`, `adopt`, `xcode`, and `cache` keep targeting the same drive:
 
 ```sh
 # Save the only eligible volume, or pick from a numbered list in a terminal
@@ -275,6 +308,7 @@ mb doctor --volume /Volumes/Archive
 2. **Developer cache links**: `~/Library/Developer/Xcode/iOS DeviceSupport`, `~/Library/Developer/CoreSimulator`, `~/.npm`, `~/.cache/uv`, `~/.gradle`, and `~/.cache/huggingface`.
 3. **Volume records**: Each connected volume's `MacBay/manifest.json` is compared against the real source and target paths.
 4. **Local data**: A recorded source path that is no longer a link but exists as a regular file or directory is reported as `Local data detected`, together with both paths and their current sizes. If the recorded copy is also missing, it is reported as a mismatch between the record and reality rather than as a duplicate.
+5. **Interrupted operations**: Incomplete `adopt` and `repair` operations left behind on a volume are reported with the command needed to roll back or finish.
 
 > [!NOTE]
 > `doctor` never deletes, overwrites, or re-moves anything, and it does not claim that local data was regenerated by an update or that two copies are identical. Manually relocated items have no MacBay history, so they are excluded from the local data check; the report states this scope in `notes`.
@@ -285,6 +319,30 @@ mb doctor --volume /Volumes/Archive
 
 > [!IMPORTANT]
 > `doctor` is read-only. It does not delete, move, or repair anything, and it does not keep records on the internal drive, so a detached external volume cannot be verified until it is reconnected.
+
+### Inspecting Stored App Paths (`references`)
+
+Checks the app paths stored inside specific configuration files. Only the files passed with `--path` are read; nothing else on the disk is scanned:
+
+```sh
+# Inspect one file
+mb references --path ~/.cursor/mcp.json
+
+# Inspect several files (repeatable)
+mb references --path ~/.cursor/mcp.json --path ~/Library/LaunchAgents/com.example.tool.plist
+```
+
+JSON and XML/binary plist files are read with Foundation; TOML, YAML, INI, shell, and similar text files are scanned for absolute paths that cross a `.app` boundary. Relative paths use the current directory and `~` uses the home directory; a repeated path is checked once. `/Applications` and `~/Applications` are consulted to confirm whether a stored path still exists and to find a replacement candidate — no volume or manifest checks run here.
+
+When a stored path is missing, MacBay looks for a unique same-named app in `/Applications` and `~/Applications` (preferring `/Applications` when both resolve to the same real app). If the same internal path exists, the report uses `external_reference_stale_candidate` with the current candidate. If no replacement app or internal file exists, it uses `external_reference_missing`. Access errors, circular links, and ambiguous same-named apps are `external_reference_unverified`. Read limits are `external_reference_scan_incomplete`.
+
+> [!NOTE]
+> Reference checks are read-only. Heuristic extraction of path-like strings is a supported inspection method; MacBay does not expand shell variables, run scripts, or treat a setting's presence as proof that it is currently used. Known MCP sections (`mcp_servers` in TOML, `mcpServers` in JSON) skip explicitly disabled servers, and unsupported TOML constructs are reported as partially checked. A reported path is a candidate only — MacBay does not confirm that an app was moved or deleted, that two copies are the same version, or whether the setting is currently in use. Path wildcards, template tokens such as `<AppName>`, and the literal `AppName.app` placeholder are not checked as file references, and matches of that skip policy are excluded from findings and explained in `notes`. An unmounted external volume is mentioned as a possible cause when relevant. If a stored path looks wrong, first confirm the setting is currently in use, then back up the file and update the path (for example to `/Applications/<App>.app/...`). MacBay never edits those files.
+
+> [!NOTE]
+> Limits are 10,000 configuration files, 2 MiB per file, and 64 MiB total read. Backup files are skipped.
+
+**Exit codes**: `0` when every stored path checks out, `1` when missing paths, unreadable files, or incomplete reads were found, `2` when the arguments are invalid or the check itself failed.
 
 ### Moving an Application (`dock`)
 
@@ -325,6 +383,9 @@ The preview also reports the destination free space, the estimated free space af
 > mb dock HeavyStudio.app --force --dry-run
 > ```
 
+> [!TIP]
+> If an application in `/Applications` is already a symlink pointing to external storage outside MacBay, `mb dock` detects this and suggests running `mb adopt` instead.
+
 ### Restoring an Application (`undock`)
 
 Restores an externalized application back to its original location in `/Applications` and cleans up the external copy:
@@ -338,6 +399,88 @@ mb undock Example.app
 ```
 
 Restoring also previews the space requirement: the internal volume's free space, the estimated free space after the copy, and any shortfall. The internal volume is re-checked at run time, and the restore stops before copying when space is insufficient or cannot be verified.
+
+### Adopting an External Application (`adopt`)
+
+Adopts an application that already resides on external storage into the standard MacBay layout (`<Volume>/MacBay/Applications/<App>.app`), updates `/Applications/<App>.app` symlink, and registers it in `manifest.json` without copying it back to the internal disk first:
+
+```sh
+# Preview adoption with --dry-run
+mb adopt ChatGPT.app --volume /Volumes/ExternalSSD --dry-run
+
+# Execute adoption
+mb adopt ChatGPT.app --volume /Volumes/ExternalSSD
+```
+
+Preview output example:
+```text
+Dry run: adopt ChatGPT.app
+  Size: 120.5 MB
+  Source: /Volumes/ExternalSSD/Applications/ChatGPT.app
+  Destination: /Volumes/ExternalSSD/MacBay/Applications/ChatGPT.app
+  Symlink: /Applications/ChatGPT.app -> /Volumes/ExternalSSD/MacBay/Applications/ChatGPT.app
+  Space: no additional space required (same volume relocation)
+  Dry run: no files were changed
+```
+
+**How it works**:
+1. **Target Resolution**: Resolves the unmanaged symlink at `/Applications/<App>.app` to locate the source bundle on external APFS storage.
+2. **Safety & Compatibility**: Checks for active processes (`lsof`), SQLite locks (`-wal`, `-shm`), codesign integrity, and migration blockers. Applications flagged with ⚠️ **Review** (`POPUP_RISK`) require `--force`.
+3. **Journaling & Crash Recovery**: Writes an operation record (`.operations/adopt-<id>.json`) on the external volume. If interrupted, `mb doctor` reports the incomplete operation (`incomplete_operation`).
+4. **Atomic Relocation**: Moves the bundle to `<Volume>/MacBay/Applications/<App>.app` within the same APFS volume, or skips the move if it is already at the standard destination.
+5. **Atomic Symlink Update**: Swaps the `/Applications/<App>.app` symlink to point to the new MacBay path atomically.
+6. **Manifest Registration**: Records the item in `MacBay/manifest.json` with multi-process file locking (`flock`).
+7. **System Refresh**: Rebuilds LaunchServices registration (`lsregister -f`) and restarts the Dock.
+
+### Repairing Duplicate Applications (`repair`)
+
+When `mb doctor` detects that an application recorded in the manifest has a full duplicate bundle in `/Applications` again (e.g. from an installer or auto-updater) while the external copy still exists (`local_data_detected`), `mb repair` provides safe inspection, comparison, and recovery:
+
+```sh
+# 1. Read-only side-by-side comparison
+mb repair "Kiro CLI.app"
+
+# 2. Preview re-externalization (redock)
+mb repair "Kiro CLI.app" --action redock --dry-run
+
+# 3. Preview keeping the local copy and unmanaging
+mb repair "Kiro CLI.app" --action keep-local --dry-run
+
+# 4. Real execution
+mb repair "Kiro CLI.app" --action redock
+mb repair "Kiro CLI.app" --action keep-local
+
+# 5. Rollback an interrupted operation
+mb repair "Kiro CLI.app" --rollback
+```
+
+**Comparison output example**:
+```text
+Repair comparison · Kiro CLI.app
+  Volume: /Volumes/ExternalSSD
+
+Attributes               Local (/Applications)               External (MacBay)
+───────────────────────  ──────────────────────────────────  ──────────────────────────────────
+Identifier               com.kiro.cli                        com.kiro.cli
+Version                  1.2.0                               1.1.0
+Build                    120                                 110
+Size                     105.4 MB                            98.2 MB
+Signature                Valid                               Valid
+Compatibility            Safe                                Safe
+
+Available actions:
+  • mb repair "Kiro CLI.app" --action redock
+    Re-dock local app to external storage; backs up existing external copy
+  • mb repair "Kiro CLI.app" --action keep-local
+    Keep local app and remove migration record; external copy remains as unmanaged archive
+```
+
+**Safety & Backup Policy**:
+- **Bundle ID Matching**: `redock` strictly verifies that bundle identifiers match before proceeding. If IDs differ, `redock` is refused to prevent accidental overwrites.
+- **External Backup Retention**: When executing `redock`, the existing external copy is moved to `<Volume>/MacBay/Backups/<OperationID>/<App>.app` before the new copy is placed. External backups are preserved and never automatically deleted.
+- **Dedicated Repair Journal**: Operations are recorded in `<Volume>/MacBay/.operations/repair-<App>.json` (schema v1). If an operation is interrupted, `mb doctor` reports it (`incomplete_operation`) and guides you to run `mb repair "<App>" --rollback`.
+- **Keep-Local**: `keep-local` removes only the item entry from `manifest.json`. Both local and external applications remain completely untouched, with the external copy becoming an unmanaged archive.
+
 
 ### Xcode Maintenance (`xcode`)
 
@@ -429,6 +572,8 @@ mb status --json
 ```
 
 `mb doctor --json` reports `volumes`, `findings`, `summary`, `warnings`, and `notes`. Each finding carries a stable `code` (for example `link_target_unavailable`, `link_unmanaged`, `local_data_detected`, `record_source_missing`, `manifest_unreadable`) with its `status` (`healthy`, `needs_attention`, `unable_to_verify`), related paths, sizes where relevant, and a recommended action.
+
+`mb references --json` reports `generatedAt`, `findings`, and `notes`. Each finding carries a stable `code` (for example `external_reference_stale_candidate`, `external_reference_missing`, `external_reference_unverified`, `external_reference_scan_incomplete`, `external_config_unreadable`, `external_config_partially_checked`) with its `status`, the source file, the stored path, an optional confirmed candidate, optional `referenceLocations`, and a recommended action.
 
 On errors, MacBay outputs a structured error envelope to `stderr` and exits with a non-zero status:
 

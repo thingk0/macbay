@@ -22,7 +22,8 @@ MacBayは、Apple Silicon Mac向けに設計された開発者ファーストな
 
 ## 主な機能
 
-- **アプリケーションの外部化（`dock` / `undock`）**: 大容量アプリを外部ストレージへ移行し、元の位置にシンボリックリンクを作成します。DockアイコンやLaunchServicesの登録も自動的に更新されます。
+- **インタラクティブTUIモード（`mb` / `mb tui`）**: ターミナルで `mb` を入力するだけでキーボード操作のTUIを開きます。ストレージ容量の確認、アプリ候補の探索（Safe/Review/Blockedバッジ）、安全なdry-runプレビューと移動・復元、診断結果と問題別推奨アクションの確認が行えます。
+- **アプリケーションの外部化（`dock` / `undock` / `adopt`）**: 大容量アプリを外部ストレージへ移行・内蔵ディスクへ復元、または内蔵復元を経ることなく既存の外部アプリをMacBay標準構造へ取り込みます。DockアイコンやLaunchServicesの登録も自動的に更新されます。
 - **安全性判定エンジン（`AppInspector`）**: アプリケーションバンドルを自動検査し、仮想化エンタイトルメント、カーネル／システム拡張機能、ハードコードされた自己移動シグナルを検出します。
 - **Xcode DeviceSupportの管理（`xcode`）**: Xcodeの正常な動作を維持したまま、肥大化しやすいiOS DeviceSupportシンボルを外部ストレージへオフロードします。既存のレガシーリンクを保持し、利用不可となったシミュレータのクリーンアップも行います。
 - **開発者キャッシュのルーティング（`cache`）**: `~/.zshrc` 内に独立した管理ブロックを追加し、npm、uv、Gradle、Hugging Faceのキャッシュを外部ストレージへルーティングします。
@@ -104,12 +105,44 @@ sudo ln -sf /usr/local/bin/mb /usr/local/bin/macbay
 
 ```sh
 mb --version
-# 出力例: 1.1.0
+# 出力例: 1.2.1
 ```
 
 ---
 
 ## クイックスタート
+
+### 0. インタラクティブTUIモード（デフォルト）
+
+対話型ターミナルで引数を付けずに `mb` を実行すると、キーボード操作のTUIが起動します:
+
+```sh
+mb
+# または明示的に実行:
+mb tui
+```
+
+> [!NOTE]
+> 非対話型環境（スクリプト、CI、パイプ経由）や `TERM` が非対応の場合は、標準のCLIヘルプを出力して終了します。非対話型環境で `mb tui` を実行するとエラーメッセージを表示して終了します。
+
+#### キーボード操作
+
+| キー | 操作 |
+| --- | --- |
+| `↑` / `↓` または `j` / `k` | メニューやリストの移動 |
+| `Enter` | メニューの選択・アクションの実行 |
+| `Esc` | 前の画面に戻る |
+| `q` | MacBay TUIの終了 |
+| `r` | 現在の画面のデータを再読み込み |
+| `←` / `→` または `Tab` | 確認ダイアログのボタン切り替え（Cancel / Confirm） |
+
+#### TUIの対象範囲
+
+- **ホーム**: 内蔵および外部APFSディスクの容量、MacBay管理下のアプリ数を確認。
+- **アプリ移動（`dock`）**: スキャン基準によるサイズ順一覧、`[Safe]` / `[Review]` / `[Blocked]` 互換性バッジを表示。詳細パス・互換性根拠の確認、セッション対象ボリュームの選択、空き容量予測を含むdry-runプレビューと実行確認。（Review対象はリスク確認・承認後に `--force` で安全に移行）
+- **アプリ復元（`undock`）**: 接続中のボリュームにあるMacBay管理アプリを内蔵 `/Applications` に復元。非管理アプリはこの画面からそのまま登録できます。現在の場所、標準保存先、リンク変更、ファイル移動の有無を確認して実行すると、復元プレビューが準備されます。登録先はアプリが実際にあるボリュームで、設定済みの既定ボリュームへ勝手に変更されることはありません。未確認項目や壊れたリンクは状態と `mb doctor` の案内を表示します。
+- **診断（`doctor`）**: 外部化したアプリと開発者データのリンク切れ、対象欠落、記録不一致、中断された操作を確認し、問題ごとの推奨アクションを把握します。
+- *(※ 複数選択、検索、Xcode／キャッシュ／repairの実行は後続バージョンで追加予定です。現バージョンではCLIコマンドをご利用ください。)*
 
 ### 1. ストレージ状態の確認
 
@@ -240,7 +273,7 @@ Healthy · 2
 
 ### デフォルトボリュームの選択（`init`）
 
-`--volume` を省略したときに変更系コマンドが使用する外部ボリュームを保存します。`dock`、`undock`、`xcode`、`cache` が常に同じドライブを対象とするようになります:
+`--volume` を省略したときに変更系コマンドが使用する外部ボリュームを保存します。`dock`、`undock`、`adopt`、`xcode`、`cache` が常に同じドライブを対象とするようになります:
 
 ```sh
 # 適合するボリュームが1つだけならそのまま保存し、ターミナルでは番号付きリストから選択します
@@ -275,6 +308,7 @@ mb doctor --volume /Volumes/Archive
 2. **開発者キャッシュリンク**: `~/Library/Developer/Xcode/iOS DeviceSupport`、`~/Library/Developer/CoreSimulator`、`~/.npm`、`~/.cache/uv`、`~/.gradle`、`~/.cache/huggingface`。
 3. **ボリューム記録**: 接続中のボリュームの `MacBay/manifest.json` と実際のソース／リンク先パスを照合します。
 4. **ローカルデータ**: 記録されたソースパスがリンクではなく通常のファイルやディレクトリとして存在する場合、`Local data detected` として報告し、両方のパスと現在のサイズを表示します。外部コピーも失われている場合は単純な重複とは分類せず、記録と実際の状態の不一致として報告します。
+5. **中断された操作**: ボリュームに残った未完了の `adopt`・`repair` 操作を、ロールバックや続行に必要なコマンドとともに報告します。
 
 > [!NOTE]
 > `doctor` は削除・上書き・再移動を行わず、「アップデートによって再生成された」とか「2つのコピーが同一である」とは断定しません。手動で移動した項目は MacBay の履歴がないためローカルデータ検査の対象外であり、その範囲は `notes` に明記されます。
@@ -285,6 +319,30 @@ mb doctor --volume /Volumes/Archive
 
 > [!IMPORTANT]
 > `doctor` は読み取り専用です。削除・移動・修復は行わず、内蔵ディスクに別途記録を保存しないため、取り外した外部ボリュームは再接続するまで検証できません。
+
+### 保存されたアプリパスの検査（`references`）
+
+特定の設定ファイルに保存されたアプリパスを検査します。`--path` で指定したファイルのみを読み取り、ディスク上の他の場所は走査しません：
+
+```sh
+# ファイルを1つ検査
+mb references --path ~/.cursor/mcp.json
+
+# 複数ファイルを検査（繰り返し可能）
+mb references --path ~/.cursor/mcp.json --path ~/Library/LaunchAgents/com.example.tool.plist
+```
+
+JSON と XML／バイナリ plist は Foundation で読み、TOML・YAML・INI・シェルなどのテキストからは `.app` 境界を含む絶対パスを抽出します。相対パスはカレントディレクトリ、`~` はホーム基準で、重複指定したパスは1回だけ検査します。保存されたパスが存在するかの確認と代替候補の探索のため `/Applications` と `~/Applications` を参照します。ボリュームやマニフェストの検査は行いません。
+
+保存されたパスが無い場合、`/Applications` と `~/Applications` で同名アプリを探します（同じ実体なら `/Applications` を優先）。同じ内部パスがあれば `external_reference_stale_candidate` と現在の候補を報告し、対応アプリや内部ファイルが無ければ `external_reference_missing` です。アクセスエラー・循環リンク・同名アプリの曖昧さは `external_reference_unverified`、読み取り上限は `external_reference_scan_incomplete` です。
+
+> [!NOTE]
+> 参照検査は読み取り専用です。パスらしい文字列のヒューリスティック抽出は対応範囲であり、MacBay はシェル変数を展開したりスクリプトを実行したりせず、設定があることだけで現在使われているとは断定しません。既知の MCP 領域（TOML の `mcp_servers`、JSON の `mcpServers`）では無効化されたサーバーを除外し、未対応の TOML 構文は部分検査として報告します。報告されたパスは候補にすぎず、アプリが移動・削除されたことや同一バージョンであること、その設定が現在使われているかは確定しません。パスのワイルドカード、`<AppName>` のようなテンプレートトークン、文字通りの `AppName.app` プレースホルダーはファイル参照として検査せず、該当した項目は findings から除外して `notes` で説明します。外部ボリューム未接続は考えられる原因として案内するだけです。保存されたパスが誤っているようなら、その設定が現在使われているかを先に確認してからファイルをバックアップしてパスを修正してください（例: `/Applications/<App>.app/...`）。MacBay はこれらのファイルを変更しません。
+
+> [!NOTE]
+> 上限は設定ファイル 10,000、ファイルあたり 2 MiB、合計読み取り 64 MiB です。バックアップファイルは除外します。
+
+**終了コード**: 保存されたパスがすべて正常なら `0`、欠落パス・読み取り失敗・読み取り不足があれば `1`、引数が不正または検査自体が失敗したら `2`。
 
 ### アプリケーションの外部化（`dock`）
 
@@ -325,6 +383,9 @@ Dry run: dock Example.app
 > mb dock HeavyStudio.app --force --dry-run
 > ```
 
+> [!TIP]
+> `/Applications` 内のアプリケーションがすでにMacBay外部で外部ストレージへ接続されているシンボリックリンクである場合、`mb dock` はこれを検知し、代わりに `mb adopt` コマンドを使用するよう案内します。
+
 ### アプリケーションの復元（`undock`）
 
 外部化したアプリケーションを元の `/Applications` の場所へ復元し、外部ボリューム上のコピーを削除します:
@@ -338,6 +399,88 @@ mb undock Example.app
 ```
 
 復元時も必要な容量をプレビューします: 内蔵ボリュームの空き容量、コピー後の推定空き容量、不足量です。実行時には内蔵ボリュームを再確認し、容量が不足している場合や確認できない場合はコピー前に中止します。
+
+### 外部アプリケーションの管理取り込み（`adopt`）
+
+すでに外部ストレージに配置されているアプリケーションを内蔵ディスクへ復元することなく、MacBay標準配置（`<Volume>/MacBay/Applications/<App>.app`）へと再配置し、`/Applications/<App>.app` シンボリックリンクを更新して `manifest.json` に正式な管理対象として登録します:
+
+```sh
+# まずは --dry-run でプレビュー
+mb adopt ChatGPT.app --volume /Volumes/ExternalSSD --dry-run
+
+# 管理取り込みを実行
+mb adopt ChatGPT.app --volume /Volumes/ExternalSSD
+```
+
+プレビュー出力例:
+```text
+Dry run: adopt ChatGPT.app
+  Size: 120.5 MB
+  Source: /Volumes/ExternalSSD/Applications/ChatGPT.app
+  Destination: /Volumes/ExternalSSD/MacBay/Applications/ChatGPT.app
+  Symlink: /Applications/ChatGPT.app -> /Volumes/ExternalSSD/MacBay/Applications/ChatGPT.app
+  Space: no additional space required (same volume relocation)
+  Dry run: no files were changed
+```
+
+**動作の仕組み**:
+1. **リンク先の解決**: `/Applications/<App>.app` のシンボリックリンクを追跡し、外部APFSボリューム上の実際のアプリケーションバンドルの位置を特定します。
+2. **安全性と互換性の検証**: 実行中プロセス（`lsof`）、SQLiteロックファイル（`-wal`, `-shm`）、コード署名の整合性、移行不可シグナルを検査します。⚠️ **Review**（`POPUP_RISK`）と判定されたアプリには `--force` が必要です。
+3. **ジャーナリングとクラッシュ復旧**: 外部ボリューム上に操作ジャーナル（`.operations/adopt-<id>.json`）を記録します。中断された操作は `mb doctor` により未完了操作（`incomplete_operation`）として報告されます。
+4. **アトミック再配置**: 同一APFSボリューム内でバンドルを標準パスへアトミックに移動します（すでに標準パスにある場合は移動をスキップ）。
+5. **シンボリックリンクのアトミック更新**: `/Applications/<App>.app` のシンボリックリンクを新しい標準パスへアトミックに差し替えます。
+6. **マニフェスト登録**: プロセス間ファイルロック（`flock`）のもとで `MacBay/manifest.json` に記録します。
+7. **システムの更新**: LaunchServicesの登録情報（`lsregister -f`）を再構築し、Dockを再起動します。
+
+### 重複アプリケーションの比較と修復（`repair`）
+
+`mb doctor` において、マニフェストに登録されたアプリの内蔵パス（`/Applications`）に実体バンドルが再生成され、かつ外部コピーも残存している状態（`local_data_detected`）が検出された場合、`mb repair` を使用して安全に比較・修復を行うことができます:
+
+```sh
+# 1. 読み取り専用の比較（バージョン、ビルド、識別子、署名、サイズ）
+mb repair "Kiro CLI.app"
+
+# 2. 内蔵アプリの外部再配置（redock）プレビュー
+mb repair "Kiro CLI.app" --action redock --dry-run
+
+# 3. 内蔵アプリの保持と管理解除（keep-local）プレビュー
+mb repair "Kiro CLI.app" --action keep-local --dry-run
+
+# 4. 実際の実行
+mb repair "Kiro CLI.app" --action redock
+mb repair "Kiro CLI.app" --action keep-local
+
+# 5. 中断された修復操作のロールバック復元
+mb repair "Kiro CLI.app" --rollback
+```
+
+**比較出力の例**:
+```text
+Repair comparison · Kiro CLI.app
+  Volume: /Volumes/ExternalSSD
+
+Attributes               Local (/Applications)               External (MacBay)
+───────────────────────  ──────────────────────────────────  ──────────────────────────────────
+Identifier               com.kiro.cli                        com.kiro.cli
+Version                  1.2.0                               1.1.0
+Build                    120                                 110
+Size                     105.4 MB                            98.2 MB
+Signature                Valid                               Valid
+Compatibility            Safe                                Safe
+
+Available actions:
+  • mb repair "Kiro CLI.app" --action redock
+    Re-dock local app to external storage; backs up existing external copy
+  • mb repair "Kiro CLI.app" --action keep-local
+    Keep local app and remove migration record; external copy remains as unmanaged archive
+```
+
+**安全性とバックアップポリシー**:
+- **識別子の一致検証**: `redock` は両パスのバンドル識別子（`CFBundleIdentifier`）が一致していることを厳密に検証します。異なるアプリを誤って上書きすることを防止します。
+- **既存外部コピーのバックアップ保持**: `redock` の実行時、既存の外部アプリは `<Volume>/MacBay/Backups/<OperationID>/<App>.app` へ安全に退避された後に新しいアプリが配置されます。退避されたバックアップは自動削除されず、永続的に保持されます。
+- **独立した修復ジャーナル**: 操作状態は外部ボリュームの `<Volume>/MacBay/.operations/repair-<App>.json`（スキーマ v1）に記録されます。万が一処理が中断された場合、`mb doctor` が未完了操作（`incomplete_operation`）として検知し、`mb repair "<App>" --rollback` による復旧を案内します。
+- **内蔵保持（keep-local）**: `keep-local` はマニフェストから該当項目の記録のみをアトミックに削除します。内蔵アプリおよび外部コピーの双方がファイルシステム上にそのまま保持され、外部コピーは非管理アーカイブとなります。
+
 
 ### Xcodeのメンテナンス（`xcode`）
 
@@ -429,6 +572,8 @@ mb status --json
 ```
 
 `mb doctor --json` は `volumes`、`findings`、`summary`、`warnings`、`notes` を出力します。各項目には安定した `code`（例: `link_target_unavailable`、`link_unmanaged`、`local_data_detected`、`record_source_missing`、`manifest_unreadable`）、`status`（`healthy`、`needs_attention`、`unable_to_verify`）、関連パス、該当する場合はサイズ、推奨される次の操作が含まれます。
+
+`mb references --json` は `generatedAt`、`findings`、`notes` を出力します。各項目には安定した `code`（例: `external_reference_stale_candidate`、`external_reference_missing`、`external_reference_unverified`、`external_reference_scan_incomplete`、`external_config_unreadable`、`external_config_partially_checked`）、`status`、元ファイル、保存されたパス、確認済みの候補（ある場合）、任意の `referenceLocations`、推奨される次の操作が含まれます。
 
 エラー発生時、MacBayは構造化されたエラーエンベロープを `stderr` に出力し、非ゼロのステータスコードで終了します:
 

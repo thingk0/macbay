@@ -1,15 +1,15 @@
 import Foundation
 
-enum SymlinkResolution: Equatable {
+public enum SymlinkResolution: Equatable, Sendable {
     case resolved(target: URL, hops: Int, usesRelativeDestination: Bool)
     case broken(targetPath: String, hops: Int)
     case circular(targetPath: String, hops: Int)
 }
 
-struct SymlinkResolver {
+public struct SymlinkResolver: @unchecked Sendable {
     private let fileManager: FileManager
 
-    init(fileManager: FileManager = .default) {
+    public init(fileManager: FileManager = .default) {
         self.fileManager = fileManager
     }
 

@@ -8,6 +8,9 @@ public struct MacBayService {
     private let manifestStore: ManifestStore
     private let scanner: AppScanner
     private let bundleMigrator: BundleMigrator
+    private let appAdopter: AppAdopter
+    public let adoptAppUseCase: any AdoptAppUseCaseProtocol
+    public let repairAppUseCase: any RepairAppUseCaseProtocol
     private let xcodeDoctor: XcodeDoctor
     private let cacheManager: CacheManager
 
@@ -15,7 +18,9 @@ public struct MacBayService {
         fileManager: FileManager = .default,
         commandRunner: any CommandRunner = SystemCommandRunner(),
         volumeManager: VolumeManager? = nil,
-        configStore: ConfigStore? = nil
+        configStore: ConfigStore? = nil,
+        adoptAppUseCase: (any AdoptAppUseCaseProtocol)? = nil,
+        repairAppUseCase: (any RepairAppUseCaseProtocol)? = nil
     ) {
         self.fileManager = fileManager
         self.commandRunner = commandRunner
@@ -35,6 +40,28 @@ public struct MacBayService {
             fileManager: fileManager,
             commandRunner: commandRunner,
             volumeManager: self.volumeManager
+        )
+        self.appAdopter = AppAdopter(
+            fileManager: fileManager,
+            commandRunner: commandRunner,
+            volumeManager: self.volumeManager,
+            manifestStore: self.manifestStore
+        )
+        self.adoptAppUseCase = adoptAppUseCase ?? AdoptAppUseCase(
+            safetyInspector: DarwinAppSafetyInspector(fileManager: fileManager, commandRunner: commandRunner),
+            fileOperations: DarwinBundleFileOperations(fileManager: fileManager),
+            manifestRepository: DarwinManifestRepository(fileManager: fileManager),
+            operationJournal: DarwinOperationJournal(fileManager: fileManager),
+            systemRefresher: DarwinSystemEnvironmentRefresher(fileManager: fileManager, commandRunner: commandRunner),
+            volumeInspector: DarwinVolumeStorageInspector(volumeManager: self.volumeManager)
+        )
+        self.repairAppUseCase = repairAppUseCase ?? RepairAppUseCase(
+            safetyInspector: DarwinRepairSafetyInspector(fileManager: fileManager, commandRunner: commandRunner),
+            bundleOperations: DarwinRepairBundleOperations(fileManager: fileManager, commandRunner: commandRunner),
+            manifestRepository: DarwinRepairManifestRepository(fileManager: fileManager),
+            journal: DarwinRepairJournal(fileManager: fileManager),
+            volumeInspector: DarwinRepairVolumeInspector(fileManager: fileManager),
+            systemRefresher: DarwinSystemEnvironmentRefresher(fileManager: fileManager, commandRunner: commandRunner)
         )
         self.xcodeDoctor = XcodeDoctor(
             fileManager: fileManager,
@@ -147,22 +174,143 @@ public struct MacBayService {
         return try checker.check(volumePath: volumePath)
     }
 
+    public func references(paths: [String]) throws -> ReferenceReport {
+        let checker = ExternalReferenceChecker(fileManager: fileManager)
+        let result = checker.check(paths: paths)
+        return ReferenceReport(
+            generatedAt: macBayTimestamp(),
+            findings: result.findings,
+            notes: result.notes
+        )
+    }
+
     public func dock(
         appName: String,
         volumePath: String?,
         dryRun: Bool,
-        force: Bool = false
+        force: Bool = false,
+        progress: ProgressHandler? = nil
     ) throws -> MigrationResult {
+        progress?(.selectingVolume)
         let selection = try selectVolume(path: volumePath)
         return try bundleMigrator.dock(
             appName: appName,
             on: URL(fileURLWithPath: selection.volume.path),
             dryRun: dryRun,
-            force: force
+            force: force,
+            progress: progress
         )
     }
 
-    public func undock(appName: String, volumePath: String?, dryRun: Bool) throws -> MigrationResult {
+    public func planAdopt(
+        appName: String,
+        volumePath: String?,
+        progress: ProgressHandler? = nil
+    ) throws -> AdoptPlan {
+        progress?(.selectingVolume)
+        let selection = try selectVolume(path: volumePath)
+        return try adoptAppUseCase.plan(
+            appName: appName,
+            on: URL(fileURLWithPath: selection.volume.path),
+            progress: progress
+        )
+    }
+
+    public func executeAdopt(
+        plan: AdoptPlan,
+        force: Bool = false,
+        progress: ProgressHandler? = nil
+    ) throws -> AdoptExecutionResult {
+        try adoptAppUseCase.execute(plan: plan, force: force, progress: progress)
+    }
+
+    public func adopt(
+        appName: String,
+        volumePath: String?,
+        dryRun: Bool,
+        force: Bool = false,
+        progress: ProgressHandler? = nil
+    ) throws -> MigrationResult {
+        let plan = try planAdopt(appName: appName, volumePath: volumePath, progress: progress)
+        if dryRun {
+            return MigrationResult(
+                operation: "adopt",
+                name: plan.appName,
+                sourcePath: plan.targetURL.path,
+                destinationPath: plan.destinationURL.path,
+                sizeBytes: plan.sizeBytes,
+                dryRun: true,
+                messages: [
+                    "Action: \(plan.mode == .alreadyAdopted ? "Already adopted in MacBay (no changes needed)" : "Adopt application into MacBay standard storage")",
+                    "Symlink: \(plan.symlinkURL.path) -> \(plan.destinationURL.path)",
+                    "Space: estimated internal space freed 0 B (same-volume relocation)",
+                    "Dry run: no files were changed"
+                ],
+                compatibility: plan.compatibility
+            )
+        }
+        let result = try executeAdopt(plan: plan, force: force, progress: progress)
+        return MigrationResult(
+            operation: "adopt",
+            name: result.appName,
+            sourcePath: result.sourcePath,
+            destinationPath: result.destinationPath,
+            sizeBytes: result.sizeBytes,
+            dryRun: false,
+            messages: [
+                "Symlink: \(result.symlinkPath) -> \(result.destinationPath)",
+                "Recorded in manifest on \(plan.volumeURL.path)"
+            ],
+            compatibility: plan.compatibility
+        )
+    }
+
+    public func compareApp(appName: String, volumePath: String?) throws -> RepairComparison {
+        let selection = try selectVolume(path: volumePath)
+        return try repairAppUseCase.compare(
+            appName: appName,
+            on: URL(fileURLWithPath: selection.volume.path)
+        )
+    }
+
+    public func planRepair(
+        appName: String,
+        action: RepairAction,
+        volumePath: String?,
+        progress: (@Sendable (String) -> Void)? = nil
+    ) throws -> RepairPlan {
+        let selection = try selectVolume(path: volumePath)
+        return try repairAppUseCase.plan(
+            appName: appName,
+            action: action,
+            on: URL(fileURLWithPath: selection.volume.path),
+            progress: progress
+        )
+    }
+
+    public func executeRepair(
+        plan: RepairPlan,
+        force: Bool = false,
+        progress: (@Sendable (String) -> Void)? = nil
+    ) throws -> RepairExecutionResult {
+        try repairAppUseCase.execute(plan: plan, force: force, progress: progress)
+    }
+
+    public func rollbackRepair(
+        appName: String,
+        volumePath: String?,
+        progress: (@Sendable (String) -> Void)? = nil
+    ) throws -> RepairExecutionResult {
+        let selection = try selectVolume(path: volumePath)
+        return try repairAppUseCase.rollback(
+            appName: appName,
+            on: URL(fileURLWithPath: selection.volume.path),
+            progress: progress
+        )
+    }
+
+    public func undock(appName: String, volumePath: String?, dryRun: Bool, progress: ProgressHandler? = nil) throws -> MigrationResult {
+        progress?(.selectingVolume)
         let volume: URL?
         let fallbackVolume: URL?
         if let volumePath {
@@ -177,7 +325,8 @@ public struct MacBayService {
             appName: appName,
             from: volume,
             fallbackVolume: fallbackVolume,
-            dryRun: dryRun
+            dryRun: dryRun,
+            progress: progress
         )
     }
 

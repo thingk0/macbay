@@ -1,0 +1,31 @@
+#!/bin/sh
+# Reject commit messages that carry assistant attribution trailers.
+#
+# MacBay is maintained by a single author, so commits should not credit
+# co-authors or link back to an assistant session. Tooling adds these lines
+# automatically, and once a commit is pushed they can only be removed by
+# rewriting history.
+#
+# Enable with:  git config core.hooksPath .githooks
+# Bypass once:  git commit --no-verify   (for a genuine human co-author)
+
+msg_file="$1"
+[ -f "$msg_file" ] || exit 0
+
+# Git strips comment lines itself; drop them so a "#" note cannot trip the check.
+body=$(grep -v '^#' "$msg_file")
+
+matches=$(printf '%s\n' "$body" | grep -inE \
+  '^[[:space:]]*(co-authored-by:|claude-session:)|claude\.com/claude-code|claude\.ai/code/session')
+
+if [ -n "$matches" ]; then
+  echo "commit-msg: attribution trailers are not allowed in this repository." >&2
+  echo "" >&2
+  printf '%s\n' "$matches" >&2
+  echo "" >&2
+  echo "Remove the lines above, or run 'git commit --no-verify' if the" >&2
+  echo "co-author is a real person who should be credited." >&2
+  exit 1
+fi
+
+exit 0

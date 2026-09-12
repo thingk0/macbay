@@ -492,7 +492,7 @@ final class MockDiskInfoProvider: DiskInfoProvider, @unchecked Sendable {
         if let info = mapping[path] ?? mapping[stdPath] {
             return info
         }
-        for (key, val) in mapping {
+        for (key, val) in mapping.sorted(by: { $0.key.count > $1.key.count }) {
             let stdKey = URL(fileURLWithPath: key).standardizedFileURL.path
             if path.hasPrefix(key) || stdPath.hasPrefix(stdKey) || path.hasPrefix(stdKey) || stdPath.hasPrefix(key) {
                 return val
@@ -506,6 +506,7 @@ final class MockFileManager: FileManager, @unchecked Sendable {
     let mountedPaths: [String]
     var unreadableLinkPaths: Set<String> = []
     var unreadableDirectoryPaths: Set<String> = []
+    var unreadableFilePaths: Set<String> = []
 
     init(mountedPaths: [String]) {
         self.mountedPaths = mountedPaths
@@ -543,5 +544,16 @@ final class MockFileManager: FileManager, @unchecked Sendable {
             )
         }
         return try super.contentsOfDirectory(at: url, includingPropertiesForKeys: keys, options: mask)
+    }
+
+    override func attributesOfItem(atPath path: String) throws -> [FileAttributeKey: Any] {
+        if unreadableFilePaths.contains(path) {
+            throw NSError(
+                domain: NSPOSIXErrorDomain,
+                code: Int(EACCES),
+                userInfo: [NSLocalizedDescriptionKey: "Operation not permitted"]
+            )
+        }
+        return try super.attributesOfItem(atPath: path)
     }
 }

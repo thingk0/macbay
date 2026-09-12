@@ -10,6 +10,7 @@ public struct BundleMigrator {
     private let volumeManager: VolumeManager
     private let appInspector: AppInspector
     private let spaceEstimator: SpaceEstimator
+    private let symlinkResolver: SymlinkResolver
 
     public init(
         fileManager: FileManager = .default,
@@ -38,14 +39,17 @@ public struct BundleMigrator {
             fileManager: fileManager,
             commandRunner: commandRunner
         )
+        self.symlinkResolver = SymlinkResolver(fileManager: fileManager)
     }
 
     public func dock(
         appName: String,
         on volume: URL,
         dryRun: Bool,
-        force: Bool = false
+        force: Bool = false,
+        progress: ProgressHandler? = nil
     ) throws -> MigrationResult {
+        progress?(.validating)
         // 1. 앱 경로 검증
         let source = MacBayPaths.applicationURL(named: appName)
         guard source.pathExtension.lowercased() == "app" else {
@@ -54,11 +58,28 @@ public struct BundleMigrator {
         guard fileManager.fileExists(atPath: source.path) else {
             throw MacBayError.pathMissing(source.path)
         }
-        guard (try? fileManager.destinationOfSymbolicLink(atPath: source.path)) == nil else {
+        if (try? fileManager.destinationOfSymbolicLink(atPath: source.path)) != nil {
+            let resolution = symlinkResolver.resolve(at: source)
+            if case let .resolved(target, _, _) = resolution {
+                if let diskInfo = try? volumeManager.diskInfoProvider.diskInfo(for: target.path),
+                   !diskInfo.isInternal {
+                    let volumeURL = URL(fileURLWithPath: diskInfo.mountPoint)
+                    let isManaged = (try? manifestStore.load(on: volumeURL))?.items.contains { item in
+                        item.kind == .application &&
+                        URL(fileURLWithPath: item.sourcePath).standardizedFileURL.path.caseInsensitiveCompare(source.standardizedFileURL.path) == .orderedSame &&
+                        URL(fileURLWithPath: item.externalPath).standardizedFileURL.path.caseInsensitiveCompare(target.standardizedFileURL.path) == .orderedSame
+                    } ?? false
+
+                    if !isManaged {
+                        throw MacBayError.unmanagedLinkDetected(path: source.path, targetPath: target.path)
+                    }
+                }
+            }
             throw MacBayError.applicationAlreadyDocked(source.path)
         }
 
         // 2. 호환성 검사
+        progress?(.checkingCompatibility)
         let assessment = appInspector.assess(bundleURL: source)
         if assessment.grade == .blocked {
             throw MacBayError.compatibilityBlocked(path: source.path, assessment: assessment)
@@ -79,9 +100,11 @@ public struct BundleMigrator {
         }
 
         // 4. 프로세스/SQLite 잠금 검사
+        progress?(.checkingProcesses)
         try processInspector.assertSafeToMove(path: source)
 
         // 5. 코드서명 검사
+        progress?(.verifyingSignature)
         try verifyCodeSignature(at: source)
 
         // 6. 복사·재검증
@@ -91,6 +114,7 @@ public struct BundleMigrator {
             throw MacBayError.destinationExists(destination.path)
         }
 
+        progress?(.inspectingStorage)
         let sizeBytes = try sizeCalculator.size(of: source)
         var messages: [String] = []
         if assessment.grade == .popupRisk {
@@ -127,7 +151,9 @@ public struct BundleMigrator {
             withIntermediateDirectories: true
         )
         do {
+            progress?(.copying)
             try runDitto(from: source, to: destination)
+            progress?(.verifyingSignature)
             try verifyCodeSignature(at: destination)
         } catch {
             if fileManager.fileExists(atPath: destination.path) {
@@ -137,6 +163,7 @@ public struct BundleMigrator {
         }
 
         // 7. 심볼릭 링크
+        progress?(.updatingLink)
         let backup = source.deletingLastPathComponent().appendingPathComponent(
             ".\(source.lastPathComponent).macbay-\(UUID().uuidString)"
         )
@@ -158,6 +185,7 @@ public struct BundleMigrator {
         }
 
         // 8. manifest 저장
+        progress?(.savingManifest)
         let item = DockedItem(
             name: source.lastPathComponent,
             sourcePath: source.path,
@@ -172,6 +200,7 @@ public struct BundleMigrator {
         }
 
         // 9. Dock 갱신
+        progress?(.refreshingDock)
         let dockWarnings = refreshDock(for: source)
         messages.append("Migration completed")
         messages.append(contentsOf: dockWarnings)
@@ -192,8 +221,10 @@ public struct BundleMigrator {
         appName: String,
         from volume: URL?,
         fallbackVolume: URL? = nil,
-        dryRun: Bool
+        dryRun: Bool,
+        progress: ProgressHandler? = nil
     ) throws -> MigrationResult {
+        progress?(.validating)
         let source = MacBayPaths.applicationURL(named: appName)
         guard source.pathExtension.lowercased() == "app" else {
             throw MacBayError.invalidApplication(source.path)
@@ -225,8 +256,11 @@ public struct BundleMigrator {
             }
         }
 
+        progress?(.checkingProcesses)
         try processInspector.assertSafeToMove(path: destination)
+        progress?(.verifyingSignature)
         try verifyCodeSignature(at: destination)
+        progress?(.inspectingStorage)
         let sizeBytes = try sizeCalculator.size(of: destination)
         let internalVolume = URL(fileURLWithPath: "/")
         let estimate = spaceEstimator.estimate(copyBytes: sizeBytes, destinationVolume: internalVolume)
@@ -250,8 +284,10 @@ public struct BundleMigrator {
             ".\(source.lastPathComponent).macbay-restore-\(UUID().uuidString)"
         )
         try fileManager.createDirectory(at: source.deletingLastPathComponent(), withIntermediateDirectories: true)
+        progress?(.copying)
         try runDitto(from: destination, to: restored)
         do {
+            progress?(.verifyingSignature)
             try verifyCodeSignature(at: restored)
         } catch {
             try? fileManager.removeItem(at: restored)
@@ -260,6 +296,7 @@ public struct BundleMigrator {
 
         // 기존 링크를 제거한 뒤 복원본 이동이 실패하면 /Applications에서 앱이 사라진다.
         // 이 경우 원래 링크를 되살려 외장 원본으로 다시 연결한다.
+        progress?(.updatingLink)
         try fileManager.removeItem(at: source)
         do {
             try fileManager.moveItem(at: restored, to: source)
@@ -276,11 +313,13 @@ public struct BundleMigrator {
         try fileManager.removeItem(at: destination)
 
         if let volume = volume ?? inferredVolume(for: destination) ?? fallbackVolume {
+            progress?(.savingManifest)
             try manifestStore.updating(on: volume) { manifest in
                 manifest.items.removeAll { $0.sourcePath == source.path || $0.externalPath == destination.path }
             }
         }
 
+        progress?(.refreshingDock)
         let dockWarnings = refreshDock(for: source)
         return MigrationResult(
             operation: "undock",

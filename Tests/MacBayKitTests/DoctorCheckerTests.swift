@@ -489,6 +489,24 @@ final class DoctorCheckerTests: XCTestCase {
         XCTAssertTrue(report.notes[0].contains("No external volumes were consulted"))
     }
 
+    func testDoctorIgnoresConversationHistoryWithMissingAppPaths() throws {
+        let history = tempDir.appendingPathComponent(".gemini/antigravity/brain/session/messages/record.json")
+        try FileManager.default.createDirectory(at: history.deletingLastPathComponent(), withIntermediateDirectories: true)
+        var entries: [String] = []
+        for index in 0..<300 {
+            entries.append("/Volumes/NoSuchVolume/DerivedData/deno.app/Contents/\(index)")
+        }
+        let payload = "{ \"content\": \"" + entries.joined(separator: " ") + "\" }\n"
+        try Data(payload.utf8).write(to: history)
+
+        let report = try check(makeChecker())
+
+        XCTAssertTrue(report.findings.filter { $0.category == .externalReference }.isEmpty)
+        XCTAssertEqual(report.summary.needsAttention, 0)
+        XCTAssertEqual(report.summary.unableToVerify, 0)
+        XCTAssertEqual(report.exitCode, 0)
+    }
+
     func testLocalDataCheckSkipsRecordedLinks() throws {
         let externalApp = volumeDir.appendingPathComponent("MacBay/Applications/Linked.app")
         try createDirectory(at: externalApp)
@@ -523,6 +541,23 @@ final class DoctorCheckerTests: XCTestCase {
 
         XCTAssertTrue(report.notes.isEmpty)
         XCTAssertEqual(report.exitCode, 0)
+    }
+
+    func testDoctorFindingDecodesWithoutReferenceLocations() throws {
+        let legacyJSON = """
+        {
+          "code": "link_unmanaged",
+          "status": "healthy",
+          "category": "application_link",
+          "name": "Legacy.app",
+          "paths": ["/Applications/Legacy.app"],
+          "detail": "No MacBay record for this link",
+          "recommendation": ""
+        }
+        """
+        let finding = try JSONDecoder().decode(DoctorFinding.self, from: Data(legacyJSON.utf8))
+        XCTAssertNil(finding.referenceLocations)
+        XCTAssertEqual(finding.code, .linkUnmanaged)
     }
 
     func testRecordTargetCheckSkipsRecordedLinks() throws {
@@ -785,6 +820,30 @@ final class DoctorCheckerTests: XCTestCase {
         XCTAssertTrue(findings(report, code: .defaultVolumeIneligible).isEmpty)
         XCTAssertTrue(findings(report, code: .configUnreadable).isEmpty)
         XCTAssertEqual(report.exitCode, 0)
+    }
+
+    func testIncompleteOperationFinding() throws {
+        let journal = OperationJournal()
+        let record = AdoptOperationRecord(
+            id: UUID().uuidString,
+            appName: "Orphaned.app",
+            sourcePath: appsDir.appendingPathComponent("Orphaned.app").path,
+            originalExternalPath: volumeDir.appendingPathComponent("Applications/Orphaned.app").path,
+            targetExternalPath: volumeDir.appendingPathComponent("MacBay/Applications/Orphaned.app").path,
+            originalLinkTarget: volumeDir.appendingPathComponent("Applications/Orphaned.app").path,
+            volumePath: volumeDir.path,
+            phase: .appMoved,
+            timestamp: macBayTimestamp()
+        )
+        try journal.save(record, on: volumeDir)
+
+        let report = try check(makeChecker())
+        let matched = findings(report, code: .incompleteOperation)
+        XCTAssertEqual(matched.count, 1)
+        XCTAssertEqual(matched.first?.status, .needsAttention)
+        XCTAssertEqual(matched.first?.name, "Orphaned.app")
+        XCTAssertTrue(matched.first?.detail.contains("app_moved") == true)
+        XCTAssertEqual(report.exitCode, 1)
     }
 
     private func snapshot(of root: URL) throws -> [String] {

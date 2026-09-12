@@ -492,6 +492,7 @@ public enum MacBayError: Error, Equatable, LocalizedError, Sendable {
     case manifestFailed(path: String, details: String)
     case configFailed(path: String, details: String)
     case unsupportedOperation(String)
+    case unmanagedLinkDetected(path: String, targetPath: String)
     case compatibilityBlocked(path: String, assessment: CompatibilityAssessment)
     case forceRequired(path: String, assessment: CompatibilityAssessment)
     case insufficientSpace(path: String, neededBytes: UInt64, availableBytes: UInt64)
@@ -505,6 +506,7 @@ public enum MacBayError: Error, Equatable, LocalizedError, Sendable {
              .externalVolumeRequired,
              .invalidApplication,
              .applicationAlreadyDocked,
+             .unmanagedLinkDetected,
              .destinationExists,
              .pathMissing,
              .configFailed,
@@ -548,6 +550,8 @@ public enum MacBayError: Error, Equatable, LocalizedError, Sendable {
             return "Need \(OutputFormatter.humanBytes(neededBytes)), available \(OutputFormatter.humanBytes(availableBytes))"
         case let .spaceCheckFailed(_, details):
             return details
+        case let .unmanagedLinkDetected(path, targetPath):
+            return "Link: \(path) -> \(targetPath)"
         case let .invalidVolume(details),
              let .externalVolumeRequired(details),
              let .invalidApplication(details),
@@ -569,6 +573,8 @@ public enum MacBayError: Error, Equatable, LocalizedError, Sendable {
             return "Invalid application bundle: \(path)"
         case let .applicationAlreadyDocked(path):
             return "Application is already docked: \(path)"
+        case let .unmanagedLinkDetected(path, targetPath):
+            return "Application is already a symlink pointing to external storage (\(targetPath)). To register it with MacBay, use 'mb adopt \"\(URL(fileURLWithPath: path).lastPathComponent)\"'."
         case let .destinationExists(path):
             return "Destination already exists: \(path)"
         case let .pathMissing(path):
@@ -662,6 +668,7 @@ public enum DoctorCategory: String, Codable, Equatable, Sendable {
     case applicationLink = "application_link"
     case developerDataLink = "developer_data_link"
     case record
+    case externalReference = "external_reference"
     case volume
 }
 
@@ -684,6 +691,13 @@ public enum DoctorCode: String, Codable, Equatable, Sendable {
     case defaultVolumeUnavailable = "default_volume_unavailable"
     case defaultVolumeIneligible = "default_volume_ineligible"
     case configUnreadable = "config_unreadable"
+    case incompleteOperation = "incomplete_operation"
+    case externalReferenceStaleCandidate = "external_reference_stale_candidate"
+    case externalReferenceUnverified = "external_reference_unverified"
+    case externalReferenceMissing = "external_reference_missing"
+    case externalReferenceScanIncomplete = "external_reference_scan_incomplete"
+    case externalConfigUnreadable = "external_config_unreadable"
+    case externalConfigPartiallyChecked = "external_config_partially_checked"
 }
 
 public struct DoctorFinding: Codable, Equatable, Identifiable, Sendable {
@@ -692,6 +706,7 @@ public struct DoctorFinding: Codable, Equatable, Identifiable, Sendable {
     public let category: DoctorCategory
     public let name: String
     public let paths: [String]
+    public let referenceLocations: [String]?
     public let detail: String
     public let recommendation: String
     public let managed: Bool?
@@ -710,18 +725,55 @@ public struct DoctorFinding: Codable, Equatable, Identifiable, Sendable {
         recommendation: String,
         managed: Bool? = nil,
         localSizeBytes: UInt64? = nil,
-        externalSizeBytes: UInt64? = nil
+        externalSizeBytes: UInt64? = nil,
+        referenceLocations: [String]? = nil
     ) {
         self.code = code
         self.status = status
         self.category = category
         self.name = name
         self.paths = paths
+        self.referenceLocations = referenceLocations
         self.detail = detail
         self.recommendation = recommendation
         self.managed = managed
         self.localSizeBytes = localSizeBytes
         self.externalSizeBytes = externalSizeBytes
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case code, status, category, name, paths, referenceLocations
+        case detail, recommendation, managed, localSizeBytes, externalSizeBytes
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.code = try container.decode(DoctorCode.self, forKey: .code)
+        self.status = try container.decode(DoctorStatus.self, forKey: .status)
+        self.category = try container.decode(DoctorCategory.self, forKey: .category)
+        self.name = try container.decode(String.self, forKey: .name)
+        self.paths = try container.decodeIfPresent([String].self, forKey: .paths) ?? []
+        self.referenceLocations = try container.decodeIfPresent([String].self, forKey: .referenceLocations)
+        self.detail = try container.decode(String.self, forKey: .detail)
+        self.recommendation = try container.decodeIfPresent(String.self, forKey: .recommendation) ?? ""
+        self.managed = try container.decodeIfPresent(Bool.self, forKey: .managed)
+        self.localSizeBytes = try container.decodeIfPresent(UInt64.self, forKey: .localSizeBytes)
+        self.externalSizeBytes = try container.decodeIfPresent(UInt64.self, forKey: .externalSizeBytes)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(code, forKey: .code)
+        try container.encode(status, forKey: .status)
+        try container.encode(category, forKey: .category)
+        try container.encode(name, forKey: .name)
+        try container.encode(paths, forKey: .paths)
+        try container.encodeIfPresent(referenceLocations, forKey: .referenceLocations)
+        try container.encode(detail, forKey: .detail)
+        try container.encode(recommendation, forKey: .recommendation)
+        try container.encode(managed, forKey: .managed)
+        try container.encode(localSizeBytes, forKey: .localSizeBytes)
+        try container.encode(externalSizeBytes, forKey: .externalSizeBytes)
     }
 }
 
@@ -825,3 +877,60 @@ public struct DoctorReport: Codable, Equatable, Sendable {
 public func macBayTimestamp() -> String {
     ISO8601DateFormatter().string(from: Date())
 }
+
+public struct AdoptOperationRecord: Codable, Equatable, Sendable {
+    public enum Phase: String, Codable, Sendable {
+        case started
+        case appMoved = "app_moved"
+        case linkReplaced = "link_replaced"
+        case registering
+        case completed
+    }
+
+    public let id: String
+    public let appName: String
+    public let sourcePath: String
+    public let originalExternalPath: String
+    public let targetExternalPath: String
+    public let originalLinkTarget: String
+    public let volumePath: String
+    public var phase: Phase
+    public let timestamp: String
+
+    public init(
+        id: String,
+        appName: String,
+        sourcePath: String,
+        originalExternalPath: String,
+        targetExternalPath: String,
+        originalLinkTarget: String,
+        volumePath: String,
+        phase: Phase,
+        timestamp: String
+    ) {
+        self.id = id
+        self.appName = appName
+        self.sourcePath = sourcePath
+        self.originalExternalPath = originalExternalPath
+        self.targetExternalPath = targetExternalPath
+        self.originalLinkTarget = originalLinkTarget
+        self.volumePath = volumePath
+        self.phase = phase
+        self.timestamp = timestamp
+    }
+
+    public func updatingPhase(_ newPhase: Phase) -> AdoptOperationRecord {
+        AdoptOperationRecord(
+            id: id,
+            appName: appName,
+            sourcePath: sourcePath,
+            originalExternalPath: originalExternalPath,
+            targetExternalPath: targetExternalPath,
+            originalLinkTarget: originalLinkTarget,
+            volumePath: volumePath,
+            phase: newPhase,
+            timestamp: timestamp
+        )
+    }
+}
+

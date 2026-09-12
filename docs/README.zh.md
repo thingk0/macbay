@@ -22,7 +22,8 @@ MacBay 是一款专为 Apple Silicon Mac 设计的开发者优先存储外部化
 
 ## 特性
 
-- **应用程序迁移 (`dock` / `undock`)**：将大型应用迁移至外置存储并替换为符号链接。自动刷新 Dock 栏图标与 LaunchServices 注册。
+- **交互式 TUI 模式 (`mb` / `mb tui`)**：在终端直接输入 `mb` 即可启动键盘控制的终端用户界面（TUI）。查看磁盘容量、浏览应用候选（Safe/Review/Blocked 状态）、安全进行 dry-run 预览与迁移/恢复、探索诊断结果及针对性建议。
+- **应用程序迁移 (`dock` / `undock` / `adopt`)**：将大型应用迁移至外置存储、恢复至内置磁盘，或在无需拷回内置磁盘的情况下将已有外置应用纳管至 MacBay 标准目录结构。自动刷新 Dock 栏图标与 LaunchServices 注册。
 - **安全检查引擎 (`AppInspector`)**：自动分析应用程序包（App Bundle）的虚拟化权限（Entitlements）、内核/系统扩展（KEXT/System Extensions）以及硬编码重定位信号。
 - **Xcode DeviceSupport 管理 (`xcode`)**：迁移庞大的 iOS DeviceSupport 符号文件，同时确保 Xcode 无缝正常运行。保留原有的历史链接，并清理不可用的模拟器。
 - **开发者缓存重定向 (`cache`)**：通过在 `~/.zshrc` 中注入清晰、隔离的配置块，将 npm、uv、Gradle 和 Hugging Face 的缓存路由至外置存储。
@@ -104,12 +105,44 @@ sudo ln -sf /usr/local/bin/mb /usr/local/bin/macbay
 
 ```sh
 mb --version
-# 输出：1.1.0
+# 输出：1.2.1
 ```
 
 ---
 
 ## 快速入门
+
+### 0. 交互式 TUI 模式（默认启动）
+
+在终端中无参数直接运行 `mb` 即可启动键盘控制的 TUI：
+
+```sh
+mb
+# 或显式启动：
+mb tui
+```
+
+> [!NOTE]
+> 在非交互式环境（CI、脚本、管道）或不支持的 `TERM` 终端中，`mb` 会在 stdout 输出标准 CLI 帮助并退出。在非交互式环境中直接运行 `mb tui` 会输出错误说明并以非零状态码退出。
+
+#### 键盘快捷键
+
+| 按键 | 功能 |
+| --- | --- |
+| `↑` / `↓` 或 `j` / `k` | 浏览菜单与列表 |
+| `Enter` | 选择菜单或确认操作 |
+| `Esc` | 返回上一级界面 |
+| `q` | 退出 MacBay TUI |
+| `r` | 刷新当前界面数据 |
+| `←` / `→` 或 `Tab` | 切换对话框按钮（Cancel / Confirm） |
+
+#### TUI 覆盖范围
+
+- **首页**：查看内置与外置 APFS 磁盘容量，以及当前由 MacBay 纳管的应用数量。
+- **迁移应用 (`dock`)**：按大小排序浏览应用候选列表，查看 `[Safe]`、`[Review]` 与 `[Blocked]` 兼容性状态。查看详细路径与兼容性技术依据，选择当前会话目标卷，查看包含空间预估的 dry-run 预览并在确认后执行迁移。（Review 应用需确认并接受风险后使用 `--force` 安全迁移）
+- **恢复应用 (`undock`)**：将已连接外置卷上的 MacBay 纳管应用安全恢复至内置 `/Applications`。非纳管应用可直接在此界面完成纳管：确认当前位置、标准存储路径、链接变更以及是否会移动文件后执行，随后才会准备恢复预览。纳管始终使用应用实际所在的卷，不会擅自改用已配置的默认卷。未确认链接及损坏链接会显示对应状态与 `mb doctor` 指引。
+- **系统诊断 (`doctor`)**：检查外置应用与开发者数据的链接断裂、目标缺失、记录不一致与中断的操作，并查看针对每项问题的修复建议。
+- *(注：多选、搜索以及 Xcode/缓存/repair 的 TUI 执行将在后续版本中支持。当前版本请使用对应 CLI 命令。)*
 
 ### 1. 检查存储状态
 
@@ -240,7 +273,7 @@ Healthy · 2
 
 ### 选择默认卷 (`init`)
 
-保存省略 `--volume` 时变更类命令所使用的默认外置卷，使 `dock`、`undock`、`xcode` 与 `cache` 始终作用于同一块驱动器：
+保存省略 `--volume` 时变更类命令所使用的默认外置卷，使 `dock`、`undock`、`adopt`、`xcode` 与 `cache` 始终作用于同一块驱动器：
 
 ```sh
 # 仅有一个符合条件的卷时直接保存，在终端中则通过编号列表选择
@@ -275,6 +308,7 @@ mb doctor --volume /Volumes/Archive
 2. **开发者缓存链接**：`~/Library/Developer/Xcode/iOS DeviceSupport`、`~/Library/Developer/CoreSimulator`、`~/.npm`、`~/.cache/uv`、`~/.gradle` 与 `~/.cache/huggingface`。
 3. **卷记录**：将已连接卷的 `MacBay/manifest.json` 与实际源路径和目标路径进行比对。
 4. **本地数据**：记录中的源路径不再是链接、而是以普通文件或目录形式存在时，会报告为 `Local data detected`，并显示两个路径及其当前大小。若外置副本也已丢失，则不会归类为简单重复，而是报告记录与实际状态不一致。
+5. **中断的操作**：报告卷上残留的未完成 `adopt`/`repair` 操作，并给出回滚或继续所需的命令。
 
 > [!NOTE]
 > `doctor` 不会删除、覆盖或重新迁移任何内容，也不会断言本地数据是“因更新而重新生成”或“两份副本完全相同”。手动迁移的条目没有 MacBay 历史记录，因此不参与本地数据检查；该范围会在 `notes` 中说明。
@@ -285,6 +319,30 @@ mb doctor --volume /Volumes/Archive
 
 > [!IMPORTANT]
 > `doctor` 为只读命令：它不会删除、移动或修复任何内容，也不会在内置磁盘中保存额外记录，因此断开的外置卷在重新连接之前无法被验证。
+
+### 检查保存的应用路径 (`references`)
+
+检查特定配置文件中保存的应用路径。仅读取 `--path` 指定的文件，不扫描磁盘上的其他位置：
+
+```sh
+# 检查单个文件
+mb references --path ~/.cursor/mcp.json
+
+# 检查多个文件（可重复）
+mb references --path ~/.cursor/mcp.json --path ~/Library/LaunchAgents/com.example.tool.plist
+```
+
+JSON 与 XML/二进制 plist 通过 Foundation 读取；TOML、YAML、INI、shell 等文本文件会提取跨越 `.app` 边界的绝对路径。相对路径基于当前目录，`~` 基于主目录；重复指定的路径只检查一次。为确认保存路径是否存在并寻找替代候选，会查询 `/Applications` 与 `~/Applications`，不执行卷或清单检查。
+
+当保存的路径不存在时，会在 `/Applications` 与 `~/Applications` 中查找唯一的同名应用（若解析为同一实际应用则优先 `/Applications`）。若相同内部路径存在，则报告 `external_reference_stale_candidate` 及当前候选项；若没有对应应用或内部文件，则报告 `external_reference_missing`。访问错误、循环链接与同名应用歧义为 `external_reference_unverified`；读取上限为 `external_reference_scan_incomplete`。
+
+> [!NOTE]
+> 引用检查为只读。对类似路径的字符串做启发式提取属于支持范围；MacBay 不会展开 shell 变量或执行脚本，也不会仅因配置存在就断言它正在使用。已知的 MCP 区域（TOML 中的 `mcp_servers`、JSON 中的 `mcpServers`）会跳过显式禁用的服务器，不支持的 TOML 结构会报告为部分检查。报告的路径只是候选项，MacBay 不会断言应用已移动或删除、两个副本版本相同，也不会断言该设置当前正在使用。路径通配符、`<AppName>` 这类模板标记以及字面的 `AppName.app` 占位符不会作为文件引用检查，命中该跳过策略的条目会从 findings 中排除并在 `notes` 中说明。外置卷未连接仅作为可能原因提示。若保存路径疑似有误，请先确认该设置当前正在使用，再备份文件并修正路径（例如改为 `/Applications/<App>.app/...`）。MacBay 不会修改这些文件。
+
+> [!NOTE]
+> 上限为 10,000 个配置文件、每文件 2 MiB、总读取 64 MiB。备份文件会被跳过。
+
+**退出码**：保存路径全部正常为 `0`，存在缺失路径、读取失败或读取不完整为 `1`，参数无效或检查本身失败为 `2`。
 
 ### 迁移应用程序 (`dock`)
 
@@ -325,6 +383,9 @@ Dry run: dock Example.app
 > mb dock HeavyStudio.app --force --dry-run
 > ```
 
+> [!TIP]
+> 若 `/Applications` 下的应用程序已是指向 MacBay 外部外置存储的符号链接，`mb dock` 会检测到并提示改用 `mb adopt` 命令。
+
 ### 恢复应用程序 (`undock`)
 
 将已外置的应用程序恢复到 `/Applications` 下的原始位置，并清理外置磁盘上的副本：
@@ -338,6 +399,88 @@ mb undock Example.app
 ```
 
 恢复时同样会预览空间需求：内置卷的剩余空间、复制后的预计剩余空间以及缺口容量。实际执行时会重新检查内置卷，若空间不足或无法确认，将在复制前中止。
+
+### 纳管外置应用程序 (`adopt`)
+
+在无需将应用程序拷回内置磁盘的情况下，将已位于外置存储的应用程序纳管至 MacBay 标准目录结构（`<Volume>/MacBay/Applications/<App>.app`），更新 `/Applications/<App>.app` 符号链接，并在 `manifest.json` 中正式登记：
+
+```sh
+# 建议先使用 --dry-run 预览
+mb adopt ChatGPT.app --volume /Volumes/ExternalSSD --dry-run
+
+# 执行纳管
+mb adopt ChatGPT.app --volume /Volumes/ExternalSSD
+```
+
+预览输出示例：
+```text
+Dry run: adopt ChatGPT.app
+  Size: 120.5 MB
+  Source: /Volumes/ExternalSSD/Applications/ChatGPT.app
+  Destination: /Volumes/ExternalSSD/MacBay/Applications/ChatGPT.app
+  Symlink: /Applications/ChatGPT.app -> /Volumes/ExternalSSD/MacBay/Applications/ChatGPT.app
+  Space: no additional space required (same volume relocation)
+  Dry run: no files were changed
+```
+
+**工作流程**：
+1. **目标定位**：解析 `/Applications/<App>.app` 符号链接，在外置 APFS 卷上定位源应用包。
+2. **安全与兼容性检查**：检查活跃进程（`lsof`）、SQLite 锁（`-wal`、`-shm`）、代码签名完整性以及迁移阻断条件。标记为 ⚠️ **Review**（`POPUP_RISK`）的应用需要 `--force`。
+3. **日志与崩溃恢复**：在外置卷上写入操作日志（`.operations/adopt-<id>.json`）。若中断，`mb doctor` 将报告未完成的操作（`incomplete_operation`）。
+4. **原子重定位**：在同一 APFS 卷内将应用包原子移动至标准路径（若已在标准路径则跳过移动）。
+5. **原子符号链接更新**：以原子操作将 `/Applications/<App>.app` 符号链接更新为指向新的标准路径。
+6. **清单登记**：在跨进程文件锁（`flock`）保护下更新 `MacBay/manifest.json`。
+7. **系统刷新**：重建 LaunchServices 注册信息并重启 Dock。
+
+### 重复应用比对与修复 (`repair`)
+
+当 `mb doctor` 检测到清单中已记录的应用在内置路径（`/Applications`）中再次出现完整应用包（例如由安装程序或自动更新重新生成），同时外置副本依然存在时（`local_data_detected`），`mb repair` 提供安全检查、比对以及修复流程：
+
+```sh
+# 1. 只读并排比对（版本、构建号、标识符、代码签名、体积）
+mb repair "Kiro CLI.app"
+
+# 2. 重新外置应用（redock）预览
+mb repair "Kiro CLI.app" --action redock --dry-run
+
+# 3. 保留本地应用并解除管理（keep-local）预览
+mb repair "Kiro CLI.app" --action keep-local --dry-run
+
+# 4. 实际执行
+mb repair "Kiro CLI.app" --action redock
+mb repair "Kiro CLI.app" --action keep-local
+
+# 5. 回滚中断的修复操作
+mb repair "Kiro CLI.app" --rollback
+```
+
+**比对输出示例**：
+```text
+Repair comparison · Kiro CLI.app
+  Volume: /Volumes/ExternalSSD
+
+Attributes               Local (/Applications)               External (MacBay)
+───────────────────────  ──────────────────────────────────  ──────────────────────────────────
+Identifier               com.kiro.cli                        com.kiro.cli
+Version                  1.2.0                               1.1.0
+Build                    120                                 110
+Size                     105.4 MB                            98.2 MB
+Signature                Valid                               Valid
+Compatibility            Safe                                Safe
+
+Available actions:
+  • mb repair "Kiro CLI.app" --action redock
+    Re-dock local app to external storage; backs up existing external copy
+  • mb repair "Kiro CLI.app" --action keep-local
+    Keep local app and remove migration record; external copy remains as unmanaged archive
+```
+
+**安全性与备份策略**：
+- **标识符严格匹配**：执行 `redock` 时，会严格比对两端应用包标识符（`CFBundleIdentifier`）。若标识符不一致将拒绝执行，防止意外覆盖不相关的应用。
+- **保留外置备份副本**：执行 `redock` 时，现有外置副本会首先安全移动至 `<Volume>/MacBay/Backups/<OperationID>/<App>.app` 进行归档，然后再放置新副本。外置备份副本绝不会被自动删除。
+- **独立修复操作日志**：修复操作状态保存在外置卷的 `<Volume>/MacBay/.operations/repair-<App>.json`（架构版本 v1）中。若操作意外中断，`mb doctor` 将检测并报告未完成操作（`incomplete_operation`），并引导用户执行 `mb repair "<App>" --rollback` 进行恢复。
+- **保留本地副本（keep-local）**：`keep-local` 仅原子移除清单中的对应条目。内置应用与外置副本均完好保留在文件系统中，外置副本变为未受管的归档副本。
+
 
 ### Xcode 维护管理 (`xcode`)
 
@@ -429,6 +572,8 @@ mb status --json
 ```
 
 `mb doctor --json` 会输出 `volumes`、`findings`、`summary`、`warnings` 与 `notes`。每个条目都带有稳定的 `code`（例如 `link_target_unavailable`、`link_unmanaged`、`local_data_detected`、`record_source_missing`、`manifest_unreadable`）、`status`（`healthy`、`needs_attention`、`unable_to_verify`）、相关路径、适用时的大小以及建议操作。
+
+`mb references --json` 会输出 `generatedAt`、`findings` 与 `notes`。每个条目都带有稳定的 `code`（例如 `external_reference_stale_candidate`、`external_reference_missing`、`external_reference_unverified`、`external_reference_scan_incomplete`、`external_config_unreadable`、`external_config_partially_checked`）、`status`、来源文件、保存路径、已确认的候选项（如有）、可选的 `referenceLocations` 以及建议操作。
 
 当发生错误时，MacBay 会向 `stderr` 输出结构化的错误信封（Envelope）并以非零状态码退出：
 
