@@ -141,7 +141,7 @@ mb tui
 - **首页**：查看内置与外置 APFS 磁盘容量，以及当前由 MacBay 纳管的应用数量。
 - **迁移应用 (`dock`)**：按大小排序浏览应用候选列表，查看 `[Safe]`、`[Review]` 与 `[Blocked]` 兼容性状态。查看详细路径与兼容性技术依据，选择当前会话目标卷，查看包含空间预估的 dry-run 预览并在确认后执行迁移。（Review 应用需确认并接受风险后使用 `--force` 安全迁移）
 - **恢复应用 (`undock`)**：将已连接外置卷上的 MacBay 纳管应用安全恢复至内置 `/Applications`。非纳管应用可直接在此界面完成纳管：确认当前位置、标准存储路径、链接变更以及是否会移动文件后执行，随后才会准备恢复预览。纳管始终使用应用实际所在的卷，不会擅自改用已配置的默认卷。未确认链接及损坏链接会显示对应状态与 `mb doctor` 指引。
-- **系统诊断 (`doctor`)**：按分类和状态浏览诊断发现，查看清晰高亮的针对性修复建议。
+- **系统诊断 (`doctor`)**：检查外置应用与开发者数据的链接断裂、目标缺失、记录不一致与中断的操作，并查看针对每项问题的修复建议。
 - *(注：多选、搜索以及 Xcode/缓存/repair 的 TUI 执行将在后续版本中支持。当前版本请使用对应 CLI 命令。)*
 
 ### 1. 检查存储状态
@@ -308,6 +308,7 @@ mb doctor --volume /Volumes/Archive
 2. **开发者缓存链接**：`~/Library/Developer/Xcode/iOS DeviceSupport`、`~/Library/Developer/CoreSimulator`、`~/.npm`、`~/.cache/uv`、`~/.gradle` 与 `~/.cache/huggingface`。
 3. **卷记录**：将已连接卷的 `MacBay/manifest.json` 与实际源路径和目标路径进行比对。
 4. **本地数据**：记录中的源路径不再是链接、而是以普通文件或目录形式存在时，会报告为 `Local data detected`，并显示两个路径及其当前大小。若外置副本也已丢失，则不会归类为简单重复，而是报告记录与实际状态不一致。
+5. **中断的操作**：报告卷上残留的未完成 `adopt`/`repair` 操作，并给出回滚或继续所需的命令。
 
 > [!NOTE]
 > `doctor` 不会删除、覆盖或重新迁移任何内容，也不会断言本地数据是“因更新而重新生成”或“两份副本完全相同”。手动迁移的条目没有 MacBay 历史记录，因此不参与本地数据检查；该范围会在 `notes` 中说明。
@@ -318,6 +319,30 @@ mb doctor --volume /Volumes/Archive
 
 > [!IMPORTANT]
 > `doctor` 为只读命令：它不会删除、移动或修复任何内容，也不会在内置磁盘中保存额外记录，因此断开的外置卷在重新连接之前无法被验证。
+
+### 检查保存的应用路径 (`references`)
+
+检查特定配置文件中保存的应用路径。仅读取 `--path` 指定的文件，不扫描磁盘上的其他位置：
+
+```sh
+# 检查单个文件
+mb references --path ~/.cursor/mcp.json
+
+# 检查多个文件（可重复）
+mb references --path ~/.cursor/mcp.json --path ~/Library/LaunchAgents/com.example.tool.plist
+```
+
+JSON 与 XML/二进制 plist 通过 Foundation 读取；TOML、YAML、INI、shell 等文本文件会提取跨越 `.app` 边界的绝对路径。相对路径基于当前目录，`~` 基于主目录；重复指定的路径只检查一次。为确认保存路径是否存在并寻找替代候选，会查询 `/Applications` 与 `~/Applications`，不执行卷或清单检查。
+
+当保存的路径不存在时，会在 `/Applications` 与 `~/Applications` 中查找唯一的同名应用（若解析为同一实际应用则优先 `/Applications`）。若相同内部路径存在，则报告 `external_reference_stale_candidate` 及当前候选项；若没有对应应用或内部文件，则报告 `external_reference_missing`。访问错误、循环链接与同名应用歧义为 `external_reference_unverified`；读取上限为 `external_reference_scan_incomplete`。
+
+> [!NOTE]
+> 引用检查为只读。对类似路径的字符串做启发式提取属于支持范围；MacBay 不会展开 shell 变量或执行脚本，也不会仅因配置存在就断言它正在使用。已知的 MCP 区域（TOML 中的 `mcp_servers`、JSON 中的 `mcpServers`）会跳过显式禁用的服务器，不支持的 TOML 结构会报告为部分检查。报告的路径只是候选项，MacBay 不会断言应用已移动或删除、两个副本版本相同，也不会断言该设置当前正在使用。路径通配符、`<AppName>` 这类模板标记以及字面的 `AppName.app` 占位符不会作为文件引用检查，命中该跳过策略的条目会从 findings 中排除并在 `notes` 中说明。外置卷未连接仅作为可能原因提示。若保存路径疑似有误，请先确认该设置当前正在使用，再备份文件并修正路径（例如改为 `/Applications/<App>.app/...`）。MacBay 不会修改这些文件。
+
+> [!NOTE]
+> 上限为 10,000 个配置文件、每文件 2 MiB、总读取 64 MiB。备份文件会被跳过。
+
+**退出码**：保存路径全部正常为 `0`，存在缺失路径、读取失败或读取不完整为 `1`，参数无效或检查本身失败为 `2`。
 
 ### 迁移应用程序 (`dock`)
 
@@ -547,6 +572,8 @@ mb status --json
 ```
 
 `mb doctor --json` 会输出 `volumes`、`findings`、`summary`、`warnings` 与 `notes`。每个条目都带有稳定的 `code`（例如 `link_target_unavailable`、`link_unmanaged`、`local_data_detected`、`record_source_missing`、`manifest_unreadable`）、`status`（`healthy`、`needs_attention`、`unable_to_verify`）、相关路径、适用时的大小以及建议操作。
+
+`mb references --json` 会输出 `generatedAt`、`findings` 与 `notes`。每个条目都带有稳定的 `code`（例如 `external_reference_stale_candidate`、`external_reference_missing`、`external_reference_unverified`、`external_reference_scan_incomplete`、`external_config_unreadable`、`external_config_partially_checked`）、`status`、来源文件、保存路径、已确认的候选项（如有）、可选的 `referenceLocations` 以及建议操作。
 
 当发生错误时，MacBay 会向 `stderr` 输出结构化的错误信封（Envelope）并以非零状态码退出：
 

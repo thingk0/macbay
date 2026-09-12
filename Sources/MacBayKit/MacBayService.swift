@@ -174,6 +174,16 @@ public struct MacBayService {
         return try checker.check(volumePath: volumePath)
     }
 
+    public func references(paths: [String]) throws -> ReferenceReport {
+        let checker = ExternalReferenceChecker(fileManager: fileManager)
+        let result = checker.check(paths: paths)
+        return ReferenceReport(
+            generatedAt: macBayTimestamp(),
+            findings: result.findings,
+            notes: result.notes
+        )
+    }
+
     public func dock(
         appName: String,
         volumePath: String?,

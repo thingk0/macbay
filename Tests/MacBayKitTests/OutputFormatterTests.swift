@@ -491,7 +491,8 @@ final class OutputFormatterTests: XCTestCase {
     private func makeDoctorReport(
         volumes: [DoctorVolumeScope] = [],
         findings: [DoctorFinding] = [],
-        warnings: [String] = []
+        warnings: [String] = [],
+        notes: [String] = []
     ) -> DoctorReport {
         DoctorReport(
             generatedAt: "2026-09-10T12:00:00Z",
@@ -504,8 +505,60 @@ final class OutputFormatterTests: XCTestCase {
                 needsAttention: findings.filter { $0.status == .needsAttention }.count,
                 unableToVerify: findings.filter { $0.status == .unableToVerify }.count
             ),
-            warnings: warnings
+            warnings: warnings,
+            notes: notes
         )
+    }
+
+    func testReferencesRendersFindingsAndNotes() {
+        let formatter = OutputFormatter(useColor: false)
+        let candidate = DoctorFinding(
+            code: .externalReferenceStaleCandidate,
+            status: .needsAttention,
+            category: .externalReference,
+            name: "ChatGPT.app",
+            paths: [
+                "/Users/example/settings.json",
+                "/Volumes/ExternalSSD/Applications/ChatGPT.app/Contents/Resources/node_repl",
+                "/Applications/ChatGPT.app/Contents/Resources/node_repl"
+            ],
+            detail: "Referenced at command. The configured path is missing; the same relative path exists under /Applications/ChatGPT.app. MacBay does not confirm whether this setting is currently in use.",
+            recommendation: "Confirm whether this setting is currently in use, then back it up and update the path if needed. MacBay does not change configuration files.",
+            referenceLocations: ["command"]
+        )
+        let partial = DoctorFinding(
+            code: .externalConfigPartiallyChecked,
+            status: .unableToVerify,
+            category: .externalReference,
+            name: "settings.json",
+            paths: ["/Users/example/settings.json"],
+            detail: "Not fully inspected: mcpServers.inline.env (inline table is not inspected).",
+            recommendation: "Confirm whether this setting is currently in use, then review the affected values manually."
+        )
+        let report = ReferenceReport(
+            generatedAt: "2026-09-10T12:00:00Z",
+            findings: [candidate, partial],
+            notes: ["Inspected 1 specified configuration file for stored application paths."]
+        )
+
+        let output = formatter.references(report)
+
+        XCTAssertTrue(output.contains("MacBay references"))
+        XCTAssertTrue(output.contains("Missing paths \u{00b7} 1"))
+        XCTAssertTrue(output.contains("Unable to verify \u{00b7} 1"))
+        XCTAssertTrue(output.contains("ChatGPT.app"))
+        XCTAssertTrue(output.contains("File: /Users/example/settings.json"))
+        XCTAssertTrue(output.contains("Locations: command"))
+        XCTAssertTrue(output.contains("Path: /Volumes/ExternalSSD/Applications/ChatGPT.app"))
+        XCTAssertTrue(output.contains("Candidate: /Applications/ChatGPT.app"))
+        XCTAssertTrue(output.contains("Notes \u{00b7} 1"))
+        XCTAssertTrue(output.contains("Inspected 1 specified configuration file"))
+        XCTAssertEqual(report.exitCode, 1)
+        XCTAssertFalse(output.contains("\u{001B}"))
+
+        let clean = ReferenceReport(generatedAt: "2026-09-10T12:00:00Z", findings: [], notes: [])
+        XCTAssertTrue(formatter.references(clean).contains("No stored app paths to report"))
+        XCTAssertEqual(clean.exitCode, 0)
     }
 
     func testDoctorRendersSections() {

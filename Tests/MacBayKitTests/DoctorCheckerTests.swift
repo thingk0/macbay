@@ -489,6 +489,24 @@ final class DoctorCheckerTests: XCTestCase {
         XCTAssertTrue(report.notes[0].contains("No external volumes were consulted"))
     }
 
+    func testDoctorIgnoresConversationHistoryWithMissingAppPaths() throws {
+        let history = tempDir.appendingPathComponent(".gemini/antigravity/brain/session/messages/record.json")
+        try FileManager.default.createDirectory(at: history.deletingLastPathComponent(), withIntermediateDirectories: true)
+        var entries: [String] = []
+        for index in 0..<300 {
+            entries.append("/Volumes/NoSuchVolume/DerivedData/deno.app/Contents/\(index)")
+        }
+        let payload = "{ \"content\": \"" + entries.joined(separator: " ") + "\" }\n"
+        try Data(payload.utf8).write(to: history)
+
+        let report = try check(makeChecker())
+
+        XCTAssertTrue(report.findings.filter { $0.category == .externalReference }.isEmpty)
+        XCTAssertEqual(report.summary.needsAttention, 0)
+        XCTAssertEqual(report.summary.unableToVerify, 0)
+        XCTAssertEqual(report.exitCode, 0)
+    }
+
     func testLocalDataCheckSkipsRecordedLinks() throws {
         let externalApp = volumeDir.appendingPathComponent("MacBay/Applications/Linked.app")
         try createDirectory(at: externalApp)
@@ -523,6 +541,23 @@ final class DoctorCheckerTests: XCTestCase {
 
         XCTAssertTrue(report.notes.isEmpty)
         XCTAssertEqual(report.exitCode, 0)
+    }
+
+    func testDoctorFindingDecodesWithoutReferenceLocations() throws {
+        let legacyJSON = """
+        {
+          "code": "link_unmanaged",
+          "status": "healthy",
+          "category": "application_link",
+          "name": "Legacy.app",
+          "paths": ["/Applications/Legacy.app"],
+          "detail": "No MacBay record for this link",
+          "recommendation": ""
+        }
+        """
+        let finding = try JSONDecoder().decode(DoctorFinding.self, from: Data(legacyJSON.utf8))
+        XCTAssertNil(finding.referenceLocations)
+        XCTAssertEqual(finding.code, .linkUnmanaged)
     }
 
     func testRecordTargetCheckSkipsRecordedLinks() throws {

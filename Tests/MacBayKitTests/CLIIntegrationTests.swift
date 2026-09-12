@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import XCTest
 @testable import MacBayKit
@@ -93,9 +94,21 @@ final class CLIIntegrationTests: XCTestCase {
         return url
     }
 
-    private func configEnvironment(_ configHome: URL) -> [String: String] {
+    /// Isolated HOME so tests never depend on the developer's real dotfiles.
+    private func makeIsolatedHome() throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacBayCLIHome-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        fixtureDirectories.append(url)
+        return url
+    }
+
+    private func configEnvironment(_ configHome: URL, home: URL? = nil) -> [String: String] {
         var environment = ProcessInfo.processInfo.environment
         environment["XDG_CONFIG_HOME"] = configHome.path
+        if let home {
+            environment["HOME"] = home.path
+        }
         return environment
     }
 
@@ -110,7 +123,7 @@ final class CLIIntegrationTests: XCTestCase {
 
         let result = try runCLI(arguments: ["--version"])
         XCTAssertEqual(result.status, 0)
-        XCTAssertTrue(result.stdout.contains("1.2.1"))
+        XCTAssertTrue(result.stdout.contains("1.3.0"))
     }
 
     func testHelpOutputMentionsSubcommands() throws {
@@ -322,7 +335,16 @@ final class CLIIntegrationTests: XCTestCase {
             throw XCTSkip("Binary not found at \(binaryURL.path)")
         }
 
-        let result = try runCLI(arguments: ["doctor", "--json"])
+        let home = try makeIsolatedHome()
+        let configHome = try makeConfigHome()
+        defer {
+            try? FileManager.default.removeItem(at: configHome)
+        }
+
+        let result = try runCLI(
+            arguments: ["doctor", "--json"],
+            environment: configEnvironment(configHome, home: home)
+        )
         XCTAssertTrue([0, 1].contains(result.status), "unexpected exit code \(result.status)")
 
         guard let data = result.stdout.data(using: .utf8),
@@ -344,7 +366,16 @@ final class CLIIntegrationTests: XCTestCase {
             throw XCTSkip("Binary not found at \(binaryURL.path)")
         }
 
-        let result = try runCLI(arguments: ["doctor"])
+        let home = try makeIsolatedHome()
+        let configHome = try makeConfigHome()
+        defer {
+            try? FileManager.default.removeItem(at: configHome)
+        }
+
+        let result = try runCLI(
+            arguments: ["doctor"],
+            environment: configEnvironment(configHome, home: home)
+        )
         XCTAssertTrue([0, 1].contains(result.status), "unexpected exit code \(result.status)")
         XCTAssertTrue(result.stdout.contains("MacBay doctor"))
         XCTAssertFalse(result.stdout.contains("\u{001B}"))
@@ -884,10 +915,233 @@ final class CLIIntegrationTests: XCTestCase {
         XCTAssertFalse(scanResult.stdout.contains("\u{001B}"))
         XCTAssertFalse(scanResult.stderr.contains("\u{001B}"))
 
-        let doctorResult = try runCLI(arguments: ["doctor", "--json"])
+        let doctorHome = try makeIsolatedHome()
+        let doctorConfigHome = try makeConfigHome()
+        defer {
+            try? FileManager.default.removeItem(at: doctorConfigHome)
+        }
+        let doctorResult = try runCLI(
+            arguments: ["doctor", "--json"],
+            environment: configEnvironment(doctorConfigHome, home: doctorHome)
+        )
         XCTAssertFalse(doctorResult.stdout.contains("\u{001B}"))
         XCTAssertFalse(doctorResult.stderr.contains("\u{001B}"))
     }
-}
 
+    func testDoctorRejectsReferencePathFlag() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+
+        let result = try runCLI(arguments: ["doctor", "--reference-path", "/tmp/custom.json"])
+        XCTAssertNotEqual(result.status, 0)
+        XCTAssertNotEqual(result.status, 1)
+    }
+
+    func testDoctorIgnoresHistoryFilesWithMissingAppPaths() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+
+        let home = try makeIsolatedHome()
+        let configHome = try makeConfigHome()
+        defer { try? FileManager.default.removeItem(at: configHome) }
+
+        let history = home.appendingPathComponent(".zsh_history")
+        var lines: [String] = []
+        for index in 0..<300 {
+            lines.append(": 1787399273:0;open /Volumes/NoSuchVolume/deno.app/Contents/\(index)")
+        }
+        try Data(lines.joined(separator: "\n").utf8).write(to: history)
+
+        let result = try runCLI(
+            arguments: ["doctor", "--json"],
+            environment: configEnvironment(configHome, home: home)
+        )
+        XCTAssertEqual(result.status, 0, "Home history must not affect doctor: \(result.stdout)")
+
+        guard let data = result.stdout.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let findings = json["findings"] as? [[String: Any]] else {
+            return XCTFail("stdout was not valid JSON: \(result.stdout)")
+        }
+        XCTAssertTrue(findings.filter { ($0["category"] as? String) == "external_reference" }.isEmpty)
+    }
+
+    func testHelpOutputMentionsReferences() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+
+        let result = try runCLI(arguments: ["--help"])
+        XCTAssertEqual(result.status, 0)
+        XCTAssertTrue(result.stdout.contains("references"))
+    }
+
+    func testReferencesRequiresPath() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+
+        let result = try runCLI(arguments: ["references", "--json"])
+        XCTAssertNotEqual(result.status, 0)
+        XCTAssertNotEqual(result.status, 1)
+    }
+
+    func testReferencesRejectsDirectory() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+
+        let home = try makeIsolatedHome()
+        let directory = home.appendingPathComponent("settings")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let result = try runCLI(arguments: ["references", "--json", "--path", directory.path])
+        XCTAssertEqual(result.status, 1)
+    }
+
+    func testReferencesRejectsFIFOAndSymlinkWithoutBlocking() throws {
+        let home = try makeIsolatedHome()
+        let fifo = home.appendingPathComponent("settings.json")
+        XCTAssertEqual(mkfifo(fifo.path, 0o600), 0)
+        let link = home.appendingPathComponent("linked.json")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: fifo)
+
+        for path in [fifo, link] {
+            let process = Process()
+            process.executableURL = binaryURL
+            process.arguments = ["references", "--json", "--path", path.path]
+            let output = Pipe()
+            process.standardOutput = output
+            process.standardError = Pipe()
+            let exited = expectation(description: "Reject \(path.lastPathComponent) promptly")
+            process.terminationHandler = { _ in exited.fulfill() }
+            try process.run()
+            let result = XCTWaiter.wait(for: [exited], timeout: 5)
+            if result != .completed {
+                process.terminate()
+                process.waitUntilExit()
+                XCTFail("references blocked on a FIFO input")
+                continue
+            }
+            XCTAssertEqual(process.terminationStatus, 1)
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            let report = try JSONDecoder().decode(ReferenceReport.self, from: data)
+            XCTAssertTrue(report.findings.contains {
+                $0.code == .externalConfigUnreadable && $0.detail.contains("not a regular file")
+            })
+        }
+    }
+
+    func testReferencesReportsMissingFile() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+
+        let missing = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacBayMissing-\(UUID().uuidString).json").path
+
+        let result = try runCLI(arguments: ["references", "--json", "--path", missing])
+        XCTAssertEqual(result.status, 1)
+
+        guard let data = result.stdout.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let findings = json["findings"] as? [[String: Any]] else {
+            return XCTFail("stdout was not valid JSON: \(result.stdout)")
+        }
+        XCTAssertTrue(findings.contains { ($0["code"] as? String) == "external_config_unreadable" })
+        XCTAssertNotNil(json["generatedAt"] as? String)
+        XCTAssertNotNil(json["notes"])
+        XCTAssertNil(json["exitCode"])
+    }
+
+    func testReferencesChecksSpecifiedFilesOnly() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+
+        let home = try makeIsolatedHome()
+        let checked = home.appendingPathComponent("checked.json")
+        let neighbour = home.appendingPathComponent("neighbour.json")
+        let payload = "{ \"bin\": \"/opt/previous/MacBayCLIFixture.app/Contents/MacOS/tool\" }"
+        try Data(payload.utf8).write(to: checked)
+        try Data(payload.utf8).write(to: neighbour)
+
+        let result = try runCLI(arguments: ["references", "--json", "--path", checked.path])
+        XCTAssertEqual(result.status, 1)
+
+        guard let data = result.stdout.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let findings = json["findings"] as? [[String: Any]],
+              let finding = findings.first(where: { ($0["code"] as? String) == "external_reference_missing" }) else {
+            return XCTFail("Missing finding: \(result.stdout)")
+        }
+        XCTAssertEqual(finding["name"] as? String, "MacBayCLIFixture.app")
+        XCTAssertEqual((finding["paths"] as? [String])?.first, checked.path)
+        XCTAssertEqual(finding["referenceLocations"] as? [String], ["bin"])
+        XCTAssertTrue((json["notes"] as? [String] ?? []).contains { $0.contains("Only the files passed with --path were read") })
+    }
+
+    func testReferencesDedupesRepeatedPaths() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+
+        let home = try makeIsolatedHome()
+        let file = home.appendingPathComponent("tool.json")
+        try Data("{ \"bin\": \"/opt/previous/MacBayCLIFixture.app/Contents/MacOS/tool\" }".utf8).write(to: file)
+
+        let result = try runCLI(
+            arguments: ["references", "--json", "--path", file.path, "--path", file.path]
+        )
+        XCTAssertEqual(result.status, 1)
+
+        guard let data = result.stdout.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let findings = json["findings"] as? [[String: Any]] else {
+            return XCTFail("stdout was not valid JSON: \(result.stdout)")
+        }
+        XCTAssertEqual(findings.filter { ($0["code"] as? String) == "external_reference_missing" }.count, 1)
+    }
+
+    func testReferencesReportsHealthyWhenPathExists() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+
+        let home = try makeIsolatedHome()
+        let file = home.appendingPathComponent("tool.json")
+        try Data("{ \"bin\": \"/bin/sh\" }".utf8).write(to: file)
+
+        let missingApp = home.appendingPathComponent("OldApps/MacBayCLIFixture.app/Contents/MacOS/tool")
+        try FileManager.default.createDirectory(at: missingApp.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("#!/bin/sh\n".utf8).write(to: home.appendingPathComponent("existing.json"))
+        _ = missingApp
+
+        let result = try runCLI(arguments: ["references", "--json", "--path", file.path])
+        XCTAssertEqual(result.status, 0, "\(result.stdout) \(result.stderr)")
+    }
+
+    func testReferencesReportsCandidateAndReadLimit() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+
+        let home = try makeIsolatedHome()
+        let file = home.appendingPathComponent("tool.json")
+        try Data("{ \"bin\": \"/opt/previous/MacBayCLIFixture.app/Contents/MacOS/tool\" }".utf8).write(to: file)
+
+        let candidate = try runCLI(arguments: ["references", "--json", "--path", file.path])
+        XCTAssertEqual(candidate.status, 1)
+
+        guard let data = candidate.stdout.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let findings = json["findings"] as? [[String: Any]],
+              let finding = findings.first(where: { ($0["code"] as? String) == "external_reference_missing" }) else {
+            return XCTFail("Missing finding: \(candidate.stdout)")
+        }
+        XCTAssertTrue((finding["recommendation"] as? String ?? "").contains("Confirm whether this setting is currently in use"))
+    }
+}
 

@@ -141,7 +141,7 @@ mb tui
 - **ホーム**: 内蔵および外部APFSディスクの容量、MacBay管理下のアプリ数を確認。
 - **アプリ移動（`dock`）**: スキャン基準によるサイズ順一覧、`[Safe]` / `[Review]` / `[Blocked]` 互換性バッジを表示。詳細パス・互換性根拠の確認、セッション対象ボリュームの選択、空き容量予測を含むdry-runプレビューと実行確認。（Review対象はリスク確認・承認後に `--force` で安全に移行）
 - **アプリ復元（`undock`）**: 接続中のボリュームにあるMacBay管理アプリを内蔵 `/Applications` に復元。非管理アプリはこの画面からそのまま登録できます。現在の場所、標準保存先、リンク変更、ファイル移動の有無を確認して実行すると、復元プレビューが準備されます。登録先はアプリが実際にあるボリュームで、設定済みの既定ボリュームへ勝手に変更されることはありません。未確認項目や壊れたリンクは状態と `mb doctor` の案内を表示します。
-- **診断（`doctor`）**: リンクやボリュームレコードの検査結果をカテゴリ・ステータス別に確認し、推奨アクションを把握。
+- **診断（`doctor`）**: 外部化したアプリと開発者データのリンク切れ、対象欠落、記録不一致、中断された操作を確認し、問題ごとの推奨アクションを把握します。
 - *(※ 複数選択、検索、Xcode／キャッシュ／repairの実行は後続バージョンで追加予定です。現バージョンではCLIコマンドをご利用ください。)*
 
 ### 1. ストレージ状態の確認
@@ -308,6 +308,7 @@ mb doctor --volume /Volumes/Archive
 2. **開発者キャッシュリンク**: `~/Library/Developer/Xcode/iOS DeviceSupport`、`~/Library/Developer/CoreSimulator`、`~/.npm`、`~/.cache/uv`、`~/.gradle`、`~/.cache/huggingface`。
 3. **ボリューム記録**: 接続中のボリュームの `MacBay/manifest.json` と実際のソース／リンク先パスを照合します。
 4. **ローカルデータ**: 記録されたソースパスがリンクではなく通常のファイルやディレクトリとして存在する場合、`Local data detected` として報告し、両方のパスと現在のサイズを表示します。外部コピーも失われている場合は単純な重複とは分類せず、記録と実際の状態の不一致として報告します。
+5. **中断された操作**: ボリュームに残った未完了の `adopt`・`repair` 操作を、ロールバックや続行に必要なコマンドとともに報告します。
 
 > [!NOTE]
 > `doctor` は削除・上書き・再移動を行わず、「アップデートによって再生成された」とか「2つのコピーが同一である」とは断定しません。手動で移動した項目は MacBay の履歴がないためローカルデータ検査の対象外であり、その範囲は `notes` に明記されます。
@@ -318,6 +319,30 @@ mb doctor --volume /Volumes/Archive
 
 > [!IMPORTANT]
 > `doctor` は読み取り専用です。削除・移動・修復は行わず、内蔵ディスクに別途記録を保存しないため、取り外した外部ボリュームは再接続するまで検証できません。
+
+### 保存されたアプリパスの検査（`references`）
+
+特定の設定ファイルに保存されたアプリパスを検査します。`--path` で指定したファイルのみを読み取り、ディスク上の他の場所は走査しません：
+
+```sh
+# ファイルを1つ検査
+mb references --path ~/.cursor/mcp.json
+
+# 複数ファイルを検査（繰り返し可能）
+mb references --path ~/.cursor/mcp.json --path ~/Library/LaunchAgents/com.example.tool.plist
+```
+
+JSON と XML／バイナリ plist は Foundation で読み、TOML・YAML・INI・シェルなどのテキストからは `.app` 境界を含む絶対パスを抽出します。相対パスはカレントディレクトリ、`~` はホーム基準で、重複指定したパスは1回だけ検査します。保存されたパスが存在するかの確認と代替候補の探索のため `/Applications` と `~/Applications` を参照します。ボリュームやマニフェストの検査は行いません。
+
+保存されたパスが無い場合、`/Applications` と `~/Applications` で同名アプリを探します（同じ実体なら `/Applications` を優先）。同じ内部パスがあれば `external_reference_stale_candidate` と現在の候補を報告し、対応アプリや内部ファイルが無ければ `external_reference_missing` です。アクセスエラー・循環リンク・同名アプリの曖昧さは `external_reference_unverified`、読み取り上限は `external_reference_scan_incomplete` です。
+
+> [!NOTE]
+> 参照検査は読み取り専用です。パスらしい文字列のヒューリスティック抽出は対応範囲であり、MacBay はシェル変数を展開したりスクリプトを実行したりせず、設定があることだけで現在使われているとは断定しません。既知の MCP 領域（TOML の `mcp_servers`、JSON の `mcpServers`）では無効化されたサーバーを除外し、未対応の TOML 構文は部分検査として報告します。報告されたパスは候補にすぎず、アプリが移動・削除されたことや同一バージョンであること、その設定が現在使われているかは確定しません。パスのワイルドカード、`<AppName>` のようなテンプレートトークン、文字通りの `AppName.app` プレースホルダーはファイル参照として検査せず、該当した項目は findings から除外して `notes` で説明します。外部ボリューム未接続は考えられる原因として案内するだけです。保存されたパスが誤っているようなら、その設定が現在使われているかを先に確認してからファイルをバックアップしてパスを修正してください（例: `/Applications/<App>.app/...`）。MacBay はこれらのファイルを変更しません。
+
+> [!NOTE]
+> 上限は設定ファイル 10,000、ファイルあたり 2 MiB、合計読み取り 64 MiB です。バックアップファイルは除外します。
+
+**終了コード**: 保存されたパスがすべて正常なら `0`、欠落パス・読み取り失敗・読み取り不足があれば `1`、引数が不正または検査自体が失敗したら `2`。
 
 ### アプリケーションの外部化（`dock`）
 
@@ -547,6 +572,8 @@ mb status --json
 ```
 
 `mb doctor --json` は `volumes`、`findings`、`summary`、`warnings`、`notes` を出力します。各項目には安定した `code`（例: `link_target_unavailable`、`link_unmanaged`、`local_data_detected`、`record_source_missing`、`manifest_unreadable`）、`status`（`healthy`、`needs_attention`、`unable_to_verify`）、関連パス、該当する場合はサイズ、推奨される次の操作が含まれます。
+
+`mb references --json` は `generatedAt`、`findings`、`notes` を出力します。各項目には安定した `code`（例: `external_reference_stale_candidate`、`external_reference_missing`、`external_reference_unverified`、`external_reference_scan_incomplete`、`external_config_unreadable`、`external_config_partially_checked`）、`status`、元ファイル、保存されたパス、確認済みの候補（ある場合）、任意の `referenceLocations`、推奨される次の操作が含まれます。
 
 エラー発生時、MacBayは構造化されたエラーエンベロープを `stderr` に出力し、非ゼロのステータスコードで終了します:
 
