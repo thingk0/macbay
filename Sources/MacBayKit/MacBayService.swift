@@ -13,6 +13,7 @@ public struct MacBayService {
     public let repairAppUseCase: any RepairAppUseCaseProtocol
     private let xcodeDoctor: XcodeDoctor
     private let cacheManager: CacheManager
+    private let purgeEngine: PurgeEngine
 
     public init(
         fileManager: FileManager = .default,
@@ -69,6 +70,10 @@ public struct MacBayService {
             volumeManager: self.volumeManager
         )
         self.cacheManager = CacheManager(
+            fileManager: fileManager,
+            commandRunner: commandRunner
+        )
+        self.purgeEngine = PurgeEngine(
             fileManager: fileManager,
             commandRunner: commandRunner
         )
@@ -345,6 +350,15 @@ public struct MacBayService {
         }
         let selection = try selectVolume(path: volumePath)
         return try cacheManager.enable(on: URL(fileURLWithPath: selection.volume.path), dryRun: dryRun)
+    }
+
+    public func scanPurge(options: PurgeOptions = PurgeOptions()) -> [PurgeItem] {
+        purgeEngine.scan(options: options)
+    }
+
+    public func purge(options: PurgeOptions = PurgeOptions(), dryRun: Bool) throws -> PurgeReport {
+        let items = purgeEngine.scan(options: options)
+        return try purgeEngine.execute(items: items, options: options, dryRun: dryRun)
     }
 
     public func initialize(

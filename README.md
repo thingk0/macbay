@@ -27,6 +27,7 @@ MacBay is a developer-first storage externalizer designed for Apple Silicon Macs
 
 - **Interactive TUI Mode (`mb tui` / `mb ui`)**: Launch an interactive, keyboard-driven Terminal User Interface to visually inspect storage capacity, browse applications with Safe/Review/Blocked status, and preview moves and restorations.
 - **Application Relocation (`dock` / `undock` / `adopt`)**: Migrate large apps to external storage, restore them to internal disk, or adopt already-externalized apps into standard MacBay layout without restoring first. Dock icons and LaunchServices are automatically refreshed.
+- **Lossless Cache Purging (`purge` / `pu`)**: Safely reclaim gigabytes of internal SSD space by purging regenerated Chromium/Electron caches (`Code Cache`, `GPUCache`, `CacheStorage`), ShipIt update installers, Homebrew package downloads, and crash logs without touching user accounts, SQLite databases, or preferences.
 - **Xcode Storage Optimization (`xcode`)**: Offload massive iOS DeviceSupport symbols and build Archives to external APFS storage, safely purge DerivedData and simulator/Xcode caches, and remove unavailable simulators. Preserves existing legacy symlinks.
 - **Developer Cache Routing (`cache`)**: Route npm, uv, Gradle, and Hugging Face caches to external storage via a clean, isolated block in `~/.zshrc`.
 - **Strict Volume Validation**: Automatically validates external APFS filesystems and rejects installer DMGs, read-only drives, and internal disks.
@@ -297,6 +298,7 @@ Short aliases accept the same arguments and options as the full commands. Run `m
 | `repair` | `rep` |
 | `xcode` | `xc` |
 | `cache` | `c` |
+| `purge` | `pu` |
 | `tui` | `ui` |
 
 ```sh
@@ -568,6 +570,39 @@ Managed caches include:
 - `uv`: `UV_CACHE_DIR`
 - `Gradle`: `GRADLE_USER_HOME`
 - `Hugging Face`: `HF_HOME`
+
+### Purging Application Caches (`purge`)
+
+Safely scans and clears regenerable application caches on the internal SSD without moving folders or breaking user accounts:
+
+```sh
+# Preview disposable caches and potential space savings
+mb purge --dry-run
+
+# Purge whitelisted caches with confirmation prompt
+mb purge
+
+# Execute immediately without interactive prompt
+mb purge --yes
+
+# Target a specific application (e.g. Slack, Discord, Chrome)
+mb purge --app Slack
+
+# Include caches belonging to currently running applications
+mb purge --include-running
+
+# Include diagnostic crash reports and logs (~/Library/Logs/DiagnosticReports)
+mb purge --include-logs
+
+# Exclude Homebrew download cache
+mb purge --no-homebrew
+```
+
+**Zero-Risk Safety Model**:
+- **Strictly Whitelisted Folders**: Only purges fully regenerable Chromium/Electron cache directories (`CacheStorage`, `Code Cache`, `GPUCache`, `GPUPersistentCache`, `DawnCache`, `blob_storage`), Electron update archives (`Library/Caches/<App>/ShipIt`), and Homebrew download caches.
+- **Untouchable User Data**: Never touches SQLite databases (`.sqlite`, `.db`, `.wal`), credentials or authentication sessions (`IndexedDB`, `Cookies`, `Local Storage`), or application preferences (`settings.json`, `.plist`).
+- **Running App Protection**: Active processes are detected via system process inspection (`/bin/ps`). By default, running applications are skipped to avoid I/O collisions; override explicitly with `--include-running`.
+- **Directory Preservation**: Subdirectory contents are cleared while preserving parent directories and ownership.
 
 ---
 

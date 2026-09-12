@@ -27,6 +27,7 @@ MacBay는 Apple Silicon Mac을 위해 설계된 개발자 중심의 스토리지
 
 - **대화형 TUI 모드 (`mb` / `mb tui`)**: 터미널에서 `mb`만 입력하여 키보드로 조작하는 터미널 UI를 엽니다. 저장 공간 조회, 앱 후보 탐색(Safe/Review/Blocked 상태), dry-run 미리보기 및 안전한 앱 이동·복원, 진단 결과 및 문제별 권장 조치를 탐색할 수 있습니다.
 - **애플리케이션 이전 (`dock` / `undock` / `adopt`)**: 대용량 앱을 외장 스토리지로 마이그레이션하거나, 내장 복원 없이 기존 외장 앱을 MacBay 표준 구조로 수용합니다. Dock 아이콘과 LaunchServices 등록 정보가 자동으로 갱신됩니다.
+- **무손실 애플리케이션 캐시 정리 (`purge` / `pu`)**: 사용자 계정, SQLite 데이터베이스, 환경 설정을 전혀 건드리지 않고, 자동 재생성되는 Chromium/Electron 캐시(`Code Cache`, `GPUCache`, `CacheStorage`), ShipIt 업데이트 설치 파일, Homebrew 패키지 다운로드 캐시, 진단 크래시 로그를 안전하게 정리하여 내장 SSD 공간을 수 기가바이트 이상 확보합니다.
 - **안전성 검사 엔진 (`AppInspector`)**: 앱 번들의 가상화 권한(entitlement), 커널/시스템 확장(KEXT/System Extension), 하드코딩된 자체 재배치 로직 여부를 자동으로 검사합니다.
 - **Xcode DeviceSupport 관리 (`xcode`)**: 방대한 용량을 차지하는 iOS DeviceSupport 심볼을 외장 드라이브로 이전하면서도 Xcode가 정상적으로 작동하도록 지원합니다. 기존 레거시 심볼릭 링크를 보존하고 사용 불가능한 시뮬레이터를 정리합니다.
 - **개발자 캐시 경로 재지정 (`cache`)**: `~/.zshrc` 내에 격리 관리되는 설정 블록을 통해 npm, uv, Gradle, Hugging Face 캐시 디렉터리를 외장 스토리지로 라우팅합니다.
@@ -294,6 +295,7 @@ Healthy · 2
 | `repair` | `rep` |
 | `xcode` | `xc` |
 | `cache` | `c` |
+| `purge` | `pu` |
 | `tui` | `ui` |
 
 ```sh
@@ -549,6 +551,39 @@ mb cache --reset
 - `uv`: `UV_CACHE_DIR`
 - `Gradle`: `GRADLE_USER_HOME`
 - `Hugging Face`: `HF_HOME`
+
+### 애플리케이션 캐시 정리 (`purge`)
+
+내장 SSD 상의 불필요하고 비대한 재생성 캐시들을 안전하게 검사하고 정리합니다. 폴더를 이동하거나 사용자 계정에 영향을 주지 않습니다:
+
+```sh
+# 정리 가능한 캐시 및 절약 예상 용량 미리보기
+mb purge --dry-run
+
+# 화이트리스트 캐시 검사 및 대화형 확인 후 정리
+mb purge
+
+# 확인 프롬프트 없이 즉시 정리 실행
+mb purge --yes
+
+# 특정 애플리케이션만 지정하여 캐시 정리 (예: Slack, Discord, Chrome)
+mb purge --app Slack
+
+# 현재 실행 중인 애플리케이션의 캐시도 포함하여 강제 정리
+mb purge --include-running
+
+# 진단 크래시 리포트 및 로그 포함 (~/Library/Logs/DiagnosticReports)
+mb purge --include-logs
+
+# Homebrew 다운로드 캐시 제외
+mb purge --no-homebrew
+```
+
+**무손실 안전 모델**:
+- **엄격한 화이트리스트 폴더 대상**: 완전히 자동 재생성 가능한 Chromium/Electron 캐시 디렉터리(`CacheStorage`, `Code Cache`, `GPUCache`, `GPUPersistentCache`, `DawnCache`, `blob_storage`), Electron 업데이트 설치 파일(`Library/Caches/<App>/ShipIt`), Homebrew 다운로드 캐시만 정리합니다.
+- **사용자 데이터 절대 보존**: SQLite 데이터베이스(`.sqlite`, `.db`, `.wal`), 로그인 세션 및 인증 정보(`IndexedDB`, `Cookies`, `Local Storage`), 사용자 설정 파일(`settings.json`, `.plist`)은 절대 삭제 대상에 포함되지 않습니다.
+- **실행 중인 앱 보호**: 시스템 프로세스 목록(`/bin/ps`)을 검사하여 현재 실행 중인 앱의 캐시는 I/O 충돌을 방지하기 위해 기본적으로 건너뜁니다(`--include-running`으로 강제 포함 가능).
+- **디렉터리 구조 유지**: 대상 캐시 디렉터리 자체와 권한은 유지한 채 내부의 캐시 파일들만 비웁니다.
 
 ---
 

@@ -16,13 +16,14 @@ Use the `mb` CLI (or its alias `macbay`) for storage-aware Mac maintenance. Pref
    - 🟢 **SAFE**: Safe to dock.
    - ⚠️ **POPUP_RISK**: Contains relocation signals or privileged helper tools. Never dock or adopt without informing the user and providing the `--force` flag.
    - ❌ **BLOCKED**: Has hypervisor/virtualization entitlements, kernel/system/driver extensions, or corrupted bundles. Never attempt to dock or adopt a blocked app.
-5. **Always Dry-Run First**: Use `--dry-run` before any mutating command (`dock`, `undock`, `adopt`, `repair`, `xcode`, `cache`). The preview for `dock` and `undock` includes source size, destination free space, estimated free space after the copy, expected internal space freed, and any shortfall. For `adopt`, it previews same-volume relocation to MacBay standard layout and symlink updates with 0 additional space required. For `repair`, it previews backup paths, space impact, and manifest updates. Report those numbers to the user. Note: `status`, `scan`, and `doctor` are read-only and do not accept `--dry-run` or `--yes`.
+5. **Always Dry-Run First**: Use `--dry-run` before any mutating command (`dock`, `undock`, `adopt`, `repair`, `xcode`, `cache`, `purge`). The preview for `dock` and `undock` includes source size, destination free space, estimated free space after the copy, expected internal space freed, and any shortfall. For `adopt`, it previews same-volume relocation to MacBay standard layout and symlink updates with 0 additional space required. For `repair`, it previews backup paths, space impact, and manifest updates. For `purge`, it scans whitelisted caches and previews recoverable space without modifying files. Report those numbers to the user. Note: `status`, `scan`, and `doctor` are read-only and do not accept `--dry-run` or `--yes`.
 6. **Space Safety**: Real runs re-check free space and abort with `insufficient_space` (retryable) or `space_check_failed` (execution) before copying or replacing anything. Never work around these errors — ask the user to free space or reconnect the volume, and never claim a migration will succeed just because the dry-run estimate was sufficient.
 7. **Locks & Process Safety**: Do not bypass process or SQLite lock errors. Ask the user to quit the reported process and retry.
 8. **Unmanaged External Links**: If an application in `/Applications` is already an unmanaged symlink to an external volume, `mb dock` will reject it and suggest `mb adopt`. Use `mb adopt <AppName>.app` to adopt it into the standard MacBay layout and manifest without copying back to the internal disk first.
 9. **Duplicate App Repair (`repair`)**: When `doctor` reports `local_data_detected`, use `mb repair <AppName>.app` for read-only side-by-side comparison (version, build, identifier, signature, size). Use `--action redock` to re-externalize the local bundle into MacBay layout, which archives the previous external copy to `<Volume>/MacBay/Backups/<OpID>/<App>.app` (backups are never automatically deleted). Use `--action keep-local` to retain the local app in `/Applications` and atomically remove its manifest record, leaving the external copy untouched as an unmanaged archive. If an operation is interrupted, roll it back with `mb repair <AppName>.app --rollback`.
-10. **Confirmation Prompts**: Preserve user confirmation prompts unless the user explicitly requested unattended execution with `--yes`.
-11. **Structured Errors**: In `--json` mode, failures output a standard JSON error envelope to `stderr` with a non-zero exit code:
+10. **Application Cache Purging (`purge`)**: Use `mb purge` (`mb pu`) to safely reclaim disk space from disposable caches without moving folders. It strictly matches whitelisted folders (`CacheStorage`, `Code Cache`, `GPUCache`, `GPUPersistentCache`, `DawnCache`, `blob_storage`, `ShipIt`, `Homebrew`) and never touches SQLite databases, user accounts, sessions, or preferences. By default, running applications are skipped unless `--include-running` is passed.
+11. **Confirmation Prompts**: Preserve user confirmation prompts unless the user explicitly requested unattended execution with `--yes`.
+12. **Structured Errors**: In `--json` mode, failures output a standard JSON error envelope to `stderr` with a non-zero exit code:
    ```json
    {
      "error": {
@@ -78,6 +79,13 @@ mb xcode --all --dry-run
 mb cache --enable --dry-run
 mb cache --enable
 mb cache --reset
+
+# 8. Lossless Application Cache Purging (Chromium, Electron, Homebrew)
+mb purge --dry-run
+mb purge --dry-run --json
+mb purge --app Slack
+mb purge --include-running
+mb purge --yes
 ```
 
 Explain the planned source, destination, size, and any safety warnings before running a mutating command. Never claim a migration succeeded unless the CLI exits successfully. When `mb doctor` reports `needs_attention` or `unable_to_verify`, describe the reported paths and suggested action to the user; do not delete, overwrite, or re-move anything on their behalf.

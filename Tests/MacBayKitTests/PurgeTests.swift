@@ -1,0 +1,184 @@
+import Foundation
+import XCTest
+@testable import MacBayKit
+
+final class PurgeTests: XCTestCase {
+    private var tempDir: URL!
+    private var homeDir: URL!
+    private var appSupportDir: URL!
+    private var cachesDir: URL!
+
+    override func setUpWithError() throws {
+        let baseTemp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: baseTemp, withIntermediateDirectories: true)
+        let canon = (try? baseTemp.resourceValues(forKeys: [.canonicalPathKey]).canonicalPath) ?? baseTemp.path
+        tempDir = URL(fileURLWithPath: canon)
+        homeDir = tempDir.appendingPathComponent("UserHome")
+        try FileManager.default.createDirectory(at: homeDir, withIntermediateDirectories: true)
+        appSupportDir = homeDir.appendingPathComponent("Library/Application Support")
+        try FileManager.default.createDirectory(at: appSupportDir, withIntermediateDirectories: true)
+        cachesDir = homeDir.appendingPathComponent("Library/Caches")
+        try FileManager.default.createDirectory(at: cachesDir, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: tempDir)
+    }
+
+    func testWhitelistedCachesAreDiscovered() throws {
+        let slackApp = appSupportDir.appendingPathComponent("Slack")
+        let codeCache = slackApp.appendingPathComponent("Code Cache")
+        let gpuCache = slackApp.appendingPathComponent("GPUCache")
+        try FileManager.default.createDirectory(at: codeCache, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: gpuCache, withIntermediateDirectories: true)
+
+        try Data(repeating: 0x41, count: 100).write(to: codeCache.appendingPathComponent("v8.cache"))
+        try Data(repeating: 0x42, count: 200).write(to: gpuCache.appendingPathComponent("shader.cache"))
+
+        let engine = PurgeEngine(homeDirectory: homeDir)
+        let items = engine.scan()
+
+        XCTAssertEqual(items.count, 2)
+        XCTAssertTrue(items.contains { $0.path == codeCache.path && $0.sizeBytes == 100 })
+        XCTAssertTrue(items.contains { $0.path == gpuCache.path && $0.sizeBytes == 200 })
+    }
+
+    func testCriticalUserFilesAreNeverTargeted() throws {
+        let app = appSupportDir.appendingPathComponent("MyCriticalApp")
+        try FileManager.default.createDirectory(at: app, withIntermediateDirectories: true)
+
+        // Sensitive user data files and directories
+        let dbFile = app.appendingPathComponent("user_data.sqlite")
+        let dbWal = app.appendingPathComponent("user_data.sqlite-wal")
+        let settingsFile = app.appendingPathComponent("settings.json")
+        let indexedDB = app.appendingPathComponent("IndexedDB")
+        let cookies = app.appendingPathComponent("Cookies")
+        let localStorage = app.appendingPathComponent("Local Storage")
+
+        try FileManager.default.createDirectory(at: indexedDB, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: localStorage, withIntermediateDirectories: true)
+        try Data("sensitive DB".utf8).write(to: dbFile)
+        try Data("wal data".utf8).write(to: dbWal)
+        try Data("settings".utf8).write(to: settingsFile)
+        try Data("cookie data".utf8).write(to: cookies)
+
+        // Only create one legitimate whitelisted cache
+        let cacheStorage = app.appendingPathComponent("CacheStorage")
+        try FileManager.default.createDirectory(at: cacheStorage, withIntermediateDirectories: true)
+        try Data(repeating: 0x99, count: 50).write(to: cacheStorage.appendingPathComponent("cached.res"))
+
+        let engine = PurgeEngine(homeDirectory: homeDir)
+        let items = engine.scan()
+
+        // MUST only find CacheStorage, never the user data/DBs
+        XCTAssertEqual(items.count, 1)
+        XCTAssertEqual(items.first?.path, cacheStorage.path)
+
+        // Safety assertion: none of the critical paths are present in scanned paths
+        let scannedPaths = items.map(\.path)
+        XCTAssertFalse(scannedPaths.contains(dbFile.path))
+        XCTAssertFalse(scannedPaths.contains(dbWal.path))
+        XCTAssertFalse(scannedPaths.contains(settingsFile.path))
+        XCTAssertFalse(scannedPaths.contains(indexedDB.path))
+        XCTAssertFalse(scannedPaths.contains(cookies.path))
+        XCTAssertFalse(scannedPaths.contains(localStorage.path))
+    }
+
+    func testDryRunCalculatesReclaimedBytesWithoutRemovingFiles() throws {
+        let app = appSupportDir.appendingPathComponent("TestApp")
+        let gpuCache = app.appendingPathComponent("GPUCache")
+        try FileManager.default.createDirectory(at: gpuCache, withIntermediateDirectories: true)
+        let cacheFile = gpuCache.appendingPathComponent("test.bin")
+        try Data(repeating: 0x11, count: 300).write(to: cacheFile)
+
+        let engine = PurgeEngine(homeDirectory: homeDir)
+        let items = engine.scan()
+        let report = try engine.execute(items: items, dryRun: true)
+
+        XCTAssertTrue(report.dryRun)
+        XCTAssertEqual(report.totalReclaimedBytes, 300)
+        XCTAssertEqual(report.purgedItems.count, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: cacheFile.path), "Dry run must not remove files")
+    }
+
+    func testRealExecutionClearsTargetDirectoryContents() throws {
+        let app = appSupportDir.appendingPathComponent("TestApp")
+        let codeCache = app.appendingPathComponent("Code Cache")
+        try FileManager.default.createDirectory(at: codeCache, withIntermediateDirectories: true)
+        let cacheFile = codeCache.appendingPathComponent("bytecode.bin")
+        try Data(repeating: 0x22, count: 400).write(to: cacheFile)
+
+        let engine = PurgeEngine(homeDirectory: homeDir)
+        let items = engine.scan()
+        let report = try engine.execute(items: items, dryRun: false)
+
+        XCTAssertFalse(report.dryRun)
+        XCTAssertEqual(report.totalReclaimedBytes, 400)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: codeCache.path), "Target directory itself must be preserved")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cacheFile.path), "Files inside target directory must be cleared")
+    }
+
+    func testRunningAppIsSkippedUnlessIncludeRunning() throws {
+        let app = appSupportDir.appendingPathComponent("RunningApp")
+        let gpuCache = app.appendingPathComponent("GPUCache")
+        try FileManager.default.createDirectory(at: gpuCache, withIntermediateDirectories: true)
+        try Data(repeating: 0x33, count: 500).write(to: gpuCache.appendingPathComponent("data.bin"))
+
+        // Mock command runner simulating RunningApp in ps output
+        let runner = MockPsCommandRunner(runningProcessNames: ["RunningApp"])
+        let engine = PurgeEngine(commandRunner: runner, homeDirectory: homeDir)
+        let items = engine.scan()
+
+        XCTAssertEqual(items.count, 1)
+        XCTAssertTrue(items[0].isRunning)
+
+        // 1. Default execution: skips running app
+        let defaultReport = try engine.execute(items: items, options: PurgeOptions(includeRunning: false), dryRun: false)
+        XCTAssertEqual(defaultReport.purgedItems.count, 0)
+        XCTAssertEqual(defaultReport.skippedItems.count, 1)
+        XCTAssertEqual(defaultReport.totalReclaimedBytes, 0)
+
+        // 2. Override with includeRunning: true
+        let forcedReport = try engine.execute(items: items, options: PurgeOptions(includeRunning: true), dryRun: false)
+        XCTAssertEqual(forcedReport.purgedItems.count, 1)
+        XCTAssertEqual(forcedReport.skippedItems.count, 0)
+        XCTAssertEqual(forcedReport.totalReclaimedBytes, 500)
+    }
+
+    func testAppFilterNarrowsTargets() throws {
+        let appA = appSupportDir.appendingPathComponent("AlphaApp/GPUCache")
+        let appB = appSupportDir.appendingPathComponent("BetaApp/GPUCache")
+        try FileManager.default.createDirectory(at: appA, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: appB, withIntermediateDirectories: true)
+        try Data(repeating: 0x44, count: 50).write(to: appA.appendingPathComponent("a.bin"))
+        try Data(repeating: 0x55, count: 50).write(to: appB.appendingPathComponent("b.bin"))
+
+        let engine = PurgeEngine(homeDirectory: homeDir)
+
+        let filterAlpha = PurgeOptions(appFilter: ["alpha"])
+        let alphaItems = engine.scan(options: filterAlpha)
+        XCTAssertEqual(alphaItems.count, 1)
+        XCTAssertEqual(alphaItems.first?.appName, "AlphaApp")
+
+        let filterBeta = PurgeOptions(appFilter: ["beta"])
+        let betaItems = engine.scan(options: filterBeta)
+        XCTAssertEqual(betaItems.count, 1)
+        XCTAssertEqual(betaItems.first?.appName, "BetaApp")
+    }
+}
+
+private final class MockPsCommandRunner: CommandRunner, @unchecked Sendable {
+    let runningProcessNames: [String]
+
+    init(runningProcessNames: [String]) {
+        self.runningProcessNames = runningProcessNames
+    }
+
+    func run(_ executable: String, arguments: [String]) throws -> CommandResult {
+        if executable.contains("ps") {
+            let output = runningProcessNames.joined(separator: "\n")
+            return CommandResult(status: 0, standardOutput: output, standardError: "")
+        }
+        return CommandResult(status: 0, standardOutput: "", standardError: "")
+    }
+}

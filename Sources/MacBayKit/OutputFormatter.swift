@@ -461,6 +461,45 @@ public struct OutputFormatter {
         return lines.joined(separator: "\n")
     }
 
+    public func purge(_ report: PurgeReport) -> String {
+        var lines = [style("MacBay cache purge", color: "36", bold: true)]
+
+        if report.purgedItems.isEmpty && report.skippedItems.isEmpty {
+            lines.append("No purgeable caches found.")
+            return lines.joined(separator: "\n")
+        }
+
+        if !report.purgedItems.isEmpty {
+            let title = report.dryRun ? "Targets to purge · \(report.purgedItems.count)" : "Purged items · \(report.purgedItems.count)"
+            lines.append(bold(title))
+            for item in report.purgedItems {
+                let sizeStr = OutputFormatter.humanBytes(item.sizeBytes)
+                let categoryStr = style("[\(item.category.displayName)]", color: "34")
+                lines.append("  • \(item.appName) (\(sizeStr)) \(categoryStr)")
+                lines.append("    \(item.path)")
+            }
+        }
+
+        if !report.skippedItems.isEmpty {
+            lines.append("")
+            lines.append(style("Skipped items (running) · \(report.skippedItems.count)", color: "33", bold: true))
+            for item in report.skippedItems {
+                let sizeStr = OutputFormatter.humanBytes(item.sizeBytes)
+                lines.append("  • \(item.appName) (\(sizeStr)) — application is currently running")
+            }
+        }
+
+        lines.append("")
+        if report.dryRun {
+            lines.append(style("Estimated space to be reclaimed: \(OutputFormatter.humanBytes(report.totalReclaimedBytes))", color: "32", bold: true))
+            lines.append("Dry run: no files were removed.")
+        } else {
+            lines.append(style("Total storage reclaimed: \(OutputFormatter.humanBytes(report.totalReclaimedBytes))", color: "32", bold: true))
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
     public func formatReviewRequired(appName: String, reasons: [String], commandToProceed: String) -> String {
         var lines = [
             style("Review required · \(appName)", color: "33", bold: true),
