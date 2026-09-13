@@ -182,7 +182,11 @@ public struct MacBayService {
         )
     }
 
-    public func doctor(volumePath: String? = nil) throws -> DoctorReport {
+    public func doctor(
+        volumePath: String? = nil,
+        fix: Bool = false,
+        dryRun: Bool = false
+    ) throws -> DoctorReport {
         let checker = DoctorChecker(
             fileManager: fileManager,
             commandRunner: commandRunner,
@@ -190,7 +194,7 @@ public struct MacBayService {
             manifestStore: manifestStore,
             configStore: configStore
         )
-        return try checker.check(volumePath: volumePath)
+        return try checker.check(volumePath: volumePath, fix: fix, dryRun: dryRun)
     }
 
     public func references(paths: [String]) throws -> ReferenceReport {

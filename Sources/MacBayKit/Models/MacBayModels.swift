@@ -952,6 +952,38 @@ public struct DoctorSummary: Codable, Equatable, Sendable {
     }
 }
 
+public enum DoctorFixStatus: String, Codable, Equatable, Sendable {
+    case planned
+    case fixed
+    case failed
+    case skipped
+}
+
+/// Outcome of one attempted 'mb doctor --fix' action.
+public struct DoctorFix: Codable, Equatable, Identifiable, Sendable {
+    public let code: DoctorCode
+    public let name: String
+    public let paths: [String]
+    public let status: DoctorFixStatus
+    public let detail: String
+
+    public var id: String { "\(code.rawValue)|\(paths.joined(separator: "|"))" }
+
+    public init(
+        code: DoctorCode,
+        name: String,
+        paths: [String],
+        status: DoctorFixStatus,
+        detail: String
+    ) {
+        self.code = code
+        self.name = name
+        self.paths = paths
+        self.status = status
+        self.detail = detail
+    }
+}
+
 public struct DoctorReport: Codable, Equatable, Sendable {
     public let generatedAt: String
     public let volumes: [DoctorVolumeScope]
@@ -959,9 +991,17 @@ public struct DoctorReport: Codable, Equatable, Sendable {
     public let summary: DoctorSummary
     public let warnings: [String]
     public let notes: [String]
+    public let fixes: [DoctorFix]
 
     public var exitCode: Int32 {
-        summary.needsAttention + summary.unableToVerify > 0 ? 1 : 0
+        let unrecovered = summary.needsAttention + summary.unableToVerify
+        let fixFailed = fixes.contains { $0.status == .failed } ? 1 : 0
+        return unrecovered > 0 || fixFailed > 0 ? 1 : 0
+    }
+
+    /// Findings MacBay can repair itself when run with --fix.
+    public var autoFixableFindings: [DoctorFinding] {
+        findings.filter { $0.status == .needsAttention && $0.code.isAutoFixable }
     }
 
     public init(
@@ -970,7 +1010,8 @@ public struct DoctorReport: Codable, Equatable, Sendable {
         findings: [DoctorFinding],
         summary: DoctorSummary,
         warnings: [String],
-        notes: [String] = []
+        notes: [String] = [],
+        fixes: [DoctorFix] = []
     ) {
         self.generatedAt = generatedAt
         self.volumes = volumes
@@ -978,10 +1019,23 @@ public struct DoctorReport: Codable, Equatable, Sendable {
         self.summary = summary
         self.warnings = warnings
         self.notes = notes
+        self.fixes = fixes
+    }
+
+    public func withFixes(_ fixes: [DoctorFix]) -> DoctorReport {
+        DoctorReport(
+            generatedAt: generatedAt,
+            volumes: volumes,
+            findings: findings,
+            summary: summary,
+            warnings: warnings,
+            notes: notes,
+            fixes: fixes
+        )
     }
 
     private enum CodingKeys: String, CodingKey {
-        case generatedAt, volumes, findings, summary, warnings, notes
+        case generatedAt, volumes, findings, summary, warnings, notes, fixes
     }
 
     public init(from decoder: Decoder) throws {
@@ -992,6 +1046,7 @@ public struct DoctorReport: Codable, Equatable, Sendable {
         self.summary = try container.decode(DoctorSummary.self, forKey: .summary)
         self.warnings = try container.decodeIfPresent([String].self, forKey: .warnings) ?? []
         self.notes = try container.decodeIfPresent([String].self, forKey: .notes) ?? []
+        self.fixes = try container.decodeIfPresent([DoctorFix].self, forKey: .fixes) ?? []
     }
 }
 

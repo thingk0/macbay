@@ -967,6 +967,10 @@ public struct OutputFormatter {
             }
         }
 
+        if !report.fixes.isEmpty {
+            sections.append(fixSection(report.fixes))
+        }
+
         if !report.notes.isEmpty {
             var noteLines = [bold("Notes · \(report.notes.count)")]
             for note in report.notes {
@@ -1066,6 +1070,22 @@ public struct OutputFormatter {
                 line += " " + style(tag, color: finding.managed == true ? "36" : "33")
             }
             lines.append(line)
+        }
+        return lines
+    }
+
+    private func fixSection(_ fixes: [DoctorFix]) -> [String] {
+        var lines = [bold("Repairs · \(fixes.count)")]
+        for fix in fixes {
+            let marker: String
+            let color: String
+            switch fix.status {
+            case .fixed: marker = "✓"; color = "32"
+            case .planned: marker = "…"; color = "36"
+            case .failed: marker = "✗"; color = "31"
+            case .skipped: marker = "-"; color = "33"
+            }
+            lines.append("  " + style(marker, color: color) + " " + bold(fix.name) + " — " + fix.detail)
         }
         return lines
     }

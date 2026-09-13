@@ -91,12 +91,16 @@ final class DoctorCheckerTests: XCTestCase {
     private func check(
         _ checker: DoctorChecker,
         volumePath: String? = nil,
-        cacheTargets: [DeveloperCacheTarget] = []
+        cacheTargets: [DeveloperCacheTarget] = [],
+        fix: Bool = false,
+        dryRun: Bool = false
     ) throws -> DoctorReport {
         try checker.check(
             volumePath: volumePath,
             applicationDirectories: [appsDir],
-            developerCacheTargets: cacheTargets
+            developerCacheTargets: cacheTargets,
+            fix: fix,
+            dryRun: dryRun
         )
     }
 
@@ -844,6 +848,143 @@ final class DoctorCheckerTests: XCTestCase {
         XCTAssertEqual(matched.first?.name, "Orphaned.app")
         XCTAssertTrue(matched.first?.detail.contains("app_moved") == true)
         XCTAssertEqual(report.exitCode, 1)
+    }
+
+    func testFixRecreatesMissingSourceLink() throws {
+        // record_source_missing: 기록상 링크여야 할 소스가 없고 외장 사본은 존재 → --fix가 링크를 재생성한다.
+        let source = tempDir.appendingPathComponent("MovedData")
+        let external = volumeDir.appendingPathComponent("MacBay/Data/MovedData")
+        try createDirectory(at: external)
+        try saveManifest(items: [
+            makeItem(name: "MovedData", sourcePath: source.path, externalPath: external.path, kind: .directory)
+        ])
+
+        let before = try check(makeChecker())
+        XCTAssertEqual(findings(before, code: .recordSourceMissing).count, 1)
+        XCTAssertEqual(before.autoFixableFindings.count, 1)
+
+        let report = try check(makeChecker(), fix: true)
+        let fix = try XCTUnwrap(report.fixes.first)
+        XCTAssertEqual(fix.status, .fixed)
+        XCTAssertEqual(fix.code, .recordSourceMissing)
+
+        // 재검사 결과에서도 정상으로 전이됐는지 확인한다.
+        let target = try FileManager.default.destinationOfSymbolicLink(atPath: source.path)
+        XCTAssertEqual(target, external.path)
+        XCTAssertTrue(findings(report, code: .recordSourceMissing).isEmpty)
+        XCTAssertEqual(report.exitCode, 0)
+    }
+
+    func testFixRepointsBrokenLinkToRecordedCopy() throws {
+        // link_target_unavailable: 링크가 가리키는 곳이 없고, 기록된 외장 사본은 존재 → --fix가 재설정한다.
+        let source = tempDir.appendingPathComponent("Lib")
+        let external = volumeDir.appendingPathComponent("MacBay/Data/Lib")
+        try createDirectory(at: external)
+        try FileManager.default.createSymbolicLink(
+            atPath: source.path,
+            withDestinationPath: tempDir.appendingPathComponent("gone").path
+        )
+        try saveManifest(items: [
+            makeItem(name: "Lib", sourcePath: source.path, externalPath: external.path, kind: .directory)
+        ])
+
+        let report = try check(makeChecker(), fix: true)
+        let fix = try XCTUnwrap(report.fixes.first)
+        XCTAssertEqual(fix.status, .fixed)
+        XCTAssertEqual(fix.code, .linkTargetUnavailable)
+
+        XCTAssertEqual(
+            try FileManager.default.destinationOfSymbolicLink(atPath: source.path),
+            external.path
+        )
+        XCTAssertTrue(findings(report, code: .linkTargetUnavailable).isEmpty)
+    }
+
+    func testFixRepointsCircularLink() throws {
+        let source = tempDir.appendingPathComponent("Loop")
+        let external = volumeDir.appendingPathComponent("MacBay/Data/Loop")
+        try createDirectory(at: external)
+        try FileManager.default.createSymbolicLink(atPath: source.path, withDestinationPath: source.path)
+        try saveManifest(items: [
+            makeItem(name: "Loop", sourcePath: source.path, externalPath: external.path, kind: .directory)
+        ])
+
+        let report = try check(makeChecker(), fix: true)
+        let fix = try XCTUnwrap(report.fixes.first)
+        XCTAssertEqual(fix.code, .linkCircular)
+        XCTAssertEqual(fix.status, .fixed)
+        XCTAssertEqual(
+            try FileManager.default.destinationOfSymbolicLink(atPath: source.path),
+            external.path
+        )
+    }
+
+    func testFixSkipsWhenRecordedCopyIsMissing() throws {
+        // 외장 사본이 없으면 안전하게 고칠 수 없으므로 스킵한다.
+        let source = tempDir.appendingPathComponent("Lib")
+        let external = volumeDir.appendingPathComponent("MacBay/Data/Lib")
+        try FileManager.default.createSymbolicLink(
+            atPath: source.path,
+            withDestinationPath: tempDir.appendingPathComponent("gone").path
+        )
+        try saveManifest(items: [
+            makeItem(name: "Lib", sourcePath: source.path, externalPath: external.path, kind: .directory)
+        ])
+
+        let report = try check(makeChecker(), fix: true)
+        let fix = try XCTUnwrap(report.fixes.first)
+        XCTAssertEqual(fix.status, .skipped)
+        // 링크는 그대로 두고 파인딩도 유지된다.
+        XCTAssertEqual(findings(report, code: .linkTargetUnavailable).count, 1)
+    }
+
+    func testFixWithoutRecordIsSkipped() throws {
+        // 기록 없는 깨진 링크(캐시 대상 등록 경로)는 의도를 알 수 없어 스킵한다.
+        let cacheSource = tempDir.appendingPathComponent("cache")
+        try FileManager.default.createSymbolicLink(
+            atPath: cacheSource.path,
+            withDestinationPath: tempDir.appendingPathComponent("gone").path
+        )
+        let report = try check(
+            makeChecker(),
+            cacheTargets: [DeveloperCacheTarget(name: "cache", path: cacheSource)],
+            fix: true
+        )
+        let fix = try XCTUnwrap(report.fixes.first)
+        XCTAssertEqual(fix.status, .skipped)
+        XCTAssertEqual(fix.code, .linkTargetUnavailable)
+    }
+
+    func testFixDryRunPlansWithoutChangingAnything() throws {
+        let source = tempDir.appendingPathComponent("MovedData")
+        let external = volumeDir.appendingPathComponent("MacBay/Data/MovedData")
+        try createDirectory(at: external)
+        try saveManifest(items: [
+            makeItem(name: "MovedData", sourcePath: source.path, externalPath: external.path, kind: .directory)
+        ])
+
+        let report = try check(makeChecker(), fix: true, dryRun: true)
+        let fix = try XCTUnwrap(report.fixes.first)
+        XCTAssertEqual(fix.status, .planned)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: source.path))
+        // dry-run은 원래 파인딩을 그대로 보고한다.
+        XCTAssertEqual(findings(report, code: .recordSourceMissing).count, 1)
+    }
+
+    func testFixReportsUnfixableFindingsAsSkipped() throws {
+        // localDataDetected 같은 판단이 필요한 파인딩은 자동으로 고치지 않는다.
+        let source = tempDir.appendingPathComponent("Conflict")
+        let external = volumeDir.appendingPathComponent("MacBay/Data/Conflict")
+        try createDirectory(at: external)
+        try createDirectory(at: source)
+        try saveManifest(items: [
+            makeItem(name: "Conflict", sourcePath: source.path, externalPath: external.path, kind: .directory)
+        ])
+
+        let report = try check(makeChecker(), fix: true)
+        let fix = try XCTUnwrap(report.fixes.first)
+        XCTAssertEqual(fix.code, .localDataDetected)
+        XCTAssertEqual(fix.status, .skipped)
     }
 
     private func snapshot(of root: URL) throws -> [String] {

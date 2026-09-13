@@ -243,7 +243,7 @@ mb scan --verbose
 
 ### 3. 링크·기록 진단
 
-애플리케이션 링크, 개발자 캐시 링크, 연결된 볼륨의 MacBay 기록이 실제 상태와 일치하는지 확인합니다. `doctor`는 읽기 전용이며 파일을 변경하지 않습니다:
+애플리케이션 링크, 개발자 캐시 링크, 연결된 볼륨의 MacBay 기록이 실제 상태와 일치하는지 확인합니다. `--fix`를 주지 않으면 `doctor`는 읽기 전용이며 파일을 변경하지 않습니다:
 
 ```sh
 mb doctor
@@ -340,7 +340,15 @@ mb doctor
 
 # /Volumes 밖에 마운트된 볼륨을 추가 검사
 mb doctor --volume /Volumes/Archive
+
+# 자명한 문제 자동 복구: 기록된 원본 경로가 사라져 없어진 링크를 다시 만들고,
+# 끊어지거나 순환한 링크를 기록된 외장 사본으로 다시 연결
+mb doctor --fix            # 실행 전 확인 프롬프트
+mb doctor --fix --yes      # 확인 생략
+mb doctor --fix --dry-run  # 변경 없이 복구 계획만 확인
 ```
+
+**`--fix`가 복구하는 범위**: 매니페스트 기록이 정답이고 판단 여지가 없는 경우뿐입니다 — `record_source_missing`(기록된 원본 경로가 사라지고 외장 사본은 남아 있음 → 심볼릭 링크 재생성)와 `link_target_unavailable`/`link_circular`(링크가 쓸 수 없고 존재하는 외장 사본의 기록이 있음 → 링크 재설정). 링크는 항상 볼륨의 `MacBay/` 레이아웃 안쪽 경로로만 재연결되며, 복구가 실패해도 데이터를 삭제하지 않습니다. 판단이 필요한 파인딩(`local_data_detected`, `record_target_missing`, `link_record_mismatch`, 볼륨·매니페스트 문제, 미완료 작업)은 `Repairs` 섹션에서 건너뛴 것으로 보고하고, 복구 후에는 다시 검사해 요약이 최종 상태를 반영합니다.
 
 **검사 항목**:
 1. **애플리케이션 링크**: `/Applications`의 모든 심볼릭 링크를 해석합니다(상대·연쇄·순환 링크 포함).

@@ -41,7 +41,9 @@ public struct DoctorChecker {
     public func check(
         volumePath: String? = nil,
         applicationDirectories: [URL] = [URL(fileURLWithPath: "/Applications")],
-        developerCacheTargets: [DeveloperCacheTarget] = AppScanner.defaultDeveloperCacheTargets()
+        developerCacheTargets: [DeveloperCacheTarget] = AppScanner.defaultDeveloperCacheTargets(),
+        fix: Bool = false,
+        dryRun: Bool = false
     ) throws -> DoctorReport {
         var warnings: [String] = []
         var findings: [DoctorFinding] = []
@@ -295,7 +297,7 @@ public struct DoctorChecker {
             unableToVerify: findings.filter { $0.status == .unableToVerify }.count
         )
 
-        return DoctorReport(
+        var report = DoctorReport(
             generatedAt: macBayTimestamp(),
             volumes: consulted.map(\.scope),
             findings: findings,
@@ -303,6 +305,163 @@ public struct DoctorChecker {
             warnings: warnings,
             notes: notes(for: consulted)
         )
+
+        guard fix else { return report }
+        let fixes = applyFixes(findings: findings, consulted: consulted, dryRun: dryRun)
+        guard !dryRun, fixes.contains(where: { $0.status == .fixed }) else {
+            return report.withFixes(fixes)
+        }
+        // Re-scan so the report reflects the post-fix state, then attach the fixes.
+        report = try check(
+            volumePath: volumePath,
+            applicationDirectories: applicationDirectories,
+            developerCacheTargets: developerCacheTargets
+        )
+        return report.withFixes(fixes)
+    }
+
+    /// 'mb doctor --fix' can repair only the cases where the manifest already says
+    /// what the correct state is: a link whose recorded external copy exists can be
+    /// repointed/recreated without guessing. Everything else stays manual.
+    private func applyFixes(
+        findings: [DoctorFinding],
+        consulted: [ConsultedVolume],
+        dryRun: Bool
+    ) -> [DoctorFix] {
+        var fixes: [DoctorFix] = []
+        for finding in findings where finding.status == .needsAttention {
+            switch finding.code {
+            case .recordSourceMissing:
+                fixes.append(fixMissingSource(finding, consulted: consulted, dryRun: dryRun))
+            case .linkTargetUnavailable, .linkCircular:
+                fixes.append(fixUnreachableLink(finding, consulted: consulted, dryRun: dryRun))
+            default:
+                fixes.append(DoctorFix(
+                    code: finding.code,
+                    name: finding.name,
+                    paths: finding.paths,
+                    status: .skipped,
+                    detail: "No automatic fix is available; follow the recommendation for this finding."
+                ))
+            }
+        }
+        return fixes
+    }
+
+    /// record_source_missing: the record says the source should be a link, the source
+    /// path is gone, and the recorded copy exists — recreate the symlink.
+    private func fixMissingSource(
+        _ finding: DoctorFinding,
+        consulted: [ConsultedVolume],
+        dryRun: Bool
+    ) -> DoctorFix {
+        let source = finding.paths.first ?? ""
+        let match = recordedItem(forSourcePath: source, in: consulted)
+        let external = match?.item.externalPath ?? (finding.paths.count > 1 ? finding.paths[1] : "")
+        guard let match, fileManager.fileExists(atPath: external),
+              isUnderManagedRoot(external, onMountPoint: match.mountPoint)
+        else {
+            return DoctorFix(
+                code: finding.code, name: finding.name, paths: finding.paths,
+                status: .skipped,
+                detail: "The recorded external copy is not available; cannot recreate the link."
+            )
+        }
+        guard !dryRun else {
+            return DoctorFix(
+                code: finding.code, name: finding.name, paths: finding.paths,
+                status: .planned,
+                detail: "Would recreate the link at \(source) -> \(external)"
+            )
+        }
+        do {
+            let sourceURL = URL(fileURLWithPath: source)
+            try fileManager.createDirectory(at: sourceURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try fileManager.createSymbolicLink(atPath: source, withDestinationPath: external)
+            return DoctorFix(
+                code: finding.code, name: finding.name, paths: finding.paths,
+                status: .fixed,
+                detail: "Recreated the link to the recorded copy at \(external)"
+            )
+        } catch {
+            return DoctorFix(
+                code: finding.code, name: finding.name, paths: finding.paths,
+                status: .failed,
+                detail: "Could not recreate the link: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    /// link_target_unavailable / link_circular: the link is unusable, a manifest record
+    /// exists for the source, and the recorded copy exists — repoint the link to it.
+    private func fixUnreachableLink(
+        _ finding: DoctorFinding,
+        consulted: [ConsultedVolume],
+        dryRun: Bool
+    ) -> DoctorFix {
+        let source = finding.paths.first ?? ""
+        guard let match = recordedItem(forSourcePath: source, in: consulted) else {
+            return DoctorFix(
+                code: finding.code, name: finding.name, paths: finding.paths,
+                status: .skipped,
+                detail: "No MacBay record for this link; reconnect the volume or relocate the copy manually."
+            )
+        }
+        guard fileManager.fileExists(atPath: match.item.externalPath),
+              isUnderManagedRoot(match.item.externalPath, onMountPoint: match.mountPoint)
+        else {
+            return DoctorFix(
+                code: finding.code, name: finding.name, paths: finding.paths,
+                status: .skipped,
+                detail: "The recorded copy is still missing at \(match.item.externalPath); reconnect the volume first."
+            )
+        }
+        guard !dryRun else {
+            return DoctorFix(
+                code: finding.code, name: finding.name, paths: finding.paths,
+                status: .planned,
+                detail: "Would repoint the link at \(source) -> \(match.item.externalPath)"
+            )
+        }
+        do {
+            try fileManager.removeItem(at: URL(fileURLWithPath: source))
+            try fileManager.createSymbolicLink(atPath: source, withDestinationPath: match.item.externalPath)
+            return DoctorFix(
+                code: finding.code, name: finding.name, paths: finding.paths,
+                status: .fixed,
+                detail: "Repointed the link to the recorded copy at \(match.item.externalPath)"
+            )
+        } catch {
+            return DoctorFix(
+                code: finding.code, name: finding.name, paths: finding.paths,
+                status: .failed,
+                detail: "Could not repoint the link: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    private func recordedItem(
+        forSourcePath sourcePath: String,
+        in consulted: [ConsultedVolume]
+    ) -> (item: DockedItem, mountPoint: String)? {
+        let standardized = URL(fileURLWithPath: sourcePath).standardizedFileURL.path
+        for volume in consulted {
+            for item in volume.manifest?.items ?? [] {
+                let itemSource = URL(fileURLWithPath: item.sourcePath).standardizedFileURL.path
+                if itemSource.caseInsensitiveCompare(standardized) == .orderedSame {
+                    return (item, volume.info.mountPoint)
+                }
+            }
+        }
+        return nil
+    }
+
+    /// Links are only ever repointed to paths inside a volume's MacBay layout,
+    /// so a hand-edited record cannot redirect a link to an arbitrary path.
+    private func isUnderManagedRoot(_ path: String, onMountPoint mountPoint: String?) -> Bool {
+        guard let mountPoint else { return false }
+        let root = MacBayPaths.externalRoot(on: URL(fileURLWithPath: mountPoint)).standardizedFileURL.path
+        return URL(fileURLWithPath: path).standardizedFileURL.path.hasPrefix(root + "/")
     }
 
     private func inspectRecord(_ item: DockedItem) -> DoctorFinding {
@@ -584,6 +743,21 @@ public struct DoctorChecker {
         case .externalReference: return 3
         case .volume: return 4
         @unknown default: return 5
+        }
+    }
+}
+
+extension DoctorCode {
+    /// Codes 'mb doctor --fix' can repair on its own: in each case the manifest
+    /// record is authoritative and the correct link state is unambiguous.
+    /// Findings that need a judgment call (data conflicts, missing copies,
+    /// volume problems) are never auto-fixed.
+    public var isAutoFixable: Bool {
+        switch self {
+        case .linkTargetUnavailable, .linkCircular, .recordSourceMissing:
+            return true
+        default:
+            return false
         }
     }
 }

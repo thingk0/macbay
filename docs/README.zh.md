@@ -242,7 +242,7 @@ mb scan --verbose
 
 ### 3. 链接与记录诊断
 
-检查应用程序链接、开发者缓存链接，以及已连接卷中的 MacBay 记录是否与实际情况一致。`doctor` 为只读命令，不会修改任何文件：
+检查应用程序链接、开发者缓存链接，以及已连接卷中的 MacBay 记录是否与实际情况一致。未加 `--fix` 时 `doctor` 为只读命令，不会修改任何文件：
 
 ```sh
 mb doctor
@@ -338,7 +338,15 @@ mb doctor
 
 # 额外检查未挂载在 /Volumes 下的卷
 mb doctor --volume /Volumes/Archive
+
+# 自动修复无需人工判断的问题：重建因记录源路径缺失而丢失的链接，
+# 将失效或循环的链接重新指向已记录的外部副本
+mb doctor --fix            # 执行前需确认
+mb doctor --fix --yes      # 跳过确认
+mb doctor --fix --dry-run  # 仅预览修复计划，不修改文件
 ```
+
+**`--fix` 的修复范围**：仅限清单记录为权威且结果无歧义的情形 —— `record_source_missing`（记录的源路径消失但外部副本仍存在 → 重新创建符号链接）与 `link_target_unavailable`/`link_circular`（链接不可用且存在指向有效外部副本的记录 → 重新指向）。链接只会被重新指向卷的 `MacBay/` 布局内的路径；修复失败也不会删除任何数据。需要人工判断的发现（`local_data_detected`、`record_target_missing`、`link_record_mismatch`、卷或清单问题、未完成的操作）会在 `Repairs` 部分中标记为跳过；修复完成后会重新扫描，使摘要反映修复后的状态。
 
 **检查内容**：
 1. **应用程序链接**：解析 `/Applications` 中的所有符号链接（包括相对链接、链式链接与循环链接）。

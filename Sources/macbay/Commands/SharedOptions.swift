@@ -46,6 +46,21 @@ struct DoctorOptions: ParsableArguments {
     )
     var volume: String?
 
+    @Flag(
+        name: .long,
+        help: "Automatically repair unambiguous findings (missing/broken links whose recorded copy exists)."
+    )
+    var fix = false
+
+    @Flag(
+        name: [.customShort("y"), .long],
+        help: "Skip confirmation prompts (only relevant with --fix)."
+    )
+    var yes = false
+
+    @Flag(name: .long, help: "Preview repairs without modifying files (only relevant with --fix).")
+    var dryRun = false
+
     @Flag(name: .long, help: "Output machine-readable JSON.")
     var json = false
 }
