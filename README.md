@@ -344,14 +344,14 @@ mb doctor
 # Inspect an additional volume that is not mounted under /Volumes
 mb doctor --volume /Volumes/Archive
 
-# Repair unambiguous findings: recreate links whose recorded source is missing,
-# and repoint broken or circular links to their recorded external copies
-mb doctor --fix          # asks for confirmation first
+# Repair unambiguous findings: repoint broken or circular links to their
+# recorded external copies
+mb doctor --fix          # shows the exact repairs and asks for confirmation
 mb doctor --fix --yes    # skip the confirmation prompt
 mb doctor --fix --dry-run # preview the planned repairs without changing files
 ```
 
-**What `--fix` repairs**: only findings where the manifest record is authoritative and the correct state is unambiguous — `record_source_missing` (the recorded source path vanished while the external copy exists → the symlink is recreated) and `link_target_unavailable`/`link_circular` (the link is unusable and a record with an existing external copy exists → the link is repointed). Links are only ever repointed to paths inside a volume's `MacBay/` layout, and a failed repair never deletes data. Findings that need a judgment call (`local_data_detected`, `record_target_missing`, `link_record_mismatch`, volume or manifest problems, incomplete operations) are reported as skipped in the `Repairs` section, and the report is re-scanned after fixing so the summary reflects the post-repair state.
+**What `--fix` repairs**: only `link_target_unavailable`/`link_circular` findings where exactly one manifest record claims the source and its recorded external copy exists — the link is repointed to that copy. Links are only ever repointed to paths inside a volume's `MacBay/` layout, the path is re-verified to still be a link right before it is replaced, repairs run under the same per-volume lock as `dock`/`repair`, and a failed repair never deletes data. `record_source_missing` is deliberately not auto-fixed — a missing source link is often an intentional removal — and is reported as skipped together with the other judgment-call findings (`local_data_detected`, `record_target_missing`, `link_record_mismatch`, volume or manifest problems, incomplete operations) in the `Repairs` section. The report is re-scanned after fixing so the summary reflects the post-repair state.
 
 **What it checks**:
 1. **Application links**: Every symlink in `/Applications` is resolved (relative, chained, and circular links included).
@@ -368,7 +368,7 @@ mb doctor --fix --dry-run # preview the planned repairs without changing files
 **Exit codes**: `0` healthy, `1` problems or unverifiable items found, `2` the check itself failed.
 
 > [!IMPORTANT]
-> `doctor` is read-only. It does not delete, move, or repair anything, and it does not keep records on the internal drive, so a detached external volume cannot be verified until it is reconnected.
+> By default `doctor` is read-only — `--fix` is the only mode that writes, and it only repoints symlinks. It does not delete or move data, and it does not keep records on the internal drive, so a detached external volume cannot be verified until it is reconnected.
 
 ### Inspecting Stored App Paths (`references`)
 

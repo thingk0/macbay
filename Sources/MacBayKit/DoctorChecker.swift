@@ -14,13 +14,15 @@ public struct DoctorChecker {
     private let symlinkResolver: SymlinkResolver
     private let sizeCalculator: FileSizeCalculator
     private let operationJournal: OperationJournal
+    private let operationLock: any VolumeOperationLocking
 
     public init(
         fileManager: FileManager = .default,
         commandRunner: any CommandRunner = SystemCommandRunner(),
         volumeManager: VolumeManager? = nil,
         manifestStore: ManifestStore? = nil,
-        configStore: ConfigStore? = nil
+        configStore: ConfigStore? = nil,
+        operationLock: any VolumeOperationLocking = VolumeOperationLock()
     ) {
         self.fileManager = fileManager
         self.volumeManager = volumeManager ?? VolumeManager(
@@ -32,6 +34,7 @@ public struct DoctorChecker {
         self.symlinkResolver = SymlinkResolver(fileManager: fileManager)
         self.sizeCalculator = FileSizeCalculator(fileManager: fileManager)
         self.operationJournal = OperationJournal(fileManager: fileManager)
+        self.operationLock = operationLock
         self.repairJournal = DarwinRepairJournal(fileManager: fileManager)
     }
 
@@ -322,7 +325,7 @@ public struct DoctorChecker {
 
     /// 'mb doctor --fix' can repair only the cases where the manifest already says
     /// what the correct state is: a link whose recorded external copy exists can be
-    /// repointed/recreated without guessing. Everything else stays manual.
+    /// repointed without guessing. Everything else stays manual.
     private func applyFixes(
         findings: [DoctorFinding],
         consulted: [ConsultedVolume],
@@ -331,8 +334,6 @@ public struct DoctorChecker {
         var fixes: [DoctorFix] = []
         for finding in findings where finding.status == .needsAttention {
             switch finding.code {
-            case .recordSourceMissing:
-                fixes.append(fixMissingSource(finding, consulted: consulted, dryRun: dryRun))
             case .linkTargetUnavailable, .linkCircular:
                 fixes.append(fixUnreachableLink(finding, consulted: consulted, dryRun: dryRun))
             default:
@@ -348,50 +349,6 @@ public struct DoctorChecker {
         return fixes
     }
 
-    /// record_source_missing: the record says the source should be a link, the source
-    /// path is gone, and the recorded copy exists — recreate the symlink.
-    private func fixMissingSource(
-        _ finding: DoctorFinding,
-        consulted: [ConsultedVolume],
-        dryRun: Bool
-    ) -> DoctorFix {
-        let source = finding.paths.first ?? ""
-        let match = recordedItem(forSourcePath: source, in: consulted)
-        let external = match?.item.externalPath ?? (finding.paths.count > 1 ? finding.paths[1] : "")
-        guard let match, fileManager.fileExists(atPath: external),
-              isUnderManagedRoot(external, onMountPoint: match.mountPoint)
-        else {
-            return DoctorFix(
-                code: finding.code, name: finding.name, paths: finding.paths,
-                status: .skipped,
-                detail: "The recorded external copy is not available; cannot recreate the link."
-            )
-        }
-        guard !dryRun else {
-            return DoctorFix(
-                code: finding.code, name: finding.name, paths: finding.paths,
-                status: .planned,
-                detail: "Would recreate the link at \(source) -> \(external)"
-            )
-        }
-        do {
-            let sourceURL = URL(fileURLWithPath: source)
-            try fileManager.createDirectory(at: sourceURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try fileManager.createSymbolicLink(atPath: source, withDestinationPath: external)
-            return DoctorFix(
-                code: finding.code, name: finding.name, paths: finding.paths,
-                status: .fixed,
-                detail: "Recreated the link to the recorded copy at \(external)"
-            )
-        } catch {
-            return DoctorFix(
-                code: finding.code, name: finding.name, paths: finding.paths,
-                status: .failed,
-                detail: "Could not recreate the link: \(error.localizedDescription)"
-            )
-        }
-    }
-
     /// link_target_unavailable / link_circular: the link is unusable, a manifest record
     /// exists for the source, and the recorded copy exists — repoint the link to it.
     private func fixUnreachableLink(
@@ -400,20 +357,24 @@ public struct DoctorChecker {
         dryRun: Bool
     ) -> DoctorFix {
         let source = finding.paths.first ?? ""
-        guard let match = recordedItem(forSourcePath: source, in: consulted) else {
+        // The same source may have stale records on more than one volume; only
+        // a single live recorded copy makes the correct target unambiguous.
+        let candidates = recordedItems(forSourcePath: source, in: consulted).filter {
+            fileManager.fileExists(atPath: $0.item.externalPath)
+                && isUnderManagedRoot($0.item.externalPath, onMountPoint: $0.mountPoint)
+        }
+        guard let match = candidates.first else {
             return DoctorFix(
                 code: finding.code, name: finding.name, paths: finding.paths,
                 status: .skipped,
-                detail: "No MacBay record for this link; reconnect the volume or relocate the copy manually."
+                detail: "No MacBay record with a live external copy for this link; reconnect the volume or relocate the copy manually."
             )
         }
-        guard fileManager.fileExists(atPath: match.item.externalPath),
-              isUnderManagedRoot(match.item.externalPath, onMountPoint: match.mountPoint)
-        else {
+        guard candidates.count == 1 else {
             return DoctorFix(
                 code: finding.code, name: finding.name, paths: finding.paths,
                 status: .skipped,
-                detail: "The recorded copy is still missing at \(match.item.externalPath); reconnect the volume first."
+                detail: "Multiple records claim this source (\(candidates.map { $0.item.externalPath }.joined(separator: ", "))); resolve the duplicate records first."
             )
         }
         guard !dryRun else {
@@ -424,13 +385,24 @@ public struct DoctorChecker {
             )
         }
         do {
-            try fileManager.removeItem(at: URL(fileURLWithPath: source))
-            try fileManager.createSymbolicLink(atPath: source, withDestinationPath: match.item.externalPath)
-            return DoctorFix(
-                code: finding.code, name: finding.name, paths: finding.paths,
-                status: .fixed,
-                detail: "Repointed the link to the recorded copy at \(match.item.externalPath)"
-            )
+            return try operationLock.withVolumeLock(on: URL(fileURLWithPath: match.mountPoint)) {
+                // Re-check inside the lock: the path must still be a link, not
+                // data that replaced it between the scan and the fix.
+                guard isSymbolicLink(at: source) else {
+                    return DoctorFix(
+                        code: finding.code, name: finding.name, paths: finding.paths,
+                        status: .skipped,
+                        detail: "The path at \(source) is no longer a link; leaving it untouched."
+                    )
+                }
+                try fileManager.removeItem(at: URL(fileURLWithPath: source))
+                try fileManager.createSymbolicLink(atPath: source, withDestinationPath: match.item.externalPath)
+                return DoctorFix(
+                    code: finding.code, name: finding.name, paths: finding.paths,
+                    status: .fixed,
+                    detail: "Repointed the link to the recorded copy at \(match.item.externalPath)"
+                )
+            }
         } catch {
             return DoctorFix(
                 code: finding.code, name: finding.name, paths: finding.paths,
@@ -440,20 +412,21 @@ public struct DoctorChecker {
         }
     }
 
-    private func recordedItem(
+    private func recordedItems(
         forSourcePath sourcePath: String,
         in consulted: [ConsultedVolume]
-    ) -> (item: DockedItem, mountPoint: String)? {
+    ) -> [(item: DockedItem, mountPoint: String)] {
         let standardized = URL(fileURLWithPath: sourcePath).standardizedFileURL.path
+        var matches: [(item: DockedItem, mountPoint: String)] = []
         for volume in consulted {
             for item in volume.manifest?.items ?? [] {
                 let itemSource = URL(fileURLWithPath: item.sourcePath).standardizedFileURL.path
                 if itemSource.caseInsensitiveCompare(standardized) == .orderedSame {
-                    return (item, volume.info.mountPoint)
+                    matches.append((item, volume.info.mountPoint))
                 }
             }
         }
-        return nil
+        return matches
     }
 
     /// Links are only ever repointed to paths inside a volume's MacBay layout,
@@ -750,11 +723,13 @@ public struct DoctorChecker {
 extension DoctorCode {
     /// Codes 'mb doctor --fix' can repair on its own: in each case the manifest
     /// record is authoritative and the correct link state is unambiguous.
+    /// record_source_missing stays manual — a deleted source link is often
+    /// intentional, so recreating it silently would resurrect removed items.
     /// Findings that need a judgment call (data conflicts, missing copies,
     /// volume problems) are never auto-fixed.
     public var isAutoFixable: Bool {
         switch self {
-        case .linkTargetUnavailable, .linkCircular, .recordSourceMissing:
+        case .linkTargetUnavailable, .linkCircular:
             return true
         default:
             return false
