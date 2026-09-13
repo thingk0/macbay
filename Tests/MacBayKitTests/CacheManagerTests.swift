@@ -155,10 +155,14 @@ final class CacheManagerTests: XCTestCase {
         try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: locked.path)
         try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: modDir.path)
 
-        let manager = CacheManager(homeDirectory: homeDir)
+        // ditto/lsof는 스텁으로 대체 — 검증 대상은 읽기전용 소스 트리의 "제거"다.
+        let manager = CacheManager(
+            commandRunner: TestBundleCommandRunner(entitlementsXml: ""),
+            homeDirectory: homeDir
+        )
         let report = try manager.enable(on: volumeURL, dryRun: false)
 
-        XCTAssertTrue(report.failures.isEmpty)
+        XCTAssertTrue(report.failures.isEmpty, "failures: \(report.failures)")
         XCTAssertNotNil(try? FileManager.default.destinationOfSymbolicLink(atPath: modDir.path))
         XCTAssertTrue(FileManager.default.fileExists(
             atPath: MacBayPaths.cachesRoot(on: volumeURL)
