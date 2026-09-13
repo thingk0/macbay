@@ -36,5 +36,8 @@ struct CacheCommand: ParsableCommand {
             reset: reset
         )
         try CommandSupport.printValue(report, json: options.json) { $0.cache(report) }
+        if report.exitCode != 0 {
+            throw ExitCode(report.exitCode)
+        }
     }
 }

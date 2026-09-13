@@ -457,6 +457,12 @@ public struct OutputFormatter {
             lines.append("Cache routing: \(report.enabled ? "enabled" : "preview")")
             lines.append("Shell configuration: \(report.shellConfigurationPath)")
             lines.append(contentsOf: report.targets.map { migration($0) })
+            if !report.failures.isEmpty {
+                lines.append(bold("Failed · \(report.failures.count)"))
+                for failure in report.failures {
+                    lines.append("  • \(failure.path) — \(failure.reason)")
+                }
+            }
         }
         return lines.joined(separator: "\n")
     }

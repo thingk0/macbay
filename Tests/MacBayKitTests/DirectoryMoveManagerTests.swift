@@ -27,8 +27,9 @@ final class DirectoryMoveManagerTests: XCTestCase {
     }
 
     override func tearDownWithError() throws {
-        try? FileManager.default.removeItem(at: tempDir)
-        try? FileManager.default.removeItem(at: homeBase)
+        // 읽기 전용 디렉터리 케이스가 남을 수 있으므로 쓰기 가능하게 만들고 지운다.
+        try? FileManager.default.removeItemMakingWritable(at: tempDir)
+        try? FileManager.default.removeItemMakingWritable(at: homeBase)
         try super.tearDownWithError()
     }
 
@@ -159,13 +160,93 @@ final class DirectoryMoveManagerTests: XCTestCase {
 
     func testMoveRejectsProtectedPaths() throws {
         let manager = makeManager()
-        for path in ["/", "/System", "/Library", "/Volumes", FileManager.default.homeDirectoryForCurrentUser.path] {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        // 존재하지 않을 수 있는 보호 경로는 미리 만들어 pathMissing 가드를 통과시킨다.
+        let candidates = [
+            home.appendingPathComponent("Library/Mail").path,
+            home.appendingPathComponent("Library/Keychains").path,
+            home.appendingPathComponent("Library/Developer").path,
+            home.appendingPathComponent("Library/Mobile Documents").path,
+            home.appendingPathComponent("Library/Group Containers").path,
+            home.appendingPathComponent(".ssh").path,
+            home.appendingPathComponent(".cargo").path
+        ]
+        var created: [URL] = []
+        for candidate in candidates
+        where !FileManager.default.fileExists(atPath: candidate) {
+            try FileManager.default.createDirectory(
+                at: URL(fileURLWithPath: candidate),
+                withIntermediateDirectories: true
+            )
+            created.append(URL(fileURLWithPath: candidate))
+        }
+        defer {
+            for url in created { try? FileManager.default.removeItem(at: url) }
+        }
+
+        for path in ["/", "/System", "/Library", "/Volumes", home.path] + candidates + [
+            home.appendingPathComponent("Library/Containers").path,
+            home.appendingPathComponent("Library/Application Support").path,
+            home.appendingPathComponent("Library/Caches").path
+        ] {
             XCTAssertThrowsError(try manager.move(path: path, on: volumeDir, dryRun: false)) { error in
                 guard case MacBayError.unsupportedOperation = error else {
                     return XCTFail("Expected unsupportedOperation for \(path), got \(error)")
                 }
             }
         }
+    }
+
+    func testMoveRejectsManagedCacheTarget() throws {
+        let manager = makeManager()
+        let goMod = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("go/pkg/mod")
+        // 사용자 실제 modcache가 이미 있으면 삭제하면 안 되므로 존재 여부를 먼저 본다.
+        let preexisting = FileManager.default.fileExists(atPath: goMod.path)
+        if !preexisting {
+            try FileManager.default.createDirectory(at: goMod, withIntermediateDirectories: true)
+        }
+        defer {
+            if !preexisting {
+                let goRoot = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("go")
+                try? FileManager.default.removeItemMakingWritable(at: goMod)
+                if !FileManager.default.fileExists(atPath: goRoot.path) ||
+                   (try? FileManager.default.contentsOfDirectory(atPath: goRoot.path))?.isEmpty == true {
+                    try? FileManager.default.removeItem(at: goRoot)
+                }
+            }
+        }
+
+        XCTAssertThrowsError(try manager.move(path: goMod.path, on: volumeDir, dryRun: false)) { error in
+            guard case let MacBayError.unsupportedOperation(message) = error else {
+                return XCTFail("Expected unsupportedOperation, got \(error)")
+            }
+            XCTAssertTrue(message.contains("mb cache"))
+        }
+    }
+
+    func testMoveHandlesReadOnlyDirectoryContents() throws {
+        // Go 모듈 캐시처럼 읽기 전용 하위 디렉터리가 있어도 move가 완료되어야 한다.
+        let manager = makeManager()
+        let source = homeBase.appendingPathComponent("ModCache")
+        let locked = source.appendingPathComponent("locked")
+        try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: true)
+        try Data("x".utf8).write(to: locked.appendingPathComponent("f.txt"))
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o500],
+            ofItemAtPath: locked.path
+        )
+
+        _ = try manager.move(path: source.path, on: volumeDir, dryRun: false)
+
+        XCTAssertNotNil(try? FileManager.default.destinationOfSymbolicLink(atPath: source.path))
+        let destination = MacBayPaths.dataRoot(on: volumeDir).appendingPathComponent("ModCache")
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: destination.appendingPathComponent("locked/f.txt").path
+        ))
+        // 원본은 백업까지 완전히 제거되어야 한다.
+        let leftovers = (try? FileManager.default.contentsOfDirectory(atPath: homeBase.path)) ?? []
+        XCTAssertFalse(leftovers.contains { $0.hasPrefix(".ModCache.macbay-") })
     }
 
     func testMoveRejectsNonDirectoryAndSymlink() throws {

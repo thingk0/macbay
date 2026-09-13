@@ -537,7 +537,7 @@ mb unmove ~/Games
 ```
 
 **동작 방식**:
-1. **검증**: 심볼릭 링크, 비-디렉터리, `.app` 번들(`mb dock` 사용), 보호된 시스템 위치(`/System`, `/Library`, `/usr`, `/Applications`, `/Volumes`, 홈 루트, `~/Library` 등), 이미 비내장 볼륨에 있는 소스를 거부합니다.
+1. **검증**: 심볼릭 링크, 비-디렉터리, `.app` 번들(`mb dock` 사용), 보호된 시스템 위치(`/System`, `/Library`, `/usr`, `/Applications`, `/Volumes`, 홈 루트, `~/Library` 등), 이미 비내장 볼륨에 있는 소스, 그리고 `mb cache`가 이미 관리하는 경로를 거부합니다. `~/Library` 안에서는 `Containers`, `Group Containers`, `Mobile Documents`, `Keychains`, `Mail`, `Preferences`, `Developer` 등 공유/시스템 하위 트리는 옮길 수 없고, `~/.ssh`, `~/.gnupg`, `~/.cargo`, `~/.rustup` 같은 자격 증명 디렉터리도 차단됩니다. `Application Support`와 `Caches` 루트 자체는 차단되지만 그 하위 디렉터리는 옮길 수 있습니다(예: `~/Library/Application Support/Steam`).
 2. **안전성**: 실행 중인 프로세스(`lsof`)와 SQLite 잠금을 확인하고, 디렉터리 크기를 측정하며, 외장 여유 공간을 미리 보여줍니다.
 3. **복사 및 링크**: `ditto`로 진행률 샘플링과 함께 복사한 뒤, 소스를 심볼릭 링크로 원자적으로 교체합니다.
 4. **매니페스트**: `<Volume>/MacBay/manifest.json`에 이전을 기록하여 `mb unmove` 또는 `mb teardown`으로 복원할 수 있게 합니다.
@@ -580,8 +580,7 @@ mb cache --reset
 관리 대상 캐시 목록:
 - `npm`: `npm_config_cache`
 - `pnpm store`: `npm_config_store_dir`
-- `Yarn v1 캐시`: 링크 전용 (`YARN_CACHE_FOLDER` export는 변수를 공유하는 아래 Berry 대상이 담당)
-- `Yarn Berry 캐시`: `YARN_CACHE_FOLDER`
+- `Yarn 캐시`: `YARN_CACHE_FOLDER` — Yarn v1과 Berry가 모두 이 변수를 존중하므로 export 하나로 둘 다 라우팅됩니다
 - `bun 캐시`: `BUN_INSTALL_CACHE_DIR`
 - `uv`: `UV_CACHE_DIR`
 - `pip`: `PIP_CACHE_DIR`
@@ -613,7 +612,7 @@ mb teardown --volume /Volumes/ExternalSSD
 **동작 방식**:
 1. **기록 복원**: 연결된 각 적격 볼륨(또는 `--volume`)의 모든 매니페스트 항목을 복원합니다 — 애플리케이션은 `undock`, move된 디렉터리는 `unmove` 경로로.
 2. **알려진 링크 정리**: 매니페스트 기록 없이 심볼릭 링크로 남은 개발자 위치(Xcode 대상, 캐시 대상)를 정리합니다: `MacBay/Caches/` 안의 링크는 제거 후 빈 디렉터리로 교체하고(외장 사본은 비관리 보관본으로 유지), 다른 `MacBay/` 루트의 링크는 내장으로 완전히 복원합니다.
-3. **설정 초기화**: `~/.zshrc`의 관리 블록을 제거하고 저장된 기본 볼륨을 잊습니다.
+3. **설정 초기화**: 실패가 없는 *전체* teardown(`--volume` 생략)일 때만 `~/.zshrc`의 관리 블록을 제거하고 저장된 기본 볼륨을 잊습니다. 기본 볼륨은 실제로 이번 teardown 대상이었을 때만 잊습니다 — 마운트되지 않은 볼륨은 note와 함께 유지되어 나중에 데이터에 다시 접근할 수 있습니다. 대상 밖 볼륨의 MacBay 디렉터리를 가리키는 캐시 링크는 조용히 넘기지 않고 건너뛰었음을 보고합니다.
 4. **보고**: 항목별 실패를 중단 없이 수집하며, 하나라도 실패하면 종료 코드가 `1`입니다. 각 볼륨의 `MacBay/` 디렉터리 자체는 남겨둡니다 — 백업과 기록되지 않은 데이터는 절대 삭제하지 않습니다 — 보고서의 notes에 남은 디렉터리를 안내합니다.
 
 > [!IMPORTANT]

@@ -480,24 +480,33 @@ public struct CacheReport: Codable, Equatable, Sendable {
     public let reset: Bool
     public let targets: [MigrationResult]
     public let shellConfigurationPath: String
+    public let failures: [OperationFailure]
     public let dryRun: Bool
+
+    /// One or more targets failed to migrate.
+    public var exitCode: Int32 {
+        failures.isEmpty ? 0 : 1
+    }
 
     public init(
         enabled: Bool,
         reset: Bool,
         targets: [MigrationResult],
         shellConfigurationPath: String,
+        failures: [OperationFailure] = [],
         dryRun: Bool
     ) {
         self.enabled = enabled
         self.reset = reset
         self.targets = targets
         self.shellConfigurationPath = shellConfigurationPath
+        self.failures = failures
         self.dryRun = dryRun
     }
 }
 
-public struct TeardownFailure: Codable, Equatable, Sendable {
+/// A single failed item in a multi-target operation (teardown, cache enable).
+public struct OperationFailure: Codable, Equatable, Sendable {
     public let path: String
     public let reason: String
 
@@ -507,10 +516,12 @@ public struct TeardownFailure: Codable, Equatable, Sendable {
     }
 }
 
+public typealias TeardownFailure = OperationFailure
+
 public struct TeardownReport: Codable, Equatable, Sendable {
     public let restored: [MigrationResult]
     public let unlinkedCaches: [MigrationResult]
-    public let failures: [TeardownFailure]
+    public let failures: [OperationFailure]
     public let cacheConfigurationReset: Bool
     public let defaultVolumeRemoved: Bool
     public let notes: [String]

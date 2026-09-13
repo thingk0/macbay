@@ -130,7 +130,7 @@ public struct DirectoryMoveManager {
             try runDitto(from: source, to: destination, totalBytes: sizeBytes, progress: progress)
         } catch {
             if fileManager.fileExists(atPath: destination.path) {
-                try? fileManager.removeItem(at: destination)
+                try? fileManager.removeItemMakingWritable(at: destination)
             }
             throw error
         }
@@ -292,7 +292,7 @@ public struct DirectoryMoveManager {
         do {
             try fileManager.moveItem(at: restored, to: source)
         } catch {
-            try? fileManager.removeItem(at: restored)
+            try? fileManager.removeItemMakingWritable(at: restored)
             if !fileManager.fileExists(atPath: source.path) {
                 try? fileManager.createSymbolicLink(
                     atPath: source.path,
@@ -301,7 +301,7 @@ public struct DirectoryMoveManager {
             }
             throw error
         }
-        try fileManager.removeItem(at: destination)
+        try fileManager.removeItemMakingWritable(at: destination)
 
         if let volume = volume ?? inferredVolume(for: destination) {
             progress?(.savingManifest)
@@ -348,21 +348,55 @@ public struct DirectoryMoveManager {
         )
     }
 
+    /// ~/Library 아래에서 하위 디렉터리까지 전부 옮기면 안 되는 위치들.
+    /// (개별 앱 상태가 아니라 시스템/전체 앱이 공유하는 상태이거나 macOS가 관리하는 영역)
+    private static func blockedLibrarySubtrees(homePath: String) -> [String] {
+        [
+            "Containers", "Group Containers", "Mobile Documents", "Keychains",
+            "Mail", "Preferences", "LaunchAgents", "LaunchDaemons", "Cookies",
+            "Messages", "Safari", "Accounts", "Saved Application State", "Fonts",
+            "WebKit", "Metadata", "Developer"
+        ].map { homePath + "/Library/" + $0 }
+    }
+
+    /// 자격 증명·시스템 상태가 들어 있는 홈 dotfile 디렉터리 — 하위까지 전부 차단.
+    /// `~/.cargo`/`~/.rustup`은 rustup shim이 있어 캐시 라우팅에서도 제외되는 영역이다.
+    private static func blockedHomeDotdirs(homePath: String) -> [String] {
+        [".ssh", ".gnupg", ".cargo", ".rustup", ".aws", ".azure", ".docker", ".config", ".Trash"]
+            .map { homePath + "/" + $0 }
+    }
+
     private func requireMovableLocation(_ source: URL) throws {
         let path = source.standardizedFileURL.path
         let homePath = fileManager.homeDirectoryForCurrentUser.standardizedFileURL.path
-        let blockedExact = Self.blockedExactPaths + [homePath, homePath + "/Library"]
+        let blockedExact = Self.blockedExactPaths + [
+            homePath,
+            homePath + "/Library",
+            homePath + "/Library/Application Support",
+            homePath + "/Library/Caches"
+        ]
         for root in blockedExact where path == root {
             throw MacBayError.unsupportedOperation(
                 "Refusing to externalize a protected location: \(path)"
             )
         }
-        for root in Self.blockedRoots {
+        let prefixBlocked = Self.blockedRoots
+            + Self.blockedLibrarySubtrees(homePath: homePath)
+            + Self.blockedHomeDotdirs(homePath: homePath)
+        for root in prefixBlocked {
             if path == root || path.hasPrefix(root + "/") {
                 throw MacBayError.unsupportedOperation(
                     "Refusing to externalize a protected location: \(path)"
                 )
             }
+        }
+        // `mb cache`가 관리하는 대상은 전용 링크+환경 변수 모델이 있으므로 move와 겹치면 안 된다.
+        let managedCachePaths = Set(CacheManager.targets(homeDirectory: fileManager.homeDirectoryForCurrentUser)
+            .map { $0.internalURL.standardizedFileURL.path })
+        if managedCachePaths.contains(path) {
+            throw MacBayError.unsupportedOperation(
+                "This path is managed by 'mb cache'; use 'mb cache --enable' instead of moving it: \(path)"
+            )
         }
     }
 
@@ -422,16 +456,16 @@ public struct DirectoryMoveManager {
         try fileManager.moveItem(at: source, to: backup)
         do {
             try fileManager.createSymbolicLink(atPath: source.path, withDestinationPath: destination.path)
-            try fileManager.removeItem(at: backup)
+            try fileManager.removeItemMakingWritable(at: backup)
         } catch {
             if fileManager.fileExists(atPath: source.path) {
-                try? fileManager.removeItem(at: source)
+                try? fileManager.removeItemMakingWritable(at: source)
             }
             if fileManager.fileExists(atPath: backup.path), !fileManager.fileExists(atPath: source.path) {
                 try? fileManager.moveItem(at: backup, to: source)
             }
             if fileManager.fileExists(atPath: destination.path) {
-                try? fileManager.removeItem(at: destination)
+                try? fileManager.removeItemMakingWritable(at: destination)
             }
             throw error
         }

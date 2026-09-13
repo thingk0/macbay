@@ -207,6 +207,82 @@ final class TeardownManagerTests: XCTestCase {
         XCTAssertFalse(report.cacheConfigurationReset)
     }
 
+    func testPartialTeardownKeepsConfiguration() throws {
+        // --volume을 지정한 부분 teardown은 셸 설정과 기본 볼륨을 건드리지 않는다.
+        let (manager, mover, configStore) = makeEnvironment(cacheTargets: makeCacheTargets())
+
+        let source = homeBase.appendingPathComponent("Games")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        _ = try mover.move(path: source.path, on: volumeDir, dryRun: false)
+
+        let zshrc = fakeHome.appendingPathComponent(".zshrc")
+        try "# >>> macbay cache >>>\nexport npm_config_cache='/x'\n# <<< macbay cache <<<\n".write(
+            to: zshrc, atomically: true, encoding: .utf8
+        )
+        try configStore.save(MacBayConfig(
+            version: MacBayConfig.currentVersion,
+            defaultVolume: DefaultVolume(
+                path: volumeDir.path, name: "ExtDrive", uuid: "UUID-EXT", savedAt: "2026-09-13T00:00:00Z"
+            )
+        ))
+
+        let report = try manager.execute(volumePath: volumeDir.path, dryRun: false)
+
+        XCTAssertEqual(report.restored.count, 1)
+        XCTAssertTrue(report.failures.isEmpty)
+        XCTAssertFalse(report.cacheConfigurationReset)
+        XCTAssertFalse(report.defaultVolumeRemoved)
+        XCTAssertTrue(try String(contentsOf: zshrc, encoding: .utf8).contains("macbay cache"))
+        XCTAssertNotNil(try configStore.load().defaultVolume)
+        XCTAssertTrue(report.notes.contains { $0.contains("single-volume") })
+    }
+
+    func testTeardownKeepsUnmountedDefaultVolume() throws {
+        // 기본 볼륨이 마운트돼 있지 않으면 저장된 기본 볼륨을 지우지 않는다.
+        let (manager, _, configStore) = makeEnvironment(
+            cacheTargets: makeCacheTargets(),
+            mountedPaths: ["/"]
+        )
+        let zshrc = fakeHome.appendingPathComponent(".zshrc")
+        try "# >>> macbay cache >>>\nexport npm_config_cache='/x'\n# <<< macbay cache <<<\n".write(
+            to: zshrc, atomically: true, encoding: .utf8
+        )
+        try configStore.save(MacBayConfig(
+            version: MacBayConfig.currentVersion,
+            defaultVolume: DefaultVolume(
+                path: volumeDir.path, name: "ExtDrive", uuid: "UUID-EXT", savedAt: "2026-09-13T00:00:00Z"
+            )
+        ))
+
+        let report = try manager.execute(volumePath: nil, dryRun: false)
+
+        XCTAssertTrue(report.failures.isEmpty)
+        XCTAssertTrue(report.cacheConfigurationReset)
+        XCTAssertFalse(report.defaultVolumeRemoved)
+        XCTAssertNotNil(try configStore.load().defaultVolume)
+        XCTAssertTrue(report.notes.contains { $0.contains("not mounted") })
+        XCTAssertTrue(report.notes.contains { $0.contains("was kept") })
+    }
+
+    func testTeardownNotesLinksToVolumesOutsideScope() throws {
+        // 다른 MacBay 루트를 가리키는 링크가 대상 볼륨에 없으면 조용히 넘기지 않고 알린다.
+        let (manager, _, _) = makeEnvironment(cacheTargets: makeCacheTargets())
+
+        let otherVolume = tempDir.appendingPathComponent("OtherDrive")
+        let cacheTarget = MacBayPaths.cachesRoot(on: otherVolume).appendingPathComponent("npm")
+        try FileManager.default.createDirectory(at: cacheTarget, withIntermediateDirectories: true)
+        let cacheLink = fakeHome.appendingPathComponent(".npm")
+        try FileManager.default.createSymbolicLink(
+            atPath: cacheLink.path,
+            withDestinationPath: cacheTarget.path
+        )
+
+        let report = try manager.execute(volumePath: nil, dryRun: false)
+
+        XCTAssertTrue(report.notes.contains { $0.contains("Skipped") && $0.contains(".npm") })
+        XCTAssertNotNil(try? FileManager.default.destinationOfSymbolicLink(atPath: cacheLink.path))
+    }
+
     func testTeardownWithoutVolumesReportsNotes() throws {
         let (manager, _, _) = makeEnvironment(
             cacheTargets: makeCacheTargets(),

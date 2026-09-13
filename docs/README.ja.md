@@ -518,6 +518,32 @@ Available actions:
 - **独立した修復ジャーナル**: 操作状態は外部ボリュームの `<Volume>/MacBay/.operations/repair-<App>.json`（スキーマ v1）に記録されます。万が一処理が中断された場合、`mb doctor` が未完了操作（`incomplete_operation`）として検知し、`mb repair "<App>" --rollback` による復旧を案内します。
 - **内蔵保持（keep-local）**: `keep-local` はマニフェストから該当項目の記録のみをアトミックに削除します。内蔵アプリおよび外部コピーの双方がファイルシステム上にそのまま保持され、外部コピーは非管理アーカイブとなります。
 
+### 任意ディレクトリの外部化（`move` / `unmove`）
+
+ゲームライブラリ、VMディスク、データセット、メディアフォルダなど、あらゆるディレクトリを外部ボリュームの `<Volume>/MacBay/Data/<name>` へ移動し、元の場所をシンボリックリンクに置き換えます。項目は `manifest.json` に `directory` 種別で記録され、`mb status`、`mb doctor`、`mb teardown` がすべて認識します:
+
+```sh
+# 移動のプレビュー
+mb move ~/Games --dry-run
+
+# 任意のディレクトリを移動
+mb move ~/Games
+
+# 内蔵ストレージへ復元（プレビュー/実行）
+mb unmove ~/Games --dry-run
+mb unmove ~/Games
+```
+
+**動作の流れ**:
+1. **検証**: シンボリックリンク、非ディレクトリ、`.app` バンドル（`mb dock` を使用）、保護されたシステムパス（`/System`、`/Library`、`/usr`、`/Applications`、`/Volumes`、ホームルート、`~/Library` など）、非内蔵ボリューム上のソース、および `mb cache` が管理するパスを拒否します。`~/Library` 内では `Containers`、`Group Containers`、`Mobile Documents`、`Keychains`、`Mail`、`Preferences`、`Developer` などの共有/システム系サブツリーは移動不可で、`~/.ssh`、`~/.gnupg`、`~/.cargo`、`~/.rustup` などのクレデンシャル領域も禁止です。`Application Support` と `Caches` のルート自体はブロックされますが、その子ディレクトリは移動可能です（例: `~/Library/Application Support/Steam`）。
+2. **安全性**: 実行中プロセス（`lsof`）と SQLite ロックを確認し、ディレクトリサイズを測定し、外部ボリュームの空き容量を予測します。
+3. **コピーとリンク**: `ditto` で進捗サンプリング付きコピー後、ソースをシンボリックリンクへアトミックに置き換えます。
+4. **マニフェスト**: `<Volume>/MacBay/manifest.json` に移動を記録し、`mb unmove` や `mb teardown` で復元できるようにします。
+
+`unmove` はシンボリックリンクを解決し、外部コピーを内蔵へコピーバックし、リンクと外部コピーを削除してマニフェスト記録を外します。記録のある項目はマニフェスト経由で復元され、記録なしに MacBay ストレージを指すリンクは標準 `MacBay/Data/` レイアウト配下のみ復元され、それ以外を指すリンクは拒否されます。
+
+> [!NOTE]
+> `mb move` には `mb dock` のような移動後もアプリが動作する仕組み（署名検証、LaunchServices 更新、Dock 再起動）はありません。`.app` バンドルには `dock` を使ってください。
 
 ### Xcodeのメンテナンス（`xcode`）
 
@@ -552,8 +578,7 @@ mb cache --reset
 管理対象のキャッシュ:
 - `npm`: `npm_config_cache`
 - `pnpm store`: `npm_config_store_dir`
-- `Yarn v1 キャッシュ`: リンクのみ（`YARN_CACHE_FOLDER` の export は変数を共有する下記 Berry 対象が担当）
-- `Yarn Berry キャッシュ`: `YARN_CACHE_FOLDER`
+- `Yarn キャッシュ`: `YARN_CACHE_FOLDER` — Yarn v1 も Berry もこの変数を尊重するため、1つの export で両方をルーティングします
 - `bun キャッシュ`: `BUN_INSTALL_CACHE_DIR`
 - `uv`: `UV_CACHE_DIR`
 - `pip`: `PIP_CACHE_DIR`
@@ -585,7 +610,7 @@ mb teardown --volume /Volumes/ExternalSSD
 **実行内容**:
 1. **記録の復元**: 接続中の各適格ボリューム（または `--volume`）について、マニフェストの全項目を復元します——アプリは `undock`、移動済みディレクトリは `unmove` 経路で。
 2. **既知リンクの掃除**: マニフェスト記録なしにシンボリックリンクのまま残っている開発者向けパス（Xcode対象・キャッシュ対象）を整理します。`MacBay/Caches/` 配下のリンクは削除して空ディレクトリを再作成（外部コピーは非管理アーカイブとして保持）、その他の `MacBay/` ルート配下のリンクは内蔵へ完全復元します。
-3. **設定のリセット**: `~/.zshrc` の管理ブロックを削除し、保存済みデフォルトボリュームを忘れます。
+3. **設定のリセット**: 失敗のない *完全な* teardown（`--volume` 省略）のときのみ、`~/.zshrc` の管理ブロックを削除し保存済みデフォルトボリュームを忘れます。デフォルトボリュームは実際に今回の teardown 対象だった場合のみ忘却され、未マウントのボリュームは note とともに保持され後でデータへ再アクセスできます。対象範囲外のボリューム上の MacBay ディレクトリを指すキャッシュリンクは、黙ってスキップせずスキップした旨を報告します。
 4. **レポート**: 項目ごとの失敗は中断せず収集され、失敗があれば終了コードは `1` になります。各ボリュームの `MacBay/` ディレクトリ自体は残します——バックアップや未記録データは決して削除しません——残存ディレクトリはレポートのnotesで案内します。
 
 > [!IMPORTANT]

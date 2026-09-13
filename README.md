@@ -540,7 +540,7 @@ mb unmove ~/Games
 ```
 
 **How it works**:
-1. **Validation**: Refuses symlinks, non-directories, `.app` bundles (use `mb dock`), protected system locations (`/System`, `/Library`, `/usr`, `/Applications`, `/Volumes`, your home root, `~/Library`, ...), and sources already on a non-internal volume.
+1. **Validation**: Refuses symlinks, non-directories, `.app` bundles (use `mb dock`), protected system locations (`/System`, `/Library`, `/usr`, `/Applications`, `/Volumes`, your home root, `~/Library`, ...), sources already on a non-internal volume, and paths that `mb cache` already manages. Inside `~/Library`, shared/system subtrees (`Containers`, `Group Containers`, `Mobile Documents`, `Keychains`, `Mail`, `Preferences`, `Developer`, ...) are off-limits, as are credential homes like `~/.ssh`, `~/.gnupg`, `~/.cargo`, `~/.rustup`. The `Application Support` and `Caches` roots themselves are blocked, but their children stay movable (e.g. `~/Library/Application Support/Steam`).
 2. **Safety**: Checks for active processes (`lsof`) and SQLite locks, measures the directory size, and previews external free space.
 3. **Copy & Link**: Copies via `ditto` with progress sampling, then atomically swaps the source for a symlink.
 4. **Manifest**: Records the move in `<Volume>/MacBay/manifest.json` so the item can be restored by `mb unmove` or `mb teardown`.
@@ -599,8 +599,7 @@ mb cache --reset
 Managed caches include:
 - `npm`: `npm_config_cache`
 - `pnpm store`: `npm_config_store_dir`
-- `Yarn v1 cache`: link-only (the `YARN_CACHE_FOLDER` export is owned by the Berry target below, which shares the variable)
-- `Yarn Berry cache`: `YARN_CACHE_FOLDER`
+- `Yarn cache`: `YARN_CACHE_FOLDER` — both Yarn v1 and Yarn Berry honor this variable, so one export routes both
 - `bun cache`: `BUN_INSTALL_CACHE_DIR`
 - `uv`: `UV_CACHE_DIR`
 - `pip`: `PIP_CACHE_DIR`
@@ -632,7 +631,7 @@ mb teardown --volume /Volumes/ExternalSSD
 **What it does**:
 1. **Restores records**: For each connected eligible volume (or `--volume`), every manifest item is restored — applications via `undock`, moved directories via the `unmove` path.
 2. **Sweeps known links**: Developer locations that are still symlinks without a manifest record (Xcode targets, cache targets) are cleaned up: links into `MacBay/Caches/` are removed and replaced with empty directories (the external copy is kept as an unmanaged archive), while links into other `MacBay/` roots are fully restored to internal storage.
-3. **Resets configuration**: Removes the managed block from `~/.zshrc` and forgets the saved default volume.
+3. **Resets configuration**: On a *full* teardown (`--volume` omitted) with zero failures, removes the managed block from `~/.zshrc` and forgets the saved default volume. The default volume is only forgotten if it was actually part of this teardown — an unmounted one is kept (with a note) so its data stays reachable later. Cache links pointing into a MacBay directory on a volume outside the run are reported as skipped, not silently ignored.
 4. **Reports**: Per-item failures are collected instead of aborting the run; the exit code is `1` when anything failed. The `MacBay/` directory itself is left on each volume — backups and unrecorded data are never deleted — and the report notes the leftover directories.
 
 > [!IMPORTANT]

@@ -157,7 +157,7 @@ public struct BundleMigrator {
             try verifyCodeSignature(at: destination)
         } catch {
             if fileManager.fileExists(atPath: destination.path) {
-                try? fileManager.removeItem(at: destination)
+                try? fileManager.removeItemMakingWritable(at: destination)
             }
             throw error
         }
@@ -170,16 +170,16 @@ public struct BundleMigrator {
         try fileManager.moveItem(at: source, to: backup)
         do {
             try fileManager.createSymbolicLink(atPath: source.path, withDestinationPath: destination.path)
-            try fileManager.removeItem(at: backup)
+            try fileManager.removeItemMakingWritable(at: backup)
         } catch {
             if fileManager.fileExists(atPath: source.path) {
-                try? fileManager.removeItem(at: source)
+                try? fileManager.removeItemMakingWritable(at: source)
             }
             if fileManager.fileExists(atPath: backup.path), !fileManager.fileExists(atPath: source.path) {
                 try? fileManager.moveItem(at: backup, to: source)
             }
             if fileManager.fileExists(atPath: destination.path) {
-                try? fileManager.removeItem(at: destination)
+                try? fileManager.removeItemMakingWritable(at: destination)
             }
             throw error
         }
@@ -290,7 +290,7 @@ public struct BundleMigrator {
             progress?(.verifyingSignature)
             try verifyCodeSignature(at: restored)
         } catch {
-            try? fileManager.removeItem(at: restored)
+            try? fileManager.removeItemMakingWritable(at: restored)
             throw error
         }
 
@@ -301,7 +301,7 @@ public struct BundleMigrator {
         do {
             try fileManager.moveItem(at: restored, to: source)
         } catch {
-            try? fileManager.removeItem(at: restored)
+            try? fileManager.removeItemMakingWritable(at: restored)
             if !fileManager.fileExists(atPath: source.path) {
                 try? fileManager.createSymbolicLink(
                     atPath: source.path,
@@ -310,7 +310,7 @@ public struct BundleMigrator {
             }
             throw error
         }
-        try fileManager.removeItem(at: destination)
+        try fileManager.removeItemMakingWritable(at: destination)
 
         if let volume = volume ?? inferredVolume(for: destination) ?? fallbackVolume {
             progress?(.savingManifest)

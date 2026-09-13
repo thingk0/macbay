@@ -141,7 +141,15 @@ public struct TeardownManager {
                 standardizedTarget.path.hasPrefix(
                     MacBayPaths.externalRoot(on: $0).standardizedFileURL.path + "/"
                 )
-            }) else { continue }
+            }) else {
+                // MacBay 레이아웃을 가리키지만 그 볼륨이 이번 대상이 아니면 조용히 건너뛰지 않고 남긴다.
+                if standardizedTarget.pathComponents.contains(MacBayPaths.externalRootName) {
+                    notes.append(
+                        "Skipped \(source.path) — its link target is under a MacBay directory on a volume that is not part of this teardown (not mounted or not selected)."
+                    )
+                }
+                continue
+            }
 
             do {
                 if standardizedTarget.path.hasPrefix(
@@ -174,14 +182,41 @@ public struct TeardownManager {
             }
         }
 
-        // 4. ~/.zshrc의 관리 블록과 저장된 기본 볼륨을 제거한다.
+        // 4. 전체 teardown(볼륨 지정 없음)이고 실패가 하나도 없을 때만
+        //    ~/.zshrc 관리 블록과 저장된 기본 볼륨을 정리한다.
+        let fullTeardown = volumePath == nil
+        let canResetConfiguration = fullTeardown && failures.isEmpty
         let cacheBlockPresent = cacheManager.isManagedBlockPresent()
-        if !dryRun, cacheBlockPresent {
-            _ = try cacheManager.reset(dryRun: false)
-        }
         let savedDefault = (try? configStore.load())?.defaultVolume
-        if !dryRun {
-            _ = try configStore.reset()
+        var cacheConfigurationReset = false
+        var defaultVolumeRemoved = false
+
+        if canResetConfiguration {
+            if !dryRun, cacheBlockPresent {
+                _ = try cacheManager.reset(dryRun: false)
+            }
+            cacheConfigurationReset = cacheBlockPresent
+
+            if let savedDefault {
+                let savedPath = URL(fileURLWithPath: savedDefault.path).standardizedFileURL.path
+                if volumes.contains(where: { $0.standardizedFileURL.path == savedPath }) {
+                    if !dryRun {
+                        _ = try configStore.reset()
+                    }
+                    defaultVolumeRemoved = true
+                } else {
+                    // 이번에 정리되지 않은 볼륨(미마운트 등)은 데이터가 남아 있을 수 있어 기억해 둔다.
+                    notes.append(
+                        "Saved default volume '\(savedDefault.name)' (\(savedDefault.path)) was kept because it was not part of this teardown."
+                    )
+                }
+            }
+        } else if cacheBlockPresent || savedDefault != nil {
+            notes.append(
+                fullTeardown
+                    ? "Shell cache settings and the saved default volume were left unchanged because some items failed to restore."
+                    : "Shell cache settings and the saved default volume were left unchanged for a single-volume teardown; run 'mb teardown' without --volume for a full reset."
+            )
         }
 
         // 5. 외장 볼륨의 MacBay 디렉터리(백업 등)는 자동으로 지우지 않는다.
@@ -195,8 +230,8 @@ public struct TeardownManager {
             restored: restored,
             unlinkedCaches: unlinkedCaches,
             failures: failures,
-            cacheConfigurationReset: cacheBlockPresent,
-            defaultVolumeRemoved: savedDefault != nil,
+            cacheConfigurationReset: cacheConfigurationReset,
+            defaultVolumeRemoved: defaultVolumeRemoved,
             notes: notes,
             dryRun: dryRun
         )

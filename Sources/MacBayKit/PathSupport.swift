@@ -282,6 +282,33 @@ public struct OperationJournal {
     }
 }
 
+extension FileManager {
+    /// Deletes a tree even when it contains read-only directories (Go's
+    /// `~/go/pkg/mod` marks module directories `0500`, which makes a plain
+    /// `removeItem` fail partway). Marks every directory writable first so the
+    /// removal completes instead of leaving a half-deleted tree.
+    public func removeItemMakingWritable(at url: URL) throws {
+        var isDirectory: ObjCBool = false
+        let exists = fileExists(atPath: url.path, isDirectory: &isDirectory)
+        let isSymlink = (try? destinationOfSymbolicLink(atPath: url.path)) != nil
+        if exists, isDirectory.boolValue, !isSymlink {
+            if let enumerator = enumerator(
+                at: url,
+                includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+            ) {
+                for case let child as URL in enumerator {
+                    guard let values = try? child.resourceValues(
+                        forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+                    ), values.isDirectory == true, values.isSymbolicLink != true else { continue }
+                    try? setAttributes([.posixPermissions: 0o700], ofItemAtPath: child.path)
+                }
+            }
+            try? setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
+        }
+        try removeItem(at: url)
+    }
+}
+
 public struct DockRefresher {
     private let fileManager: FileManager
     private let commandRunner: any CommandRunner

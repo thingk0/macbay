@@ -90,7 +90,7 @@ public struct PurgeEngine {
             } else {
                 let children = (try? fileManager.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)) ?? []
                 for child in children {
-                    try? fileManager.removeItem(at: child)
+                    try? fileManager.removeItemMakingWritable(at: child)
                 }
                 purged.append(item)
                 totalReclaimed += item.sizeBytes

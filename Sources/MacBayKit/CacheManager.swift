@@ -1,14 +1,15 @@
 import Foundation
 
+/// `mb cache`가 라우팅하는 개발자 캐시 한 대상. AppScanner도 이 목록을 재사용해
+/// scan/doctor의 개발자 캐시 인식이 항상 동일하게 유지된다.
+struct CacheTarget: Equatable, Sendable {
+    let name: String
+    let internalURL: URL
+    let externalDirectoryName: String
+    let environmentVariable: String
+}
+
 public struct CacheManager {
-    private struct Target {
-        let name: String
-        let internalURL: URL
-        let externalDirectoryName: String
-        /// nil이면 내부 심볼릭 링크로만 라우팅하고 환경 변수는 보내지 않는다
-        /// (같은 변수를 공유하는 다른 도구 세대가 있는 경우).
-        let environmentVariable: String?
-    }
 
     private static let beginMarker = "# >>> macbay cache >>>"
     private static let endMarker = "# <<< macbay cache <<<"
@@ -36,6 +37,7 @@ public struct CacheManager {
         let externalRoot = MacBayPaths.cachesRoot(on: volume)
         var migrations: [MigrationResult] = []
 
+        var failures: [OperationFailure] = []
         for target in targets {
             let destination = externalRoot.appendingPathComponent(target.externalDirectoryName, isDirectory: true)
             let migration: MigrationResult
@@ -50,12 +52,27 @@ public struct CacheManager {
                     messages: ["Internal cache is already a symbolic link"]
                 )
             } else if fileManager.fileExists(atPath: target.internalURL.path) {
-                migration = try directoryMigrator.migrate(
-                    source: target.internalURL,
-                    destination: destination,
-                    operation: "externalize cache",
-                    dryRun: dryRun
-                )
+                do {
+                    migration = try directoryMigrator.migrate(
+                        source: target.internalURL,
+                        destination: destination,
+                        operation: "externalize cache",
+                        dryRun: dryRun
+                    )
+                } catch {
+                    // 한 대상의 실패로 나머지 캐시 라우팅과 셸 설정까지 멈추지 않는다.
+                    let reason = (error as? MacBayError)?.errorDescription ?? error.localizedDescription
+                    failures.append(OperationFailure(path: target.internalURL.path, reason: reason))
+                    migration = MigrationResult(
+                        operation: "externalize cache",
+                        name: target.name,
+                        sourcePath: target.internalURL.path,
+                        destinationPath: destination.path,
+                        sizeBytes: 0,
+                        dryRun: dryRun,
+                        messages: ["Failed: \(reason)"]
+                    )
+                }
             } else {
                 if !dryRun {
                     try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
@@ -87,6 +104,7 @@ public struct CacheManager {
             reset: false,
             targets: migrations,
             shellConfigurationPath: shellConfigurationURL.path,
+            failures: failures,
             dryRun: dryRun
         )
     }
@@ -120,83 +138,77 @@ public struct CacheManager {
         return contents.contains(Self.beginMarker)
     }
 
-    private static func targets(homeDirectory: URL) -> [Target] {
+    static func targets(homeDirectory: URL) -> [CacheTarget] {
         [
-            Target(
+            CacheTarget(
                 name: "npm",
                 internalURL: homeDirectory.appendingPathComponent(".npm"),
                 externalDirectoryName: "npm",
                 environmentVariable: "npm_config_cache"
             ),
-            Target(
+            CacheTarget(
                 // PNPM_HOME도 ~/Library/pnpm 아래에 있으므로 store 하위만 이동한다.
                 name: "pnpm store",
                 internalURL: homeDirectory.appendingPathComponent("Library/pnpm/store"),
                 externalDirectoryName: "pnpm-store",
                 environmentVariable: "npm_config_store_dir"
             ),
-            Target(
-                // Yarn v1 캐시. YARN_CACHE_FOLDER export는 Berry 대상이 담당한다.
-                name: "Yarn v1 cache",
-                internalURL: homeDirectory.appendingPathComponent("Library/Caches/Yarn"),
-                externalDirectoryName: "yarn-v1",
-                environmentVariable: nil
-            ),
-            Target(
-                name: "Yarn Berry cache",
+            CacheTarget(
+                // Yarn v1과 Berry가 모두 YARN_CACHE_FOLDER를 존중하므로 하나의 변수로 라우팅한다.
+                name: "Yarn cache",
                 internalURL: homeDirectory.appendingPathComponent(".yarn/berry/cache"),
                 externalDirectoryName: "yarn",
                 environmentVariable: "YARN_CACHE_FOLDER"
             ),
-            Target(
+            CacheTarget(
                 name: "bun cache",
                 internalURL: homeDirectory.appendingPathComponent(".bun/install/cache"),
                 externalDirectoryName: "bun",
                 environmentVariable: "BUN_INSTALL_CACHE_DIR"
             ),
-            Target(
+            CacheTarget(
                 name: "uv",
                 internalURL: homeDirectory.appendingPathComponent(".cache/uv"),
                 externalDirectoryName: "uv",
                 environmentVariable: "UV_CACHE_DIR"
             ),
-            Target(
+            CacheTarget(
                 name: "pip",
                 internalURL: homeDirectory.appendingPathComponent("Library/Caches/pip"),
                 externalDirectoryName: "pip",
                 environmentVariable: "PIP_CACHE_DIR"
             ),
-            Target(
+            CacheTarget(
                 name: "Gradle",
                 internalURL: homeDirectory.appendingPathComponent(".gradle"),
                 externalDirectoryName: "gradle",
                 environmentVariable: "GRADLE_USER_HOME"
             ),
-            Target(
+            CacheTarget(
                 name: "CocoaPods",
                 internalURL: homeDirectory.appendingPathComponent(".cocoapods"),
                 externalDirectoryName: "cocoapods",
                 environmentVariable: "CP_HOME_DIR"
             ),
-            Target(
+            CacheTarget(
                 name: "Go modules",
                 internalURL: homeDirectory.appendingPathComponent("go/pkg/mod"),
                 externalDirectoryName: "go-mod",
                 environmentVariable: "GOMODCACHE"
             ),
-            Target(
+            CacheTarget(
                 name: "Android user data",
                 internalURL: homeDirectory.appendingPathComponent(".android"),
                 externalDirectoryName: "android",
                 environmentVariable: "ANDROID_USER_HOME"
             ),
-            Target(
+            CacheTarget(
                 name: "Homebrew downloads",
                 internalURL: homeDirectory.appendingPathComponent("Library/Caches/Homebrew"),
                 externalDirectoryName: "homebrew",
                 environmentVariable: "HOMEBREW_CACHE"
             ),
-            Target(
+            CacheTarget(
                 name: "Hugging Face",
                 internalURL: homeDirectory.appendingPathComponent(".cache/huggingface"),
                 externalDirectoryName: "huggingface",
@@ -207,7 +219,7 @@ public struct CacheManager {
 
     private func updateShellConfiguration(
         at url: URL,
-        targets: [Target],
+        targets: [CacheTarget],
         externalRoot: URL
     ) throws {
         // ~/.zshrc가 dotfiles 저장소 등으로 향하는 심볼릭 링크인 경우, 원자적 쓰기는 링크 자체를
@@ -238,14 +250,13 @@ public struct CacheManager {
     }
 
     private static func managedBlock(
-        targets: [Target],
+        targets: [CacheTarget],
         externalRoot: URL
     ) -> String {
         var lines = [beginMarker]
         for target in targets {
-            guard let environmentVariable = target.environmentVariable else { continue }
             let path = externalRoot.appendingPathComponent(target.externalDirectoryName).path
-            lines.append("export \(environmentVariable)=\(shellQuoted(path))")
+            lines.append("export \(target.environmentVariable)=\(shellQuoted(path))")
         }
         lines.append(endMarker)
         return lines.joined(separator: "\n")
