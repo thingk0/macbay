@@ -61,6 +61,10 @@ public enum MacBayPaths {
         externalRoot(on: volume).appendingPathComponent("Caches", isDirectory: true)
     }
 
+    public static func dataRoot(on volume: URL) -> URL {
+        externalRoot(on: volume).appendingPathComponent("Data", isDirectory: true)
+    }
+
     public static func manifestURL(on volume: URL) -> URL {
         externalRoot(on: volume).appendingPathComponent("manifest.json")
     }
@@ -288,6 +292,43 @@ public struct OperationJournal {
             }
             return record
         }
+    }
+}
+
+extension FileManager {
+    /// Deletes a tree even when it contains read-only directories (Go's
+    /// `~/go/pkg/mod` marks module directories `0500`, which makes a plain
+    /// `removeItem` fail partway). Marks every directory writable first so the
+    /// removal completes instead of leaving a half-deleted tree.
+    public func removeItemMakingWritable(at url: URL) throws {
+        var isDirectory: ObjCBool = false
+        let exists = fileExists(atPath: url.path, isDirectory: &isDirectory)
+        let isSymlink = (try? destinationOfSymbolicLink(atPath: url.path)) != nil
+        if exists, isDirectory.boolValue, !isSymlink {
+            relaxPermissionsForMove(at: url)
+        }
+        try removeItem(at: url)
+    }
+
+    /// Best-effort chmod of every directory in a tree so `moveItem`/rename and
+    /// later removal work on read-only trees (e.g. Go's module cache uses 0500).
+    /// Symlinks and files are untouched; non-directories and missing paths are no-ops.
+    public func relaxPermissionsForMove(at url: URL) {
+        var isDirectory: ObjCBool = false
+        guard fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue,
+              (try? destinationOfSymbolicLink(atPath: url.path)) == nil else { return }
+        if let enumerator = enumerator(
+            at: url,
+            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+        ) {
+            for case let child as URL in enumerator {
+                guard let values = try? child.resourceValues(
+                    forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+                ), values.isDirectory == true, values.isSymbolicLink != true else { continue }
+                try? setAttributes([.posixPermissions: 0o700], ofItemAtPath: child.path)
+            }
+        }
+        try? setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
     }
 }
 

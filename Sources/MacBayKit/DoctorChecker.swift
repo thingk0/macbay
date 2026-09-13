@@ -181,6 +181,8 @@ public struct DoctorChecker {
             }
         }
 
+        var classifiedSources = Set<String>()
+
         for directory in applicationDirectories {
             guard fileManager.fileExists(atPath: directory.path) else {
                 warnings.append("Application directory is unavailable: \(directory.path)")
@@ -208,6 +210,7 @@ public struct DoctorChecker {
             }
 
             for entry in entries where entry.pathExtension.lowercased() == "app" {
+                classifiedSources.insert(entry.standardizedFileURL.path)
                 if let finding = classifyLink(
                     name: entry.lastPathComponent,
                     sourcePath: entry.path,
@@ -221,6 +224,7 @@ public struct DoctorChecker {
 
         for target in developerCacheTargets {
             guard entryExists(at: target.path) else { continue }
+            classifiedSources.insert(target.path.standardizedFileURL.path)
             if let finding = classifyLink(
                 name: target.name,
                 sourcePath: target.path.path,
@@ -234,8 +238,22 @@ public struct DoctorChecker {
         for volume in consulted {
             guard let manifest = volume.manifest else { continue }
             for item in manifest.items {
-                // 링크로 남아 있는 원본은 링크 검사에서 이미 보고되므로 기록 검사에서 제외한다.
-                guard !isSymbolicLink(at: item.sourcePath) else { continue }
+                let sourceKey = URL(fileURLWithPath: item.sourcePath).standardizedFileURL.path
+                guard !isSymbolicLink(at: item.sourcePath) else {
+                    // /Applications 앱과 알려진 캐시는 위에서 이미 검사했다. 임의 디렉터리는
+                    // 여기서 링크를 검사해야 깨진 링크·기록 불일치를 잡을 수 있다.
+                    guard item.kind != .application, !classifiedSources.contains(sourceKey) else { continue }
+                    classifiedSources.insert(sourceKey)
+                    if let finding = classifyLink(
+                        name: item.name,
+                        sourcePath: item.sourcePath,
+                        category: item.kind == .directory ? .dataLink : .developerDataLink,
+                        consulted: consulted
+                    ) {
+                        findings.append(finding)
+                    }
+                    continue
+                }
                 findings.append(inspectRecord(item))
             }
 
@@ -511,7 +529,8 @@ public struct DoctorChecker {
         let roots = [
             MacBayPaths.applicationsRoot(on: volumeURL),
             MacBayPaths.xcodeRoot(on: volumeURL),
-            MacBayPaths.cachesRoot(on: volumeURL)
+            MacBayPaths.cachesRoot(on: volumeURL),
+            MacBayPaths.dataRoot(on: volumeURL)
         ]
         return roots.contains { path.hasPrefix($0.standardizedFileURL.path + "/") }
     }
@@ -560,6 +579,7 @@ public struct DoctorChecker {
         switch category {
         case .applicationLink: return 0
         case .developerDataLink: return 1
+        case .dataLink: return 1
         case .record: return 2
         case .externalReference: return 3
         case .volume: return 4

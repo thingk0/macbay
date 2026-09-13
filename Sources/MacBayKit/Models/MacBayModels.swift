@@ -9,6 +9,7 @@ public enum DockedItemKind: String, Codable, Sendable {
     case application
     case xcode
     case cache
+    case directory
 }
 
 public struct StorageVolume: Codable, Equatable, Identifiable, Sendable {
@@ -482,7 +483,13 @@ public struct CacheReport: Codable, Equatable, Sendable {
     public let shellConfigurationPaths: [String]
     public let environmentFilePath: String?
     public let guardPath: String?
+    public let failures: [OperationFailure]
     public let dryRun: Bool
+
+    /// One or more targets failed to migrate.
+    public var exitCode: Int32 {
+        failures.isEmpty ? 0 : 1
+    }
 
     public init(
         enabled: Bool,
@@ -492,6 +499,7 @@ public struct CacheReport: Codable, Equatable, Sendable {
         shellConfigurationPaths: [String] = [],
         environmentFilePath: String? = nil,
         guardPath: String? = nil,
+        failures: [OperationFailure] = [],
         dryRun: Bool
     ) {
         self.enabled = enabled
@@ -501,6 +509,7 @@ public struct CacheReport: Codable, Equatable, Sendable {
         self.shellConfigurationPaths = shellConfigurationPaths.isEmpty ? [shellConfigurationPath] : shellConfigurationPaths
         self.environmentFilePath = environmentFilePath
         self.guardPath = guardPath
+        self.failures = failures
         self.dryRun = dryRun
     }
 
@@ -512,6 +521,7 @@ public struct CacheReport: Codable, Equatable, Sendable {
         case shellConfigurationPaths
         case environmentFilePath
         case guardPath
+        case failures
         case dryRun
     }
 
@@ -525,7 +535,53 @@ public struct CacheReport: Codable, Equatable, Sendable {
         self.shellConfigurationPaths = try container.decodeIfPresent([String].self, forKey: .shellConfigurationPaths) ?? [primaryPath]
         self.environmentFilePath = try container.decodeIfPresent(String.self, forKey: .environmentFilePath)
         self.guardPath = try container.decodeIfPresent(String.self, forKey: .guardPath)
+        self.failures = try container.decodeIfPresent([OperationFailure].self, forKey: .failures) ?? []
         self.dryRun = try container.decode(Bool.self, forKey: .dryRun)
+    }
+}
+
+/// A single failed item in a multi-target operation (teardown, cache enable).
+public struct OperationFailure: Codable, Equatable, Sendable {
+    public let path: String
+    public let reason: String
+
+    public init(path: String, reason: String) {
+        self.path = path
+        self.reason = reason
+    }
+}
+
+public typealias TeardownFailure = OperationFailure
+
+public struct TeardownReport: Codable, Equatable, Sendable {
+    public let restored: [MigrationResult]
+    public let unlinkedCaches: [MigrationResult]
+    public let failures: [OperationFailure]
+    public let cacheConfigurationReset: Bool
+    public let defaultVolumeRemoved: Bool
+    public let notes: [String]
+    public let dryRun: Bool
+
+    public var exitCode: Int32 {
+        failures.isEmpty ? 0 : 1
+    }
+
+    public init(
+        restored: [MigrationResult],
+        unlinkedCaches: [MigrationResult],
+        failures: [TeardownFailure],
+        cacheConfigurationReset: Bool,
+        defaultVolumeRemoved: Bool,
+        notes: [String],
+        dryRun: Bool
+    ) {
+        self.restored = restored
+        self.unlinkedCaches = unlinkedCaches
+        self.failures = failures
+        self.cacheConfigurationReset = cacheConfigurationReset
+        self.defaultVolumeRemoved = defaultVolumeRemoved
+        self.notes = notes
+        self.dryRun = dryRun
     }
 }
 
@@ -731,6 +787,7 @@ public enum DoctorStatus: String, Codable, Equatable, Sendable {
 public enum DoctorCategory: String, Codable, Equatable, Sendable {
     case applicationLink = "application_link"
     case developerDataLink = "developer_data_link"
+    case dataLink = "data_link"
     case record
     case externalReference = "external_reference"
     case volume

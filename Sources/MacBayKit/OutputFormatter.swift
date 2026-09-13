@@ -477,6 +477,59 @@ public struct OutputFormatter {
                 lines.append("Shell configuration: \(report.shellConfigurationPath)")
             }
             lines.append(contentsOf: report.targets.map { migration($0) })
+            if !report.failures.isEmpty {
+                lines.append(bold("Failed · \(report.failures.count)"))
+                for failure in report.failures {
+                    lines.append("  • \(failure.path) — \(failure.reason)")
+                }
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    public func teardown(_ report: TeardownReport) -> String {
+        var lines = [style(report.dryRun ? "Dry run: MacBay teardown" : "MacBay teardown", color: "36", bold: true)]
+
+        if report.restored.isEmpty && report.unlinkedCaches.isEmpty {
+            lines.append("Nothing to restore or unlink.")
+        }
+
+        if !report.restored.isEmpty {
+            lines.append(bold("Restored · \(report.restored.count)"))
+            for result in report.restored {
+                lines.append("  • \(result.name) (\(OutputFormatter.humanBytes(result.sizeBytes)))")
+                lines.append("    \(result.sourcePath) → \(result.destinationPath)")
+            }
+        }
+
+        if !report.unlinkedCaches.isEmpty {
+            lines.append(bold("Cache links removed · \(report.unlinkedCaches.count)"))
+            for result in report.unlinkedCaches {
+                lines.append("  • \(result.name) — \(result.sourcePath)")
+            }
+        }
+
+        if !report.failures.isEmpty {
+            lines.append("")
+            lines.append(style("Failed · \(report.failures.count)", color: "31", bold: true))
+            for failure in report.failures {
+                lines.append("  ! \(failure.path) — \(failure.reason)")
+            }
+        }
+
+        lines.append("")
+        lines.append("Cache configuration: \(report.cacheConfigurationReset ? (report.dryRun ? "would remove managed block from ~/.zshrc" : "removed managed block from ~/.zshrc") : "no managed block found")")
+        lines.append("Default volume: \(report.defaultVolumeRemoved ? (report.dryRun ? "would forget saved default" : "forgotten") : "none saved")")
+
+        if !report.notes.isEmpty {
+            lines.append("")
+            lines.append(bold("Notes · \(report.notes.count)"))
+            lines.append(contentsOf: report.notes.map { "  • \($0)" })
+        }
+
+        if report.dryRun {
+            lines.append("")
+            lines.append("Dry run: no files were changed.")
         }
         return lines.joined(separator: "\n")
     }

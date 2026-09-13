@@ -243,7 +243,10 @@ public struct AppScanner {
     public static func defaultDeveloperCacheTargets(
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> [DeveloperCacheTarget] {
-        [
+        let caches = CacheManager.targets(homeDirectory: homeDirectory).map {
+            DeveloperCacheTarget(name: $0.name, path: $0.internalURL)
+        }
+        return [
             DeveloperCacheTarget(
                 name: "Xcode iOS DeviceSupport",
                 path: MacBayPaths.defaultXcodeDeviceSupportURL(homeDirectory: homeDirectory)
@@ -259,14 +262,7 @@ public struct AppScanner {
             DeveloperCacheTarget(
                 name: "CoreSimulator",
                 path: homeDirectory.appendingPathComponent("Library/Developer/CoreSimulator")
-            ),
-            DeveloperCacheTarget(name: "npm cache", path: homeDirectory.appendingPathComponent(".npm")),
-            DeveloperCacheTarget(name: "uv cache", path: homeDirectory.appendingPathComponent(".cache/uv")),
-            DeveloperCacheTarget(name: "Gradle", path: homeDirectory.appendingPathComponent(".gradle")),
-            DeveloperCacheTarget(
-                name: "Hugging Face cache",
-                path: homeDirectory.appendingPathComponent(".cache/huggingface")
             )
-        ]
+        ] + caches
     }
 }

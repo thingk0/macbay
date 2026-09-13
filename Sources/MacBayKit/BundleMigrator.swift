@@ -161,7 +161,7 @@ public struct BundleMigrator {
                 try verifyCodeSignature(at: destination)
             } catch {
                 if fileManager.fileExists(atPath: destination.path) {
-                    try? fileManager.removeItem(at: destination)
+                    try? fileManager.removeItemMakingWritable(at: destination)
                 }
                 throw error
             }
@@ -171,19 +171,21 @@ public struct BundleMigrator {
             let backup = source.deletingLastPathComponent().appendingPathComponent(
                 ".\(source.lastPathComponent).macbay-\(UUID().uuidString)"
             )
+            fileManager.relaxPermissionsForMove(at: source)
             try fileManager.moveItem(at: source, to: backup)
             do {
                 try fileManager.createSymbolicLink(atPath: source.path, withDestinationPath: destination.path)
-                try fileManager.removeItem(at: backup)
+                try fileManager.removeItemMakingWritable(at: backup)
             } catch {
                 if fileManager.fileExists(atPath: source.path) {
-                    try? fileManager.removeItem(at: source)
+                    try? fileManager.removeItemMakingWritable(at: source)
                 }
                 if fileManager.fileExists(atPath: backup.path), !fileManager.fileExists(atPath: source.path) {
+                    fileManager.relaxPermissionsForMove(at: backup)
                     try? fileManager.moveItem(at: backup, to: source)
                 }
                 if fileManager.fileExists(atPath: destination.path) {
-                    try? fileManager.removeItem(at: destination)
+                    try? fileManager.removeItemMakingWritable(at: destination)
                 }
                 throw error
             }
@@ -298,7 +300,7 @@ public struct BundleMigrator {
                 progress?(.verifyingSignature)
                 try verifyCodeSignature(at: restored)
             } catch {
-                try? fileManager.removeItem(at: restored)
+                try? fileManager.removeItemMakingWritable(at: restored)
                 throw error
             }
 
@@ -307,9 +309,10 @@ public struct BundleMigrator {
             progress?(.updatingLink)
             try fileManager.removeItem(at: source)
             do {
+                fileManager.relaxPermissionsForMove(at: restored)
                 try fileManager.moveItem(at: restored, to: source)
             } catch {
-                try? fileManager.removeItem(at: restored)
+                try? fileManager.removeItemMakingWritable(at: restored)
                 if !fileManager.fileExists(atPath: source.path) {
                     try? fileManager.createSymbolicLink(
                         atPath: source.path,
@@ -318,7 +321,7 @@ public struct BundleMigrator {
                 }
                 throw error
             }
-            try fileManager.removeItem(at: destination)
+            try fileManager.removeItemMakingWritable(at: destination)
 
             if let volume = targetVolume {
                 progress?(.savingManifest)
