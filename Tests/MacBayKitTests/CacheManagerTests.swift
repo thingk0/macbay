@@ -240,6 +240,28 @@ final class CacheManagerTests: XCTestCase {
         XCTAssertFalse(envContent.contains("YARN"))
     }
 
+    func testExistingCachesAreReportedByTargetName() throws {
+        // 폴더 이름만 쓰면 ~/.yarn/berry/cache와 ~/.bun/install/cache가 둘 다 "cache", Go 모듈은 "mod"로 보인다.
+        for relative in [".yarn/berry/cache", ".bun/install/cache", "go/pkg/mod"] {
+            let cache = homeDir.appendingPathComponent(relative)
+            try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+            try Data("blob".utf8).write(to: cache.appendingPathComponent("entry"))
+        }
+
+        let manager = CacheManager(
+            commandRunner: TestBundleCommandRunner(entitlementsXml: ""),
+            homeDirectory: homeDir
+        )
+        let report = try manager.enable(on: volumeURL, dryRun: true)
+
+        let names = report.targets.map(\.name)
+        XCTAssertTrue(names.contains("Yarn Berry cache"), "\(names)")
+        XCTAssertTrue(names.contains("bun cache"), "\(names)")
+        XCTAssertTrue(names.contains("Go modules"), "\(names)")
+        XCTAssertFalse(names.contains("cache"), "\(names)")
+        XCTAssertFalse(names.contains("mod"), "\(names)")
+    }
+
     func testSymlinkedZshrcIsPreservedAsLink() throws {
         let dotfiles = tempDir.appendingPathComponent("dotfiles")
         try FileManager.default.createDirectory(at: dotfiles, withIntermediateDirectories: true)

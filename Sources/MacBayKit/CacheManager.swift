@@ -217,11 +217,23 @@ public struct CacheManager {
             return configured(target, destination: destination, dryRun: dryRun, message: "Internal cache is already a symbolic link")
         }
         if fileManager.fileExists(atPath: target.internalURL.path) {
-            return try directoryMigrator.migrate(
+            let migration = try directoryMigrator.migrate(
                 source: target.internalURL,
                 destination: destination,
                 operation: "externalize cache",
                 dryRun: dryRun
+            )
+            // DirectoryMigrator는 폴더 이름(.npm, cache, mod …)으로 보고하므로 Yarn Berry와 bun이 둘 다
+            // "cache"로 보이지 않도록 대상 이름으로 바꿔 보고한다.
+            return MigrationResult(
+                operation: migration.operation,
+                name: target.name,
+                sourcePath: migration.sourcePath,
+                destinationPath: migration.destinationPath,
+                sizeBytes: migration.sizeBytes,
+                dryRun: migration.dryRun,
+                messages: migration.messages,
+                compatibility: migration.compatibility
             )
         }
         if !dryRun {
