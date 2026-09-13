@@ -29,7 +29,9 @@ MacBayは、Apple Silicon Mac向けに設計された開発者ファーストな
 - **アプリケーションの外部化（`dock` / `undock` / `adopt`）**: 大容量アプリを外部ストレージへ移行・内蔵ディスクへ復元、または内蔵復元を経ることなく既存の外部アプリをMacBay標準構造へ取り込みます。DockアイコンやLaunchServicesの登録も自動的に更新されます。
 - **安全性判定エンジン（`AppInspector`）**: アプリケーションバンドルを自動検査し、仮想化エンタイトルメント、カーネル／システム拡張機能、ハードコードされた自己移動シグナルを検出します。
 - **Xcode DeviceSupportの管理（`xcode`）**: Xcodeの正常な動作を維持したまま、肥大化しやすいiOS DeviceSupportシンボルを外部ストレージへオフロードします。既存のレガシーリンクを保持し、利用不可となったシミュレータのクリーンアップも行います。
-- **開発者キャッシュのルーティング（`cache`）**: `~/.zshrc` 内に独立した管理ブロックを追加し、npm、uv、Gradle、Hugging Faceのキャッシュを外部ストレージへルーティングします。
+- **任意ディレクトリの外部化（`move` / `unmove`）**: ゲームライブラリ、VMディスク、データセット、メディアフォルダなど、あらゆるディレクトリを `<Volume>/MacBay/Data/` へ移動し、アプリと同じマニフェスト追跡シンボリックリンクモデルで管理します。
+- **開発者キャッシュのルーティング（`cache`）**: `~/.zshrc` 内に独立した管理ブロックを追加し、npm、pnpm、Yarn、bun、uv、pip、Gradle、CocoaPods、Goモジュール、Androidユーザーデータ、Homebrewダウンロード、Hugging Faceのキャッシュを外部ストレージへルーティングします。
+- **セルフクリーンアップ（`teardown`）**: アンインストール前に、管理する全てのアプリとディレクトリの復元、管理キャッシュリンクと `~/.zshrc` ブロックの削除、デフォルトボリュームの忘却を1コマンドで実行します。
 - **厳格なボリューム検証**: 外部APFSファイルシステムを自動検証し、インストーラーDMG、読み取り専用ドライブ、内蔵ディスクを安全に除外・拒否します。
 
 ---
@@ -68,19 +70,19 @@ brew upgrade macbay
 > [!CAUTION]
 > `brew uninstall macbay` はCLI実行ファイル（`mb` および `macbay`）を削除するだけです。外部ストレージに移動したアプリケーションの復元や、`~/.zshrc` に設定されたキャッシュリダイレクトのリセットは**自動的には行われません**。
 >
-> **MacBayをアンインストールする前に**、必ず以下のクリーンアップ手順を実行してください:
-> 1. 外部化（dock）したアプリケーションを内蔵ストレージへ復元:
+> **MacBayをアンインストールする前に**、1コマンドで管理対象をすべて復元してください:
+> 1. teardownを実行（まず `--dry-run` でプレビュー）:
 >    ```sh
->    mb undock <AppName>.app
+>    mb teardown --dry-run
+>    mb teardown
 >    ```
-> 2. `~/.zshrc` のキャッシュ環境変数をリセット:
->    ```sh
->    mb cache --reset
->    ```
-> 3. クリーンアップ完了後、Formulaを安全にアンインストール:
+>    dockしたアプリとmoveしたディレクトリを復元し、管理キャッシュリンクを削除し、`~/.zshrc` ブロックを消去し、デフォルトボリュームを忘れます。
+> 2. クリーンアップ完了後、Formulaを安全にアンインストール:
 >    ```sh
 >    brew uninstall macbay
 >    ```
+>
+> 手動でクリーンアップする場合は、dockした各アプリに `mb undock <AppName>.app`、moveした各ディレクトリに `mb unmove <path>`、そして `mb cache --reset` を実行してください。
 
 ---
 
@@ -293,7 +295,10 @@ Healthy · 2
 | `undock` | `ud` |
 | `repair` | `rep` |
 | `xcode` | `xc` |
+| `move` | `mv` |
+| `unmove` | `umv` |
 | `cache` | `c` |
+| `teardown` | `td` |
 | `tui` | `ui` |
 
 ```sh
@@ -546,9 +551,45 @@ mb cache --reset
 
 管理対象のキャッシュ:
 - `npm`: `npm_config_cache`
+- `pnpm store`: `npm_config_store_dir`
+- `Yarn v1 キャッシュ`: リンクのみ（`YARN_CACHE_FOLDER` の export は変数を共有する下記 Berry 対象が担当）
+- `Yarn Berry キャッシュ`: `YARN_CACHE_FOLDER`
+- `bun キャッシュ`: `BUN_INSTALL_CACHE_DIR`
 - `uv`: `UV_CACHE_DIR`
+- `pip`: `PIP_CACHE_DIR`
 - `Gradle`: `GRADLE_USER_HOME`
+- `CocoaPods`: `CP_HOME_DIR`
+- `Go モジュール`: `GOMODCACHE`
+- `Android ユーザーデータ`: `ANDROID_USER_HOME`
+- `Homebrew ダウンロード`: `HOMEBREW_CACHE`
 - `Hugging Face`: `HF_HOME`
+
+> [!NOTE]
+> Cargo（`~/.cargo`）は意図的にルーティングしません。`CARGO_HOME` には `~/.cargo/bin` の rustup shim も含まれるため、移動するとドライブ切断時に `cargo`/`rustup` が壊れます。大きなプロジェクトディレクトリは `mb move` で移動してください。
+
+### 一括クリーンアップ（`teardown`）
+
+MacBayが管理するすべてを一括で元に戻します——アンインストール前や別の外部ドライブへの移行時に便利です:
+
+```sh
+# teardown全体をプレビュー
+mb teardown --dry-run
+
+# 全管理アイテムを復元し設定をリセット
+mb teardown
+
+# 単一ボリュームに限定
+mb teardown --volume /Volumes/ExternalSSD
+```
+
+**実行内容**:
+1. **記録の復元**: 接続中の各適格ボリューム（または `--volume`）について、マニフェストの全項目を復元します——アプリは `undock`、移動済みディレクトリは `unmove` 経路で。
+2. **既知リンクの掃除**: マニフェスト記録なしにシンボリックリンクのまま残っている開発者向けパス（Xcode対象・キャッシュ対象）を整理します。`MacBay/Caches/` 配下のリンクは削除して空ディレクトリを再作成（外部コピーは非管理アーカイブとして保持）、その他の `MacBay/` ルート配下のリンクは内蔵へ完全復元します。
+3. **設定のリセット**: `~/.zshrc` の管理ブロックを削除し、保存済みデフォルトボリュームを忘れます。
+4. **レポート**: 項目ごとの失敗は中断せず収集され、失敗があれば終了コードは `1` になります。各ボリュームの `MacBay/` ディレクトリ自体は残します——バックアップや未記録データは決して削除しません——残存ディレクトリはレポートのnotesで案内します。
+
+> [!IMPORTANT]
+> `teardown` はデータを内蔵ディスクへコピーバックします。内蔵容量が不足する項目はエラーで停止するため、まず `mb teardown --dry-run` で内容を確認してください。
 
 ---
 
@@ -588,7 +629,8 @@ mb cache --reset
 ```text
 /Volumes/<ExternalDrive>/MacBay/
 ├── Applications/       # 外部化されたアプリケーションバンドル
-├── Caches/             # npm、uv、Gradle、Hugging Faceのキャッシュ
+├── Caches/             # npm、uv、Gradleなどの開発者キャッシュ
+├── Data/               # `mb move` で移動したディレクトリ
 ├── Xcode/              # iOS DeviceSupportシンボルキャッシュ
 └── manifest.json       # 全ての外部化（dock）アイテムを管理するCodableメタデータマニフェスト
 ```

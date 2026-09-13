@@ -61,6 +61,10 @@ public enum MacBayPaths {
         externalRoot(on: volume).appendingPathComponent("Caches", isDirectory: true)
     }
 
+    public static func dataRoot(on volume: URL) -> URL {
+        externalRoot(on: volume).appendingPathComponent("Data", isDirectory: true)
+    }
+
     public static func manifestURL(on volume: URL) -> URL {
         externalRoot(on: volume).appendingPathComponent("manifest.json")
     }

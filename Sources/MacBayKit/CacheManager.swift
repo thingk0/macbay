@@ -5,7 +5,9 @@ public struct CacheManager {
         let name: String
         let internalURL: URL
         let externalDirectoryName: String
-        let environmentVariable: String
+        /// nil이면 내부 심볼릭 링크로만 라우팅하고 환경 변수는 보내지 않는다
+        /// (같은 변수를 공유하는 다른 도구 세대가 있는 경우).
+        let environmentVariable: String?
     }
 
     private static let beginMarker = "# >>> macbay cache >>>"
@@ -109,6 +111,15 @@ public struct CacheManager {
         )
     }
 
+    /// `~/.zshrc`에 관리 블록이 있는지만 확인한다. 파일이 없거나 읽을 수 없으면 false.
+    public func isManagedBlockPresent() -> Bool {
+        let resolvedURL = homeDirectory.appendingPathComponent(".zshrc").resolvingSymlinksInPath()
+        guard let contents = try? String(contentsOf: resolvedURL, encoding: .utf8) else {
+            return false
+        }
+        return contents.contains(Self.beginMarker)
+    }
+
     private static func targets(homeDirectory: URL) -> [Target] {
         [
             Target(
@@ -118,16 +129,72 @@ public struct CacheManager {
                 environmentVariable: "npm_config_cache"
             ),
             Target(
+                // PNPM_HOME도 ~/Library/pnpm 아래에 있으므로 store 하위만 이동한다.
+                name: "pnpm store",
+                internalURL: homeDirectory.appendingPathComponent("Library/pnpm/store"),
+                externalDirectoryName: "pnpm-store",
+                environmentVariable: "npm_config_store_dir"
+            ),
+            Target(
+                // Yarn v1 캐시. YARN_CACHE_FOLDER export는 Berry 대상이 담당한다.
+                name: "Yarn v1 cache",
+                internalURL: homeDirectory.appendingPathComponent("Library/Caches/Yarn"),
+                externalDirectoryName: "yarn-v1",
+                environmentVariable: nil
+            ),
+            Target(
+                name: "Yarn Berry cache",
+                internalURL: homeDirectory.appendingPathComponent(".yarn/berry/cache"),
+                externalDirectoryName: "yarn",
+                environmentVariable: "YARN_CACHE_FOLDER"
+            ),
+            Target(
+                name: "bun cache",
+                internalURL: homeDirectory.appendingPathComponent(".bun/install/cache"),
+                externalDirectoryName: "bun",
+                environmentVariable: "BUN_INSTALL_CACHE_DIR"
+            ),
+            Target(
                 name: "uv",
                 internalURL: homeDirectory.appendingPathComponent(".cache/uv"),
                 externalDirectoryName: "uv",
                 environmentVariable: "UV_CACHE_DIR"
             ),
             Target(
+                name: "pip",
+                internalURL: homeDirectory.appendingPathComponent("Library/Caches/pip"),
+                externalDirectoryName: "pip",
+                environmentVariable: "PIP_CACHE_DIR"
+            ),
+            Target(
                 name: "Gradle",
                 internalURL: homeDirectory.appendingPathComponent(".gradle"),
                 externalDirectoryName: "gradle",
                 environmentVariable: "GRADLE_USER_HOME"
+            ),
+            Target(
+                name: "CocoaPods",
+                internalURL: homeDirectory.appendingPathComponent(".cocoapods"),
+                externalDirectoryName: "cocoapods",
+                environmentVariable: "CP_HOME_DIR"
+            ),
+            Target(
+                name: "Go modules",
+                internalURL: homeDirectory.appendingPathComponent("go/pkg/mod"),
+                externalDirectoryName: "go-mod",
+                environmentVariable: "GOMODCACHE"
+            ),
+            Target(
+                name: "Android user data",
+                internalURL: homeDirectory.appendingPathComponent(".android"),
+                externalDirectoryName: "android",
+                environmentVariable: "ANDROID_USER_HOME"
+            ),
+            Target(
+                name: "Homebrew downloads",
+                internalURL: homeDirectory.appendingPathComponent("Library/Caches/Homebrew"),
+                externalDirectoryName: "homebrew",
+                environmentVariable: "HOMEBREW_CACHE"
             ),
             Target(
                 name: "Hugging Face",
@@ -176,8 +243,9 @@ public struct CacheManager {
     ) -> String {
         var lines = [beginMarker]
         for target in targets {
+            guard let environmentVariable = target.environmentVariable else { continue }
             let path = externalRoot.appendingPathComponent(target.externalDirectoryName).path
-            lines.append("export \(target.environmentVariable)=\(shellQuoted(path))")
+            lines.append("export \(environmentVariable)=\(shellQuoted(path))")
         }
         lines.append(endMarker)
         return lines.joined(separator: "\n")

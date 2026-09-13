@@ -261,8 +261,44 @@ public struct AppScanner {
                 path: homeDirectory.appendingPathComponent("Library/Developer/CoreSimulator")
             ),
             DeveloperCacheTarget(name: "npm cache", path: homeDirectory.appendingPathComponent(".npm")),
+            DeveloperCacheTarget(
+                name: "pnpm store",
+                path: homeDirectory.appendingPathComponent("Library/pnpm/store")
+            ),
+            DeveloperCacheTarget(
+                name: "Yarn v1 cache",
+                path: homeDirectory.appendingPathComponent("Library/Caches/Yarn")
+            ),
+            DeveloperCacheTarget(
+                name: "Yarn Berry cache",
+                path: homeDirectory.appendingPathComponent(".yarn/berry/cache")
+            ),
+            DeveloperCacheTarget(
+                name: "bun cache",
+                path: homeDirectory.appendingPathComponent(".bun/install/cache")
+            ),
             DeveloperCacheTarget(name: "uv cache", path: homeDirectory.appendingPathComponent(".cache/uv")),
+            DeveloperCacheTarget(
+                name: "pip cache",
+                path: homeDirectory.appendingPathComponent("Library/Caches/pip")
+            ),
             DeveloperCacheTarget(name: "Gradle", path: homeDirectory.appendingPathComponent(".gradle")),
+            DeveloperCacheTarget(
+                name: "CocoaPods",
+                path: homeDirectory.appendingPathComponent(".cocoapods")
+            ),
+            DeveloperCacheTarget(
+                name: "Go modules",
+                path: homeDirectory.appendingPathComponent("go/pkg/mod")
+            ),
+            DeveloperCacheTarget(
+                name: "Android user data",
+                path: homeDirectory.appendingPathComponent(".android")
+            ),
+            DeveloperCacheTarget(
+                name: "Homebrew downloads",
+                path: homeDirectory.appendingPathComponent("Library/Caches/Homebrew")
+            ),
             DeveloperCacheTarget(
                 name: "Hugging Face cache",
                 path: homeDirectory.appendingPathComponent(".cache/huggingface")

@@ -9,6 +9,7 @@ public enum DockedItemKind: String, Codable, Sendable {
     case application
     case xcode
     case cache
+    case directory
 }
 
 public struct StorageVolume: Codable, Equatable, Identifiable, Sendable {
@@ -496,6 +497,48 @@ public struct CacheReport: Codable, Equatable, Sendable {
     }
 }
 
+public struct TeardownFailure: Codable, Equatable, Sendable {
+    public let path: String
+    public let reason: String
+
+    public init(path: String, reason: String) {
+        self.path = path
+        self.reason = reason
+    }
+}
+
+public struct TeardownReport: Codable, Equatable, Sendable {
+    public let restored: [MigrationResult]
+    public let unlinkedCaches: [MigrationResult]
+    public let failures: [TeardownFailure]
+    public let cacheConfigurationReset: Bool
+    public let defaultVolumeRemoved: Bool
+    public let notes: [String]
+    public let dryRun: Bool
+
+    public var exitCode: Int32 {
+        failures.isEmpty ? 0 : 1
+    }
+
+    public init(
+        restored: [MigrationResult],
+        unlinkedCaches: [MigrationResult],
+        failures: [TeardownFailure],
+        cacheConfigurationReset: Bool,
+        defaultVolumeRemoved: Bool,
+        notes: [String],
+        dryRun: Bool
+    ) {
+        self.restored = restored
+        self.unlinkedCaches = unlinkedCaches
+        self.failures = failures
+        self.cacheConfigurationReset = cacheConfigurationReset
+        self.defaultVolumeRemoved = defaultVolumeRemoved
+        self.notes = notes
+        self.dryRun = dryRun
+    }
+}
+
 public enum MacBayError: Error, Equatable, LocalizedError, Sendable {
     case invalidVolume(String)
     case externalVolumeRequired(String)
@@ -685,6 +728,7 @@ public enum DoctorStatus: String, Codable, Equatable, Sendable {
 public enum DoctorCategory: String, Codable, Equatable, Sendable {
     case applicationLink = "application_link"
     case developerDataLink = "developer_data_link"
+    case dataLink = "data_link"
     case record
     case externalReference = "external_reference"
     case volume

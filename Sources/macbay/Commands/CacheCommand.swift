@@ -4,7 +4,7 @@ import MacBayKit
 struct CacheCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "cache",
-        abstract: "Route npm, uv, Gradle, and Hugging Face caches to external storage.",
+        abstract: "Route developer package caches (npm, pnpm, Yarn, bun, uv, pip, Gradle, CocoaPods, Go, Android, Homebrew, Hugging Face) to external storage.",
         aliases: ["c"]
     )
 

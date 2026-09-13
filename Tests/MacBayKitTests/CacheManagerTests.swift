@@ -51,7 +51,18 @@ final class CacheManagerTests: XCTestCase {
         XCTAssertTrue(content1.contains("UV_CACHE_DIR"))
         XCTAssertTrue(content1.contains("GRADLE_USER_HOME"))
         XCTAssertTrue(content1.contains("HF_HOME"))
+        XCTAssertTrue(content1.contains("npm_config_store_dir"))
+        XCTAssertTrue(content1.contains("BUN_INSTALL_CACHE_DIR"))
+        XCTAssertTrue(content1.contains("PIP_CACHE_DIR"))
+        XCTAssertTrue(content1.contains("CP_HOME_DIR"))
+        XCTAssertTrue(content1.contains("GOMODCACHE"))
+        XCTAssertTrue(content1.contains("ANDROID_USER_HOME"))
+        XCTAssertTrue(content1.contains("HOMEBREW_CACHE"))
         XCTAssertTrue(content1.contains("# <<< macbay cache <<<"))
+
+        // Yarn v1과 Berry가 YARN_CACHE_FOLDER를 공유하므로 export는 한 번만 쓴다.
+        XCTAssertEqual(content1.components(separatedBy: "YARN_CACHE_FOLDER").count - 1, 1)
+        XCTAssertFalse(content1.contains("Yarn"))
 
         // Calling enable a second time must NOT duplicate blocks
         let report2 = try manager.enable(on: volumeURL, dryRun: false)
@@ -60,6 +71,17 @@ final class CacheManagerTests: XCTestCase {
         let content2 = try String(contentsOf: zshrc, encoding: .utf8)
         let beginCount = content2.components(separatedBy: "# >>> macbay cache >>>").count - 1
         XCTAssertEqual(beginCount, 1)
+    }
+
+    func testIsManagedBlockPresent() throws {
+        let manager = CacheManager(homeDirectory: homeDir)
+        XCTAssertFalse(manager.isManagedBlockPresent())
+
+        _ = try manager.enable(on: volumeURL, dryRun: false)
+        XCTAssertTrue(manager.isManagedBlockPresent())
+
+        _ = try manager.reset(dryRun: false)
+        XCTAssertFalse(manager.isManagedBlockPresent())
     }
 
     func testResetRemovesManagedBlockAndIsIdempotent() throws {

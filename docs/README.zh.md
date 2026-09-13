@@ -29,7 +29,9 @@ MacBay 是一款专为 Apple Silicon Mac 设计的开发者优先存储外部化
 - **应用程序迁移 (`dock` / `undock` / `adopt`)**：将大型应用迁移至外置存储、恢复至内置磁盘，或在无需拷回内置磁盘的情况下将已有外置应用纳管至 MacBay 标准目录结构。自动刷新 Dock 栏图标与 LaunchServices 注册。
 - **安全检查引擎 (`AppInspector`)**：自动分析应用程序包（App Bundle）的虚拟化权限（Entitlements）、内核/系统扩展（KEXT/System Extensions）以及硬编码重定位信号。
 - **Xcode DeviceSupport 管理 (`xcode`)**：迁移庞大的 iOS DeviceSupport 符号文件，同时确保 Xcode 无缝正常运行。保留原有的历史链接，并清理不可用的模拟器。
-- **开发者缓存重定向 (`cache`)**：通过在 `~/.zshrc` 中注入清晰、隔离的配置块，将 npm、uv、Gradle 和 Hugging Face 的缓存路由至外置存储。
+- **任意目录迁移 (`move` / `unmove`)**：将任意目录——游戏库、虚拟机磁盘、数据集、媒体文件夹——迁移至 `<Volume>/MacBay/`，并采用与应用相同的清单跟踪符号链接模型进行管理。
+- **开发者缓存重定向 (`cache`)**：通过在 `~/.zshrc` 中注入清晰、隔离的配置块，将 npm、pnpm、Yarn、bun、uv、pip、Gradle、CocoaPods、Go 模块、Android 用户数据、Homebrew 下载以及 Hugging Face 的缓存路由至外置存储。
+- **自清理 (`teardown`)**：在卸载之前，用一条命令恢复所有受管应用与目录、移除托管缓存链接与 `~/.zshrc` 配置块，并忘记默认卷。
 - **严格的外置卷验证**：自动校验外置 APFS 文件系统，拒绝安装器 DMG、只读驱动器及内置磁盘。
 
 ---
@@ -68,19 +70,19 @@ brew upgrade macbay
 > [!CAUTION]
 > `brew uninstall macbay` 仅会删除 CLI 可执行文件（`mb` 和 `macbay`）。它**不会**自动从外置存储中恢复已迁移的应用程序，也不会重置 `~/.zshrc` 中的缓存重定向配置。
 >
-> **在卸载 MacBay 之前**，请务必执行以下清理步骤：
-> 1. 将所有已外置的应用恢复回内置存储：
+> **在卸载 MacBay 之前**，用一条命令恢复其管理的所有内容：
+> 1. 运行 teardown（先用 `--dry-run` 预览）：
 >    ```sh
->    mb undock <AppName>.app
+>    mb teardown --dry-run
+>    mb teardown
 >    ```
-> 2. 重置 `~/.zshrc` 中的缓存环境变量：
->    ```sh
->    mb cache --reset
->    ```
-> 3. 随后即可安全卸载 Formula：
+>    该命令会恢复已 dock 的应用与已 move 的目录、移除托管缓存链接、清除 `~/.zshrc` 配置块，并忘记默认卷。
+> 2. 随后即可安全卸载 Formula：
 >    ```sh
 >    brew uninstall macbay
 >    ```
+>
+> 如需手动清理，可对每个已 dock 应用执行 `mb undock <AppName>.app`，对每个已迁移目录执行 `mb unmove <path>`，并运行 `mb cache --reset`。
 
 ---
 
@@ -293,7 +295,10 @@ Healthy · 2
 | `undock` | `ud` |
 | `repair` | `rep` |
 | `xcode` | `xc` |
+| `move` | `mv` |
+| `unmove` | `umv` |
 | `cache` | `c` |
+| `teardown` | `td` |
 | `tui` | `ui` |
 
 ```sh
@@ -546,9 +551,45 @@ mb cache --reset
 
 支持托管的缓存包括：
 - `npm`：`npm_config_cache`
+- `pnpm store`：`npm_config_store_dir`
+- `Yarn v1 缓存`：仅链接（`YARN_CACHE_FOLDER` 导出由下方共享该变量的 Berry 目标负责）
+- `Yarn Berry 缓存`：`YARN_CACHE_FOLDER`
+- `bun 缓存`：`BUN_INSTALL_CACHE_DIR`
 - `uv`：`UV_CACHE_DIR`
+- `pip`：`PIP_CACHE_DIR`
 - `Gradle`：`GRADLE_USER_HOME`
+- `CocoaPods`：`CP_HOME_DIR`
+- `Go 模块`：`GOMODCACHE`
+- `Android 用户数据`：`ANDROID_USER_HOME`
+- `Homebrew 下载`：`HOMEBREW_CACHE`
 - `Hugging Face`：`HF_HOME`
+
+> [!NOTE]
+> 有意不路由 Cargo（`~/.cargo`）：`CARGO_HOME` 同时包含 `~/.cargo/bin` 中的 rustup 垫片，迁移它会导致驱动器断开时 `cargo`/`rustup` 失效。如需迁移某个大型项目目录，请改用 `mb move`。
+
+### 一键清理（`teardown`）
+
+一次性还原 MacBay 管理的所有内容——适用于卸载前或更换外置驱动器时：
+
+```sh
+# 预览完整 teardown
+mb teardown --dry-run
+
+# 恢复所有受管项并重置配置
+mb teardown
+
+# 仅针对单个卷
+mb teardown --volume /Volumes/ExternalSSD
+```
+
+**执行内容**：
+1. **恢复记录项**：对每个已连接的合格卷（或 `--volume`），恢复全部清单记录——应用经 `undock`，目录经 `unmove` 路径。
+2. **清理已知链接**：仍是指向 MacBay 存储但无清单记录的开发者位置（Xcode 目标、缓存目标）将被清理：指向 `MacBay/Caches/` 的链接被移除并重建为空目录（外置副本保留为非管理存档），指向其他 `MacBay/` 根目录的链接则完整恢复回内置盘。
+3. **重置配置**：移除 `~/.zshrc` 托管配置块并忘记已保存的默认卷。
+4. **报告**：单项失败不会中断执行而是被汇总；存在失败时退出码为 `1`。各卷上的 `MacBay/` 目录本身予以保留——备份与未记录数据绝不删除——报告会在 notes 中提示残留目录。
+
+> [!IMPORTANT]
+> `teardown` 会把数据拷回内置磁盘。内置空间不足时对应项会报错中止，请先运行 `mb teardown --dry-run` 查看将要执行的操作。
 
 ---
 
@@ -588,7 +629,8 @@ mb cache --reset
 ```text
 /Volumes/<ExternalDrive>/MacBay/
 ├── Applications/       # 已迁移的应用程序包
-├── Caches/             # npm、uv、Gradle 和 Hugging Face 缓存
+├── Caches/             # npm、uv、Gradle 等开发者缓存
+├── Data/               # 通过 `mb move` 迁移的目录
 ├── Xcode/              # iOS DeviceSupport 符号缓存
 └── manifest.json       # 记录所有已外置项元数据的 Codable 清单文件
 ```
