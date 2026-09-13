@@ -64,7 +64,7 @@ public struct DirectoryMigrator {
             try replaceSourceWithSymlink(source: source, destination: destination)
         } catch {
             if fileManager.fileExists(atPath: destination.path) {
-                try? fileManager.removeItem(at: destination)
+                try? fileManager.removeItemMakingWritable(at: destination)
             }
             throw error
         }
@@ -99,16 +99,16 @@ public struct DirectoryMigrator {
         let backup = source.deletingLastPathComponent().appendingPathComponent(
             ".\(source.lastPathComponent).macbay-\(UUID().uuidString)"
         )
-        try fileManager.moveItem(at: source, to: backup)
+        try fileManager.moveItemPreservingPermissions(at: source, to: backup)
         do {
             try fileManager.createSymbolicLink(atPath: source.path, withDestinationPath: destination.path)
-            try fileManager.removeItem(at: backup)
+            try fileManager.removeItemMakingWritable(at: backup)
         } catch {
             if fileManager.fileExists(atPath: source.path) {
-                try? fileManager.removeItem(at: source)
+                try? fileManager.removeItemMakingWritable(at: source)
             }
             if fileManager.fileExists(atPath: backup.path), !fileManager.fileExists(atPath: source.path) {
-                try? fileManager.moveItem(at: backup, to: source)
+                try? fileManager.moveItemPreservingPermissions(at: backup, to: source)
             }
             throw error
         }

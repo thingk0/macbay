@@ -17,7 +17,7 @@ final class CacheManagerTests: XCTestCase {
     }
 
     override func tearDownWithError() throws {
-        try? FileManager.default.removeItem(at: tempDir)
+        try? FileManager.default.removeItemMakingWritable(at: tempDir)
     }
 
     func testDryRunDoesNotModifyFiles() throws {
@@ -33,6 +33,9 @@ final class CacheManagerTests: XCTestCase {
 
         let externalCaches = MacBayPaths.cachesRoot(on: volumeURL)
         XCTAssertFalse(FileManager.default.fileExists(atPath: externalCaches.path))
+        XCTAssertNil(try? FileManager.default.destinationOfSymbolicLink(
+            atPath: homeDir.appendingPathComponent(".yarn/berry/cache").path
+        ))
     }
 
     func testEnableUpdatesZshrcAndIsIdempotent() throws {
@@ -53,10 +56,15 @@ final class CacheManagerTests: XCTestCase {
 
         let envPath = try XCTUnwrap(report1.environmentFilePath)
         let envContent1 = try String(contentsOfFile: envPath, encoding: .utf8)
-        XCTAssertTrue(envContent1.contains("npm_config_cache"))
-        XCTAssertTrue(envContent1.contains("UV_CACHE_DIR"))
-        XCTAssertTrue(envContent1.contains("GRADLE_USER_HOME"))
-        XCTAssertTrue(envContent1.contains("HF_HOME"))
+        for variable in [
+            "npm_config_cache", "npm_config_store_dir", "BUN_INSTALL_CACHE_DIR", "UV_CACHE_DIR",
+            "PIP_CACHE_DIR", "GRADLE_USER_HOME", "CP_HOME_DIR", "GOMODCACHE", "ANDROID_USER_HOME",
+            "HOMEBREW_CACHE", "HF_HOME"
+        ] {
+            XCTAssertTrue(envContent1.contains("export \(variable)="), "missing export for \(variable)")
+        }
+        // Yarn은 링크로만 라우팅하므로 YARN_CACHE_FOLDER를 내보내지 않는다.
+        XCTAssertFalse(envContent1.contains("YARN_CACHE_FOLDER"))
 
         // Calling enable a second time must NOT duplicate blocks
         let report2 = try manager.enable(on: volumeURL, dryRun: false)
@@ -65,6 +73,17 @@ final class CacheManagerTests: XCTestCase {
         let content2 = try String(contentsOf: zshrc, encoding: .utf8)
         let beginCount = content2.components(separatedBy: "# >>> macbay cache >>>").count - 1
         XCTAssertEqual(beginCount, 1)
+    }
+
+    func testIsManagedBlockPresent() throws {
+        let manager = CacheManager(homeDirectory: homeDir)
+        XCTAssertFalse(manager.isManagedBlockPresent())
+
+        _ = try manager.enable(on: volumeURL, dryRun: false)
+        XCTAssertTrue(manager.isManagedBlockPresent())
+
+        _ = try manager.reset(dryRun: false)
+        XCTAssertFalse(manager.isManagedBlockPresent())
     }
 
     func testResetRemovesManagedBlockAndIsIdempotent() throws {
@@ -134,6 +153,91 @@ final class CacheManagerTests: XCTestCase {
         let zshrcContent = try String(contentsOf: homeDir.appendingPathComponent(".zshrc"), encoding: .utf8)
         XCTAssertTrue(zshrcContent.contains("it'\\''s"))
         XCTAssertEqual(CacheManager.shellQuoted("a'b"), "'a'\\''b'")
+    }
+
+    func testEnableHandlesReadOnlyModuleCache() throws {
+        // Go 모듈 캐시는 디렉터리가 0500으로 읽기 전용 — removeItem이 실패하지 않아야 한다.
+        let modDir = homeDir.appendingPathComponent("go/pkg/mod")
+        let locked = modDir.appendingPathComponent("cache/download")
+        try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: true)
+        try Data("x".utf8).write(to: locked.appendingPathComponent("blob"))
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: locked.path)
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: modDir.path)
+
+        // ditto/lsof는 스텁으로 대체 — 검증 대상은 읽기전용 소스 트리의 "제거"다.
+        let manager = CacheManager(
+            commandRunner: TestBundleCommandRunner(entitlementsXml: ""),
+            homeDirectory: homeDir
+        )
+        let report = try manager.enable(on: volumeURL, dryRun: false)
+
+        XCTAssertTrue(report.failures.isEmpty, "failures: \(report.failures)")
+        XCTAssertNotNil(try? FileManager.default.destinationOfSymbolicLink(atPath: modDir.path))
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: MacBayPaths.cachesRoot(on: volumeURL)
+                .appendingPathComponent("go-mod/cache/download/blob").path
+        ))
+    }
+
+    func testEnableContinuesAndReportsWhenOneTargetFails() throws {
+        // 대상 하나가 실패해도 나머지 라우팅과 셸 설정은 계속 진행되어야 한다.
+        let goMod = homeDir.appendingPathComponent("go/pkg/mod")
+        try FileManager.default.createDirectory(at: goMod, withIntermediateDirectories: true)
+        let collision = MacBayPaths.cachesRoot(on: volumeURL).appendingPathComponent("go-mod")
+        try FileManager.default.createDirectory(at: collision, withIntermediateDirectories: true)
+
+        let manager = CacheManager(homeDirectory: homeDir)
+        let report = try manager.enable(on: volumeURL, dryRun: false)
+
+        XCTAssertEqual(report.exitCode, 1)
+        XCTAssertEqual(report.failures.count, 1)
+        XCTAssertEqual(report.failures[0].path, goMod.path)
+        // 나머지 대상은 정상 처리되고 셸 설정도 작성되지만, 실패한 대상의 캐시는 내장에 남아 있으므로
+        // 그 환경 변수는 내보내지 않는다.
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: MacBayPaths.cachesRoot(on: volumeURL).appendingPathComponent("npm").path
+        ))
+        let zshrc = try String(contentsOf: homeDir.appendingPathComponent(".zshrc"), encoding: .utf8)
+        XCTAssertTrue(zshrc.contains("macbay cache"))
+        let envPath = try XCTUnwrap(report.environmentFilePath)
+        let envContent = try String(contentsOfFile: envPath, encoding: .utf8)
+        XCTAssertTrue(envContent.contains("export HF_HOME="))
+        XCTAssertFalse(envContent.contains("GOMODCACHE"))
+        let goResult = try XCTUnwrap(report.targets.first(where: { $0.name == "Go modules" }))
+        XCTAssertTrue(goResult.messages.contains("Environment export skipped"))
+    }
+
+    func testYarnCachesAreLinkedWithoutEnvironmentExport() throws {
+        // Berry는 전역 캐시(기본값)에서 YARN_CACHE_FOLDER를 무시하므로 캐시가 아직 없어도 링크로 라우팅하고,
+        // 이미 있는 v1 캐시는 옮긴 뒤 링크한다. 어느 쪽도 환경 변수는 내보내지 않는다.
+        let berryCache = homeDir.appendingPathComponent(".yarn/berry/cache")
+        let classicCache = homeDir.appendingPathComponent("Library/Caches/Yarn")
+        try FileManager.default.createDirectory(at: classicCache, withIntermediateDirectories: true)
+        try Data("tarball".utf8).write(to: classicCache.appendingPathComponent("package.tgz"))
+
+        let manager = CacheManager(
+            commandRunner: TestBundleCommandRunner(entitlementsXml: ""),
+            homeDirectory: homeDir
+        )
+        let report = try manager.enable(on: volumeURL, dryRun: false)
+        XCTAssertTrue(report.failures.isEmpty, "failures: \(report.failures)")
+
+        let caches = MacBayPaths.cachesRoot(on: volumeURL)
+        XCTAssertEqual(
+            try FileManager.default.destinationOfSymbolicLink(atPath: berryCache.path),
+            caches.appendingPathComponent("yarn-berry").path
+        )
+        XCTAssertEqual(
+            try FileManager.default.destinationOfSymbolicLink(atPath: classicCache.path),
+            caches.appendingPathComponent("yarn-v1").path
+        )
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: caches.appendingPathComponent("yarn-v1/package.tgz").path
+        ))
+
+        let envPath = try XCTUnwrap(report.environmentFilePath)
+        let envContent = try String(contentsOfFile: envPath, encoding: .utf8)
+        XCTAssertFalse(envContent.contains("YARN"))
     }
 
     func testSymlinkedZshrcIsPreservedAsLink() throws {

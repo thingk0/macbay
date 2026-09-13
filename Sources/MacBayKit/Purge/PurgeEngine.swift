@@ -153,7 +153,7 @@ public struct PurgeEngine {
             for child in listing.entries {
                 let childSize = (try? sizeCalculator.size(of: child)) ?? 0
                 do {
-                    try fileManager.removeItem(at: child)
+                    try fileManager.removeItemMakingWritable(at: child)
                     reclaimed += childSize
                     removedAny = true
                 } catch {

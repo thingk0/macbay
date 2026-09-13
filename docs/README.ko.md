@@ -30,7 +30,9 @@ MacBay는 Apple Silicon Mac을 위해 설계된 개발자 중심의 스토리지
 - **무손실 애플리케이션 캐시 정리 (`purge` / `pu`)**: 사용자 계정, SQLite 데이터베이스, 환경 설정을 전혀 건드리지 않고, 자동 재생성되는 Chromium/Electron 캐시(`Code Cache`, `GPUCache`, `CacheStorage`), ShipIt 업데이트 설치 파일, Homebrew 패키지 다운로드 캐시, 진단 크래시 로그를 안전하게 정리하여 내장 SSD 공간을 수 기가바이트 이상 확보합니다.
 - **안전성 검사 엔진 (`AppInspector`)**: 앱 번들의 가상화 권한(entitlement), 커널/시스템 확장(KEXT/System Extension), 하드코딩된 자체 재배치 로직 여부를 자동으로 검사합니다.
 - **Xcode DeviceSupport 관리 (`xcode`)**: 방대한 용량을 차지하는 iOS DeviceSupport 심볼을 외장 드라이브로 이전하면서도 Xcode가 정상적으로 작동하도록 지원합니다. 기존 레거시 심볼릭 링크를 보존하고 사용 불가능한 시뮬레이터를 정리합니다.
-- **개발자 캐시 경로 재지정 (`cache`)**: `~/.zshrc` 내에 격리 관리되는 설정 블록을 통해 npm, uv, Gradle, Hugging Face 캐시 디렉터리를 외장 스토리지로 라우팅합니다.
+- **임의 디렉터리 이전 (`move` / `unmove`)**: 게임 라이브러리, VM 디스크, 데이터셋, 미디어 폴더 등 어떤 디렉터리든 `<Volume>/MacBay/Data/`로 이전하고, 앱과 동일한 매니페스트 추적 심볼릭 링크 모델로 관리합니다.
+- **개발자 캐시 경로 재지정 (`cache`)**: `~/.zshrc` 내에 격리 관리되는 설정 블록을 통해 npm, pnpm, Yarn, bun, uv, pip, Gradle, CocoaPods, Go 모듈, Android 사용자 데이터, Homebrew 다운로드, Hugging Face 캐시 디렉터리를 외장 스토리지로 라우팅합니다.
+- **자체 정리 (`teardown`)**: 관리 중인 모든 앱과 디렉터리를 복원하고, 관리 캐시 링크와 `~/.zshrc` 블록을 제거하고, 기본 볼륨을 삭제 전에 한 번의 명령으로 잊습니다.
 - **엄격한 볼륨 유효성 검사**: 외장 APFS 파일시스템을 자동으로 검증하며, 설치용 DMG 디스크 이미지, 읽기 전용 드라이브, 내부 디스크는 사전에 제외합니다.
 
 ---
@@ -69,19 +71,19 @@ brew upgrade macbay
 > [!CAUTION]
 > `brew uninstall macbay` 명령은 CLI 실행 파일(`mb` 및 `macbay`)만 삭제합니다. 외장 스토리지로 이전된 애플리케이션을 내부 저장소로 자동 복원하거나 `~/.zshrc`의 캐시 리디렉션 설정을 되돌리지 **않습니다**.
 >
-> **MacBay를 삭제하기 전에** 다음 정리 단계를 반드시 진행해 주세요:
-> 1. 외장으로 이전(`dock`)된 모든 애플리케이션을 내부 저장소로 복원합니다:
+> **MacBay를 삭제하기 전에** 한 번의 명령으로 관리 중인 모든 것을 복원하세요:
+> 1. teardown을 실행합니다(`--dry-run`으로 먼저 미리보기):
 >    ```sh
->    mb undock <AppName>.app
+>    mb teardown --dry-run
+>    mb teardown
 >    ```
-> 2. `~/.zshrc`의 캐시 환경 변수 설정을 초기화합니다:
->    ```sh
->    mb cache --reset
->    ```
-> 3. 이제 안전하게 포뮬러를 삭제합니다:
+>    dock된 앱과 move된 디렉터리를 복원하고, 관리 캐시 링크를 제거하고, `~/.zshrc` 블록을 지우며, 기본 볼륨을 잊습니다.
+> 2. 이제 안전하게 포뮬러를 삭제합니다:
 >    ```sh
 >    brew uninstall macbay
 >    ```
+>
+> 수동 정리를 선호한다면 dock된 각 앱에 `mb undock <AppName>.app`, move된 각 디렉터리에 `mb unmove <path>`, 그리고 `mb cache --reset`을 대신 실행하세요.
 
 ---
 
@@ -294,8 +296,11 @@ Healthy · 2
 | `undock` | `ud` |
 | `repair` | `rep` |
 | `xcode` | `xc` |
+| `move` | `mv` |
+| `unmove` | `umv` |
 | `cache` | `c` |
 | `purge` | `pu` |
+| `teardown` | `td` |
 | `tui` | `ui` |
 
 ```sh
@@ -515,6 +520,32 @@ Available actions:
 - **독립된 복구 저널**: 작업 상태는 `<Volume>/MacBay/.operations/repair-<App>.json`(버전 1)에 안전하게 기록됩니다. 작업이 중단된 경우 `mb doctor`가 감지하여 `mb repair "<App>" --rollback`으로 복원하도록 안내합니다.
 - **내장 유지 (keep-local)**: 매니페스트 항목만 원자적으로 제거하며, 내장 앱과 외장 사본은 파일시스템에서 전혀 삭제되지 않고 외장 사본은 비관리 보관 사본이 됩니다.
 
+### 임의 디렉터리 이전 (`move` / `unmove`)
+
+게임 라이브러리, VM 디스크, 데이터셋, 미디어 폴더 등 어떤 디렉터리든 외장 볼륨의 `<Volume>/MacBay/Data/<name>`으로 옮기고 원래 위치를 심볼릭 링크로 대체합니다. 항목은 `manifest.json`에 `directory` 종류로 기록되어 `mb status`, `mb doctor`, `mb teardown`이 모두 인식합니다:
+
+```sh
+# 항상 --dry-run으로 먼저 미리보기
+mb move ~/Games --dry-run
+
+# 디렉터리 외장화
+mb move ~/Games
+
+# 내장 저장소로 복원
+mb unmove ~/Games --dry-run
+mb unmove ~/Games
+```
+
+**동작 방식**:
+1. **검증**: 심볼릭 링크, 비-디렉터리, `.app` 번들(`mb dock` 사용), 보호된 시스템 위치(`/System`, `/Library`, `/usr`, `/Applications`, `/Volumes`, 홈 루트, `~/Library` 등), 이미 비내장 볼륨에 있는 소스, 그리고 `mb cache`가 이미 관리하는 경로를 거부합니다. `~/Library` 안에서는 `Containers`, `Group Containers`, `Mobile Documents`, `Keychains`, `Mail`, `Preferences`, `Developer` 등 공유/시스템 하위 트리는 옮길 수 없고, `~/.ssh`, `~/.gnupg`, `~/.cargo`, `~/.rustup` 같은 자격 증명 디렉터리도 차단됩니다. `Application Support`와 `Caches` 루트 자체는 차단되지만 그 하위 디렉터리는 옮길 수 있습니다(예: `~/Library/Application Support/Steam`).
+2. **안전성**: 실행 중인 프로세스(`lsof`)와 SQLite 잠금을 확인하고, 디렉터리 크기를 측정하며, 외장 여유 공간을 미리 보여줍니다.
+3. **복사 및 링크**: `ditto`로 진행률 샘플링과 함께 복사한 뒤, 소스를 심볼릭 링크로 원자적으로 교체합니다.
+4. **매니페스트**: `<Volume>/MacBay/manifest.json`에 이전을 기록하여 `mb unmove` 또는 `mb teardown`으로 복원할 수 있게 합니다.
+
+`unmove`는 심볼릭 링크를 해석하고, 외장 사본을 다시 복사하고, 링크와 외장 사본을 제거하며, 매니페스트 기록을 삭제합니다. 기록이 있는 항목은 매니페스트를 통해 복원되고, 기록 없이 MacBay 스토리지를 가리키는 링크는 표준 `MacBay/Data/` 레이아웃 아래에 있을 때만 복원되며, 그 외 위치로의 링크는 거부됩니다.
+
+> [!NOTE]
+> `mb move`는 `mb dock`처럼 애플리케이션이 이전 후에도 계속 동작하게 만드는 절차(codesign 검증, LaunchServices 갱신, Dock 재시작)를 수행하지 않습니다. `.app` 번들에는 `dock`을 사용하세요.
 
 ### Xcode 유지 관리 (`xcode`)
 
@@ -548,9 +579,45 @@ mb cache --reset
 
 관리 대상 캐시 목록:
 - `npm`: `npm_config_cache`
+- `pnpm store`: `npm_config_store_dir`
+- `Yarn Berry 캐시` (`~/.yarn/berry/cache`): 심볼릭 링크 전용 — 전역 캐시가 켜진 기본 설정에서 Berry는 `YARN_CACHE_FOLDER`를 무시하고, 이 변수는 zero-install 저장소가 쓰는 프로젝트 `cacheFolder` 설정까지 덮어쓰기 때문입니다
+- `Yarn v1 캐시` (`~/Library/Caches/Yarn`): 같은 이유로 심볼릭 링크 전용
+- `bun 캐시`: `BUN_INSTALL_CACHE_DIR`
 - `uv`: `UV_CACHE_DIR`
+- `pip`: `PIP_CACHE_DIR`
 - `Gradle`: `GRADLE_USER_HOME`
+- `CocoaPods`: `CP_HOME_DIR`
+- `Go 모듈`: `GOMODCACHE`
+- `Android 사용자 데이터`: `ANDROID_USER_HOME`
+- `Homebrew 다운로드`: `HOMEBREW_CACHE`
 - `Hugging Face`: `HF_HOME`
+
+> [!NOTE]
+> Cargo(`~/.cargo`)는 의도적으로 라우팅하지 않습니다. `CARGO_HOME`에는 `~/.cargo/bin`의 rustup shim도 있어서, 이를 옮기면 드라이브가 분리될 때마다 `cargo`/`rustup`이 깨집니다. 특정 대용량 프로젝트 디렉터리는 `mb move`로 옮기세요.
+
+### 전체 정리 (`teardown`)
+
+MacBay가 관리하는 모든 것을 한 번에 되돌립니다 — 삭제 전이나 다른 외장 드라이브로 옮길 때 유용합니다:
+
+```sh
+# 전체 teardown 미리보기
+mb teardown --dry-run
+
+# 모든 관리 항목 복원 및 설정 초기화
+mb teardown
+
+# 한 볼륨으로 제한
+mb teardown --volume /Volumes/ExternalSSD
+```
+
+**동작 방식**:
+1. **기록 복원**: 연결된 각 적격 볼륨(또는 `--volume`)의 모든 매니페스트 항목을 복원합니다 — 애플리케이션은 `undock`, move된 디렉터리는 `unmove` 경로로.
+2. **알려진 링크 정리**: 매니페스트 기록 없이 심볼릭 링크로 남은 개발자 위치(Xcode 대상, 캐시 대상)를 정리합니다: `MacBay/Caches/` 안의 링크는 제거 후 빈 디렉터리로 교체하고(외장 사본은 비관리 보관본으로 유지), 다른 `MacBay/` 루트의 링크는 내장으로 완전히 복원합니다.
+3. **설정 초기화**: 실패가 없는 *전체* teardown(`--volume` 생략)일 때만 `~/.zshrc`의 관리 블록을 제거하고 저장된 기본 볼륨을 잊습니다. 기본 볼륨은 실제로 이번 teardown 대상이었을 때만 잊습니다 — 마운트되지 않은 볼륨은 note와 함께 유지되어 나중에 데이터에 다시 접근할 수 있습니다. 대상 밖 볼륨의 MacBay 디렉터리를 가리키는 캐시 링크는 조용히 넘기지 않고 건너뛰었음을 보고합니다.
+4. **보고**: 항목별 실패를 중단 없이 수집하며, 하나라도 실패하면 종료 코드가 `1`입니다. 각 볼륨의 `MacBay/` 디렉터리 자체는 남겨둡니다 — 백업과 기록되지 않은 데이터는 절대 삭제하지 않습니다 — 보고서의 notes에 남은 디렉터리를 안내합니다.
+
+> [!IMPORTANT]
+> `teardown`은 데이터를 내장 디스크로 다시 복사합니다. 내장 공간이 부족하면 항목별로 오류와 함께 중단되므로, 먼저 `mb teardown --dry-run`으로 어떤 일이 일어날지 확인하세요.
 
 ### 애플리케이션 캐시 정리 (`purge`)
 
@@ -623,7 +690,8 @@ mb purge --no-homebrew
 ```text
 /Volumes/<ExternalDrive>/MacBay/
 ├── Applications/       # 이전된 애플리케이션 번들
-├── Caches/             # npm, uv, Gradle, Hugging Face 캐시
+├── Caches/             # npm, uv, Gradle 등 개발자 캐시
+├── Data/               # `mb move`로 이전된 디렉터리
 ├── Xcode/              # iOS DeviceSupport 심볼 캐시
 └── manifest.json       # 이전된 모든 항목의 Codable 메타데이터 매니페스트
 ```

@@ -171,14 +171,7 @@ public struct ShellEnvironmentWriter {
     public func remove() throws -> [String] {
         var cleanedPaths: [String] = []
 
-        let candidateURLs = [
-            homeDirectory.appendingPathComponent(".zshrc"),
-            homeDirectory.appendingPathComponent(".bashrc"),
-            homeDirectory.appendingPathComponent(".bash_profile"),
-            homeDirectory.appendingPathComponent(".config/fish/config.fish")
-        ]
-
-        for url in candidateURLs {
+        for url in Self.managedShellConfigurationURLs(homeDirectory: homeDirectory) {
             let resolved = url.resolvingSymlinksInPath()
             guard fileManager.fileExists(atPath: resolved.path) else { continue }
 
@@ -211,6 +204,30 @@ public struct ShellEnvironmentWriter {
         }
 
         return cleanedPaths
+    }
+
+    /// 관리 블록이 남아 있는 셸 설정이 있거나 cache-env 파일이 남아 있으면 true.
+    public func hasManagedConfiguration() -> Bool {
+        for url in Self.managedShellConfigurationURLs(homeDirectory: homeDirectory) {
+            let resolved = url.resolvingSymlinksInPath()
+            if let contents = try? String(contentsOf: resolved, encoding: .utf8),
+               contents.contains(Self.beginMarker) {
+                return true
+            }
+        }
+        let configDir = homeDirectory.appendingPathComponent(".config/macbay", isDirectory: true)
+        return ["cache-env.sh", "cache-env.fish"].contains { name in
+            fileManager.fileExists(atPath: configDir.appendingPathComponent(name).path)
+        }
+    }
+
+    private static func managedShellConfigurationURLs(homeDirectory: URL) -> [URL] {
+        [
+            homeDirectory.appendingPathComponent(".zshrc"),
+            homeDirectory.appendingPathComponent(".bashrc"),
+            homeDirectory.appendingPathComponent(".bash_profile"),
+            homeDirectory.appendingPathComponent(".config/fish/config.fish")
+        ]
     }
 
     private func updateTargetFile(

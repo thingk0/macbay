@@ -14,6 +14,8 @@ public struct MacBayService {
     private let xcodeDoctor: XcodeDoctor
     private let cacheManager: CacheManager
     private let purgeEngine: PurgeEngine
+    private let directoryMover: DirectoryMoveManager
+    private let teardownManager: TeardownManager
 
     public init(
         fileManager: FileManager = .default,
@@ -76,6 +78,18 @@ public struct MacBayService {
         self.purgeEngine = PurgeEngine(
             fileManager: fileManager,
             commandRunner: commandRunner
+        )
+        self.directoryMover = DirectoryMoveManager(
+            fileManager: fileManager,
+            commandRunner: commandRunner,
+            volumeManager: self.volumeManager
+        )
+        self.teardownManager = TeardownManager(
+            fileManager: fileManager,
+            commandRunner: commandRunner,
+            volumeManager: self.volumeManager,
+            configStore: self.configStore,
+            cacheManager: self.cacheManager
         )
     }
 
@@ -342,6 +356,47 @@ public struct MacBayService {
     ) throws -> XcodeDoctorReport {
         let selection = try selectVolume(path: volumePath)
         return try xcodeDoctor.run(on: URL(fileURLWithPath: selection.volume.path), options: options, dryRun: dryRun)
+    }
+
+    public func move(
+        path: String,
+        volumePath: String?,
+        dryRun: Bool,
+        progress: ProgressHandler? = nil
+    ) throws -> MigrationResult {
+        progress?(.selectingVolume)
+        let selection = try selectVolume(path: volumePath)
+        return try directoryMover.move(
+            path: path,
+            on: URL(fileURLWithPath: selection.volume.path),
+            dryRun: dryRun,
+            progress: progress
+        )
+    }
+
+    public func unmove(
+        path: String,
+        volumePath: String?,
+        dryRun: Bool,
+        progress: ProgressHandler? = nil
+    ) throws -> MigrationResult {
+        progress?(.selectingVolume)
+        let volume: URL?
+        if let volumePath {
+            let selected = try volumeManager.resolveExternalVolume(path: volumePath)
+            volume = URL(fileURLWithPath: selected.path)
+        } else {
+            volume = nil
+        }
+        return try directoryMover.unmove(path: path, from: volume, dryRun: dryRun, progress: progress)
+    }
+
+    public func teardown(
+        volumePath: String?,
+        dryRun: Bool,
+        progress: ProgressHandler? = nil
+    ) throws -> TeardownReport {
+        try teardownManager.execute(volumePath: volumePath, dryRun: dryRun, progress: progress)
     }
 
     public func cache(volumePath: String?, dryRun: Bool, reset: Bool) throws -> CacheReport {
