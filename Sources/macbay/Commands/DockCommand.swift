@@ -17,33 +17,22 @@ struct DockCommand: ParsableCommand {
     @OptionGroup var options: MutatingOptions
 
     func run() throws {
-        do {
-            try CommandSupport.confirm(
-                "MacBay will move \(app) to external storage and replace it with a symlink.",
-                yes: options.yes,
-                dryRun: options.dryRun
-            )
-            let progress = TerminalProgress(json: options.json)
-            defer { progress.stop() }
-            let result = try MacBayService().dock(
-                appName: app,
-                volumePath: options.volume,
-                dryRun: options.dryRun,
-                force: force,
-                progress: progress.update
-            )
-            progress.stop()
-            try CommandSupport.printValue(result, json: options.json) { $0.migration(result) }
-            CommandSupport.recordHistory(
-                command: "dock", subject: app, outcome: .success,
-                undo: "mb undock \"\(app)\"", dryRun: options.dryRun
-            )
-        } catch {
-            CommandSupport.recordHistory(
-                command: "dock", subject: app, outcome: .failure,
-                detail: error.localizedDescription, dryRun: options.dryRun
-            )
-            throw error
-        }
+        // History is recorded inside MacBayService.dock, which the TUI calls too.
+        try CommandSupport.confirm(
+            "MacBay will move \(app) to external storage and replace it with a symlink.",
+            yes: options.yes,
+            dryRun: options.dryRun
+        )
+        let progress = TerminalProgress(json: options.json)
+        defer { progress.stop() }
+        let result = try MacBayService().dock(
+            appName: app,
+            volumePath: options.volume,
+            dryRun: options.dryRun,
+            force: force,
+            progress: progress.update
+        )
+        progress.stop()
+        try CommandSupport.printValue(result, json: options.json) { $0.migration(result) }
     }
 }

@@ -40,15 +40,13 @@ public struct HistoryEntry: Codable, Equatable, Sendable {
 /// disk, so history survives detached external volumes. Reference data only:
 /// doctor verdicts and safety checks never read it. Recording failures are
 /// swallowed — history must never break the operation it describes.
-public struct HistoryStore: Sendable {
+public struct HistoryStore {
     /// Rotate the log once it exceeds this size; one previous file is kept.
     public static let maxBytes: UInt64 = 5 * 1024 * 1024
 
     private let fileManager: FileManager
     private let environment: [String: String]
     private let homeDirectory: URL
-    private let encoder: JSONEncoder
-    private let decoder: JSONDecoder
 
     public init(
         fileManager: FileManager = .default,
@@ -58,8 +56,6 @@ public struct HistoryStore: Sendable {
         self.fileManager = fileManager
         self.environment = environment
         self.homeDirectory = homeDirectory
-        self.encoder = JSONEncoder()
-        self.decoder = JSONDecoder()
     }
 
     public var stateDirectory: URL {
@@ -79,21 +75,36 @@ public struct HistoryStore: Sendable {
         stateDirectory.appendingPathComponent("history.1.jsonl")
     }
 
+    /// Serializes concurrent writers so lines cannot interleave.
+    private var lockURL: URL {
+        stateDirectory.appendingPathComponent("history.lock")
+    }
+
     /// Append an entry. Never throws: a broken history file or full disk must
     /// not fail the command being recorded.
     public func record(_ entry: HistoryEntry) {
         do {
             try fileManager.createDirectory(at: stateDirectory, withIntermediateDirectories: true)
-            try rotateIfNeeded()
-            let line = try encoder.encode(entry)
-            if let handle = try? FileHandle(forWritingTo: historyURL) {
-                defer { try? handle.close() }
-                try handle.seekToEnd()
-                try handle.write(contentsOf: line)
-                try handle.write(contentsOf: Data("\n".utf8))
-            } else {
-                try (line + Data("\n".utf8)).write(to: historyURL)
+            _ = try FileLock(url: lockURL).withLock {
+                try rotateIfNeeded()
+                let line = try JSONEncoder().encode(entry) + Data("\n".utf8)
+                if let handle = try? FileHandle(forWritingTo: historyURL) {
+                    defer { try? handle.close() }
+                    try handle.seekToEnd()
+                    try handle.write(contentsOf: line)
+                } else {
+                    try line.write(to: historyURL)
+                }
+                // History may contain sensitive paths; keep it owner-only.
+                try? fileManager.setAttributes(
+                    [.posixPermissions: 0o600],
+                    ofItemAtPath: historyURL.path
+                )
             }
+            try? fileManager.setAttributes(
+                [.posixPermissions: 0o700],
+                ofItemAtPath: stateDirectory.path
+            )
         } catch {
             // History is advisory; ignore write failures.
         }
@@ -104,6 +115,7 @@ public struct HistoryStore: Sendable {
     /// per-file reversal orders correctly even when timestamps tie.
     public func entries(limit: Int? = nil, command: String? = nil) -> [HistoryEntry] {
         var loaded: [HistoryEntry] = []
+        let decoder = JSONDecoder()
         for url in [historyURL, rotatedURL] where fileManager.fileExists(atPath: url.path) {
             guard let data = try? Data(contentsOf: url) else { continue }
             var fileEntries: [HistoryEntry] = []

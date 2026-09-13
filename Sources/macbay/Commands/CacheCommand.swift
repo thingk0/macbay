@@ -24,6 +24,7 @@ struct CacheCommand: ParsableCommand {
 
     func run() throws {
         let command = reset ? "cache --reset" : "cache --enable"
+        let report: CacheReport
         do {
             try CommandSupport.confirm(
                 reset
@@ -32,27 +33,30 @@ struct CacheCommand: ParsableCommand {
                 yes: options.yes,
                 dryRun: options.dryRun
             )
-            let report = try MacBayService().cache(
+            report = try MacBayService().cache(
                 volumePath: options.volume,
                 dryRun: options.dryRun,
                 reset: reset
             )
-            try CommandSupport.printValue(report, json: options.json) { $0.cache(report) }
-            CommandSupport.recordHistory(
-                command: command, subject: "developer caches",
-                outcome: report.exitCode == 0 ? .success : .partial,
-                undo: reset ? nil : "mb cache --reset",
-                dryRun: options.dryRun
-            )
-            if report.exitCode != 0 {
-                throw ExitCode(report.exitCode)
-            }
         } catch {
+            guard !CommandSupport.isCancellation(error) else { throw error }
             CommandSupport.recordHistory(
                 command: command, subject: "developer caches",
                 outcome: .failure, detail: error.localizedDescription, dryRun: options.dryRun
             )
             throw error
+        }
+        try CommandSupport.printValue(report, json: options.json) { $0.cache(report) }
+        CommandSupport.recordHistory(
+            command: command, subject: "developer caches",
+            outcome: report.failures.isEmpty ? .success : .partial,
+            detail: report.failures.isEmpty
+                ? nil
+                : "\(report.failures.count) target(s) failed",
+            dryRun: options.dryRun
+        )
+        if report.exitCode != 0 {
+            throw ExitCode(report.exitCode)
         }
     }
 }

@@ -53,6 +53,14 @@ enum CommandSupport {
         }
     }
 
+    /// True when the error is the user answering "n" at a confirmation prompt.
+    /// A cancelled operation never ran, so it must not appear in history.
+    static func isCancellation(_ error: Error) -> Bool {
+        guard let macBayError = error as? MacBayError,
+              case .unsupportedOperation(let message) = macBayError else { return false }
+        return message == "Cancelled"
+    }
+
     /// Records one history entry for a mutating command. Recording failures are
     /// swallowed inside HistoryStore — history is reference data only.
     static func recordHistory(

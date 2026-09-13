@@ -32,9 +32,10 @@ struct MoveCommand: ParsableCommand {
             try CommandSupport.printValue(result, json: options.json) { $0.migration(result) }
             CommandSupport.recordHistory(
                 command: "move", subject: path, outcome: .success,
-                undo: "mb unmove \(path)", dryRun: options.dryRun
+                undo: "mb unmove \(ShellEnvironmentWriter.shellQuoted(path))", dryRun: options.dryRun
             )
         } catch {
+            guard !CommandSupport.isCancellation(error) else { throw error }
             CommandSupport.recordHistory(
                 command: "move", subject: path, outcome: .failure,
                 detail: error.localizedDescription, dryRun: options.dryRun

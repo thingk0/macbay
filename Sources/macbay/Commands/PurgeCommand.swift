@@ -97,8 +97,9 @@ struct PurgeCommand: ParsableCommand {
                 try CommandSupport.printValue(report, json: true) { $0.purge(report) }
                 CommandSupport.recordHistory(
                     command: "purge", subject: "\(report.purgedItems.count) item(s)",
-                    outcome: .success,
-                    detail: "freed \(OutputFormatter.humanBytes(report.totalReclaimedBytes))",
+                    outcome: report.failedItems.isEmpty ? .success : .partial,
+                    detail: "freed \(OutputFormatter.humanBytes(report.totalReclaimedBytes))"
+                        + (report.failedItems.isEmpty ? "" : ", \(report.failedItems.count) failed"),
                     dryRun: dryRun
                 )
             } catch {
@@ -170,8 +171,9 @@ struct PurgeCommand: ParsableCommand {
         print(formatter.purge(report))
         CommandSupport.recordHistory(
             command: "purge", subject: "\(report.purgedItems.count) item(s)",
-            outcome: .success,
-            detail: "freed \(OutputFormatter.humanBytes(report.totalReclaimedBytes))",
+            outcome: report.failedItems.isEmpty ? .success : .partial,
+            detail: "freed \(OutputFormatter.humanBytes(report.totalReclaimedBytes))"
+                + (report.failedItems.isEmpty ? "" : ", \(report.failedItems.count) failed"),
             dryRun: dryRun
         )
     }

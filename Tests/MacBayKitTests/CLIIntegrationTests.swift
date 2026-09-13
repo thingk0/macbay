@@ -106,6 +106,9 @@ final class CLIIntegrationTests: XCTestCase {
     private func configEnvironment(_ configHome: URL, home: URL? = nil) -> [String: String] {
         var environment = ProcessInfo.processInfo.environment
         environment["XDG_CONFIG_HOME"] = configHome.path
+        // Route macbay state (history.jsonl) into the per-test configHome so
+        // test runs never touch the real ~/.local/state/macbay on this machine.
+        environment["XDG_STATE_HOME"] = configHome.appendingPathComponent("xdg-state").path
         if let home {
             environment["HOME"] = home.path
         }

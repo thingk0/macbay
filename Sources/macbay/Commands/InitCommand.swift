@@ -51,6 +51,7 @@ struct InitCommand: ParsableCommand {
                     outcome: .success, dryRun: false
                 )
             } catch {
+                guard !CommandSupport.isCancellation(error) else { throw error }
                 CommandSupport.recordHistory(
                     command: "init --reset", subject: "default volume",
                     outcome: .failure, detail: error.localizedDescription, dryRun: false
@@ -86,6 +87,7 @@ struct InitCommand: ParsableCommand {
                 outcome: .success, dryRun: false
             )
         } catch {
+            guard !CommandSupport.isCancellation(error) else { throw error }
             CommandSupport.recordHistory(
                 command: "init", subject: volume ?? "interactive",
                 outcome: .failure, detail: error.localizedDescription, dryRun: false

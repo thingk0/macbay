@@ -211,6 +211,27 @@ public struct MacBayService {
         )
     }
 
+    /// Records one entry in the shared operation history for a mutating call.
+    /// Recording happens here (not only in the CLI layer) so TUI-triggered
+    /// operations are logged too.
+    private func recordOperation(
+        command: String,
+        subject: String,
+        outcome: HistoryOutcome,
+        detail: String? = nil,
+        undo: String? = nil,
+        dryRun: Bool = false
+    ) {
+        guard !dryRun else { return }
+        HistoryStore().record(HistoryEntry(
+            command: command,
+            subject: subject,
+            outcome: outcome,
+            detail: detail,
+            undo: undo
+        ))
+    }
+
     public func dock(
         appName: String,
         volumePath: String?,
@@ -218,15 +239,28 @@ public struct MacBayService {
         force: Bool = false,
         progress: ProgressHandler? = nil
     ) throws -> MigrationResult {
-        progress?(.selectingVolume)
-        let selection = try selectVolume(path: volumePath)
-        return try bundleMigrator.dock(
-            appName: appName,
-            on: URL(fileURLWithPath: selection.volume.path),
-            dryRun: dryRun,
-            force: force,
-            progress: progress
-        )
+        do {
+            progress?(.selectingVolume)
+            let selection = try selectVolume(path: volumePath)
+            let result = try bundleMigrator.dock(
+                appName: appName,
+                on: URL(fileURLWithPath: selection.volume.path),
+                dryRun: dryRun,
+                force: force,
+                progress: progress
+            )
+            recordOperation(
+                command: "dock", subject: appName, outcome: .success,
+                undo: "mb undock \(ShellEnvironmentWriter.shellQuoted(appName))", dryRun: dryRun
+            )
+            return result
+        } catch {
+            recordOperation(
+                command: "dock", subject: appName, outcome: .failure,
+                detail: error.localizedDescription, dryRun: dryRun
+            )
+            throw error
+        }
     }
 
     public func planAdopt(
@@ -248,7 +282,17 @@ public struct MacBayService {
         force: Bool = false,
         progress: ProgressHandler? = nil
     ) throws -> AdoptExecutionResult {
-        try adoptAppUseCase.execute(plan: plan, force: force, progress: progress)
+        do {
+            let result = try adoptAppUseCase.execute(plan: plan, force: force, progress: progress)
+            recordOperation(command: "adopt", subject: plan.appName, outcome: .success)
+            return result
+        } catch {
+            recordOperation(
+                command: "adopt", subject: plan.appName, outcome: .failure,
+                detail: error.localizedDescription
+            )
+            throw error
+        }
     }
 
     public func adopt(
@@ -320,7 +364,19 @@ public struct MacBayService {
         force: Bool = false,
         progress: (@Sendable (String) -> Void)? = nil
     ) throws -> RepairExecutionResult {
-        try repairAppUseCase.execute(plan: plan, force: force, progress: progress)
+        do {
+            let result = try repairAppUseCase.execute(plan: plan, force: force, progress: progress)
+            recordOperation(
+                command: "repair \(plan.action.rawValue)", subject: plan.appName, outcome: .success
+            )
+            return result
+        } catch {
+            recordOperation(
+                command: "repair \(plan.action.rawValue)", subject: plan.appName, outcome: .failure,
+                detail: error.localizedDescription
+            )
+            throw error
+        }
     }
 
     public func rollbackRepair(
@@ -328,33 +384,56 @@ public struct MacBayService {
         volumePath: String?,
         progress: (@Sendable (String) -> Void)? = nil
     ) throws -> RepairExecutionResult {
-        let selection = try selectVolume(path: volumePath)
-        return try repairAppUseCase.rollback(
-            appName: appName,
-            on: URL(fileURLWithPath: selection.volume.path),
-            progress: progress
-        )
+        do {
+            let selection = try selectVolume(path: volumePath)
+            let result = try repairAppUseCase.rollback(
+                appName: appName,
+                on: URL(fileURLWithPath: selection.volume.path),
+                progress: progress
+            )
+            recordOperation(command: "repair --rollback", subject: appName, outcome: .success)
+            return result
+        } catch {
+            recordOperation(
+                command: "repair --rollback", subject: appName, outcome: .failure,
+                detail: error.localizedDescription
+            )
+            throw error
+        }
     }
 
     public func undock(appName: String, volumePath: String?, dryRun: Bool, progress: ProgressHandler? = nil) throws -> MigrationResult {
-        progress?(.selectingVolume)
-        let volume: URL?
-        let fallbackVolume: URL?
-        if let volumePath {
-            let selected = try volumeManager.resolveExternalVolume(path: volumePath)
-            volume = URL(fileURLWithPath: selected.path)
-            fallbackVolume = nil
-        } else {
-            volume = nil
-            fallbackVolume = mountedConfiguredVolume().map { URL(fileURLWithPath: $0.path) }
+        do {
+            progress?(.selectingVolume)
+            let volume: URL?
+            let fallbackVolume: URL?
+            if let volumePath {
+                let selected = try volumeManager.resolveExternalVolume(path: volumePath)
+                volume = URL(fileURLWithPath: selected.path)
+                fallbackVolume = nil
+            } else {
+                volume = nil
+                fallbackVolume = mountedConfiguredVolume().map { URL(fileURLWithPath: $0.path) }
+            }
+            let result = try bundleMigrator.undock(
+                appName: appName,
+                from: volume,
+                fallbackVolume: fallbackVolume,
+                dryRun: dryRun,
+                progress: progress
+            )
+            recordOperation(
+                command: "undock", subject: appName, outcome: .success,
+                undo: "mb dock \(ShellEnvironmentWriter.shellQuoted(appName))", dryRun: dryRun
+            )
+            return result
+        } catch {
+            recordOperation(
+                command: "undock", subject: appName, outcome: .failure,
+                detail: error.localizedDescription, dryRun: dryRun
+            )
+            throw error
         }
-        return try bundleMigrator.undock(
-            appName: appName,
-            from: volume,
-            fallbackVolume: fallbackVolume,
-            dryRun: dryRun,
-            progress: progress
-        )
     }
 
     public func xcode(

@@ -45,6 +45,13 @@ struct DoctorCommand: ParsableCommand {
                 }
             }
         } catch {
+            if options.fix, !options.dryRun, !CommandSupport.isCancellation(error) {
+                CommandSupport.recordHistory(
+                    command: "doctor --fix",
+                    subject: options.volume ?? "all volumes",
+                    outcome: .failure, detail: error.localizedDescription, dryRun: false
+                )
+            }
             CommandSupport.printFailure(error, json: options.json)
             throw ExitCode(2)
         }
