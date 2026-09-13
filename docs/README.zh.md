@@ -299,6 +299,7 @@ Healthy · 2
 | `unmove` | `umv` |
 | `cache` | `c` |
 | `teardown` | `td` |
+| `history` | `hist` |
 | `tui` | `ui` |
 
 ```sh
@@ -624,6 +625,19 @@ mb teardown --volume /Volumes/ExternalSSD
 
 > [!IMPORTANT]
 > `teardown` 会把数据拷回内置磁盘。内置空间不足时对应项会报错中止，请先运行 `mb teardown --dry-run` 查看将要执行的操作。
+
+### 查看操作历史（`history`）
+
+每个会修改系统的命令都会向内置磁盘上的 `~/.local/state/macbay/history.jsonl`（遵循 `$XDG_STATE_HOME`）追加一条记录，因此即使外置驱动器未连接也能查看历史。成功与失败都会记录，`--dry-run` 除外。记录失败绝不会影响原操作——写入错误会被静默忽略——文件超过 5 MB 后会轮转为 `history.1.jsonl`。
+
+```sh
+mb history                 # 最新的操作排在最前
+mb history --limit 20
+mb history --command dock
+mb history --json
+```
+
+每条记录显示命令、作用对象与结果；对于 `dock`、`move` 这类可逆操作，还会用 `undo:` 提示给出精确的撤销命令。历史仅供参考：`mb doctor` 的判定与安全检查从不读取它，而 `teardown`、`purge`、`xcode` 等条目没有 undo 提示，因为其效果无法安全复原。
 
 ---
 

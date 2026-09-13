@@ -301,6 +301,7 @@ Healthy · 2
 | `cache` | `c` |
 | `purge` | `pu` |
 | `teardown` | `td` |
+| `history` | `hist` |
 | `tui` | `ui` |
 
 ```sh
@@ -659,6 +660,19 @@ mb purge --no-homebrew
 - **사용자 데이터 절대 보존**: SQLite 데이터베이스(`.sqlite`, `.db`, `.wal`), 로그인 세션 및 인증 정보(`IndexedDB`, `Cookies`, `Local Storage`), 사용자 설정 파일(`settings.json`, `.plist`)은 절대 삭제 대상에 포함되지 않습니다.
 - **실행 중인 앱 보호**: 시스템 프로세스 목록(`/bin/ps`)을 검사하여 현재 실행 중인 앱의 캐시는 I/O 충돌을 방지하기 위해 기본적으로 건너뜁니다(`--include-running`으로 강제 포함 가능).
 - **디렉터리 구조 유지**: 대상 캐시 디렉터리 자체와 권한은 유지한 채 내부의 캐시 파일들만 비웁니다.
+
+### 작업 이력 조회 (`history`)
+
+모든 변경 명령은 내장 디스크의 `~/.local/state/macbay/history.jsonl`에 한 줄씩 추가됩니다(`$XDG_STATE_HOME` 사용 가능). 외장 드라이브가 분리돼 있어도 이력을 볼 수 있습니다. 성공과 실패가 모두 기록되며 `--dry-run`은 제외됩니다. 기록은 원래 작업을 절대 실패시키지 않고, 파일이 5MB를 넘으면 `history.1.jsonl`로 교체됩니다.
+
+```sh
+mb history                 # 최신 작업부터 표시
+mb history --limit 20
+mb history --command dock
+mb history --json
+```
+
+각 항목은 명령, 대상, 결과를 보여주고, `dock`·`move`처럼 되돌릴 수 있는 작업에는 되돌리는 정확한 명령이 `undo:` 힌트로 표시됩니다. 이력은 참고용일 뿐이며 `mb doctor` 판정이나 안전 검사에는 절대 사용되지 않습니다. `teardown`·`purge`·`xcode` 같은 항목은 안전하게 복구할 수 없어 undo 힌트가 없습니다.
 
 ---
 

@@ -14,20 +14,32 @@ struct UndockCommand: ParsableCommand {
     @OptionGroup var options: MutatingOptions
 
     func run() throws {
-        try CommandSupport.confirm(
-            "MacBay will restore \(app) to internal storage and remove its external copy.",
-            yes: options.yes,
-            dryRun: options.dryRun
-        )
-        let progress = TerminalProgress(json: options.json)
-        defer { progress.stop() }
-        let result = try MacBayService().undock(
-            appName: app,
-            volumePath: options.volume,
-            dryRun: options.dryRun,
-            progress: progress.update
-        )
-        progress.stop()
-        try CommandSupport.printValue(result, json: options.json) { $0.migration(result) }
+        do {
+            try CommandSupport.confirm(
+                "MacBay will restore \(app) to internal storage and remove its external copy.",
+                yes: options.yes,
+                dryRun: options.dryRun
+            )
+            let progress = TerminalProgress(json: options.json)
+            defer { progress.stop() }
+            let result = try MacBayService().undock(
+                appName: app,
+                volumePath: options.volume,
+                dryRun: options.dryRun,
+                progress: progress.update
+            )
+            progress.stop()
+            try CommandSupport.printValue(result, json: options.json) { $0.migration(result) }
+            CommandSupport.recordHistory(
+                command: "undock", subject: app, outcome: .success,
+                undo: "mb dock \"\(app)\"", dryRun: options.dryRun
+            )
+        } catch {
+            CommandSupport.recordHistory(
+                command: "undock", subject: app, outcome: .failure,
+                detail: error.localizedDescription, dryRun: options.dryRun
+            )
+            throw error
+        }
     }
 }

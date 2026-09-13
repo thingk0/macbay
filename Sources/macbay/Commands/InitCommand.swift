@@ -43,8 +43,20 @@ struct InitCommand: ParsableCommand {
         }
 
         if reset {
-            let report = try service.resetConfig()
-            try CommandSupport.printValue(report, json: json) { $0.configReport(report) }
+            do {
+                let report = try service.resetConfig()
+                try CommandSupport.printValue(report, json: json) { $0.configReport(report) }
+                CommandSupport.recordHistory(
+                    command: "init --reset", subject: "default volume",
+                    outcome: .success, dryRun: false
+                )
+            } catch {
+                CommandSupport.recordHistory(
+                    command: "init --reset", subject: "default volume",
+                    outcome: .failure, detail: error.localizedDescription, dryRun: false
+                )
+                throw error
+            }
             return
         }
 
@@ -56,17 +68,29 @@ struct InitCommand: ParsableCommand {
             )
         } : nil
 
-        let report = try service.initialize(
-            volumePath: volume,
-            chooser: chooser,
-            confirmReplace: { previous, replacement in
-                try CommandSupport.confirm(
-                    "MacBay will replace the saved default volume '\(previous.name)' (\(previous.path)) with '\(replacement.name)' (\(replacement.path)).",
-                    yes: yes,
-                    dryRun: false
-                )
-            }
-        )
-        try CommandSupport.printValue(report, json: json) { $0.initReport(report) }
+        do {
+            let report = try service.initialize(
+                volumePath: volume,
+                chooser: chooser,
+                confirmReplace: { previous, replacement in
+                    try CommandSupport.confirm(
+                        "MacBay will replace the saved default volume '\(previous.name)' (\(previous.path)) with '\(replacement.name)' (\(replacement.path)).",
+                        yes: yes,
+                        dryRun: false
+                    )
+                }
+            )
+            try CommandSupport.printValue(report, json: json) { $0.initReport(report) }
+            CommandSupport.recordHistory(
+                command: "init", subject: volume ?? "interactive",
+                outcome: .success, dryRun: false
+            )
+        } catch {
+            CommandSupport.recordHistory(
+                command: "init", subject: volume ?? "interactive",
+                outcome: .failure, detail: error.localizedDescription, dryRun: false
+            )
+            throw error
+        }
     }
 }

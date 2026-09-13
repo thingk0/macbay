@@ -927,6 +927,33 @@ public struct OutputFormatter {
         return lines.joined(separator: "\n")
     }
 
+    public func history(_ entries: [HistoryEntry]) -> String {
+        var lines = [style("MacBay history", color: "36", bold: true)]
+        if entries.isEmpty {
+            lines.append("No recorded operations yet.")
+            return lines.joined(separator: "\n")
+        }
+        for entry in entries {
+            let marker: String
+            let color: String
+            switch entry.outcome {
+            case .success: marker = "✓"; color = "32"
+            case .partial: marker = "~"; color = "33"
+            case .failure: marker = "✗"; color = "31"
+            }
+            var line = "  " + style(marker, color: color) + " " + entry.timestamp
+                + "  " + bold(entry.command) + "  " + entry.subject
+            if let detail = entry.detail {
+                line += " — " + detail
+            }
+            lines.append(line)
+            if let undo = entry.undo {
+                lines.append("      undo: " + dim(undo))
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
     public func doctor(_ report: DoctorReport) -> String {
         var sections: [[String]] = []
 

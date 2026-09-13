@@ -53,6 +53,26 @@ enum CommandSupport {
         }
     }
 
+    /// Records one history entry for a mutating command. Recording failures are
+    /// swallowed inside HistoryStore — history is reference data only.
+    static func recordHistory(
+        command: String,
+        subject: String,
+        outcome: HistoryOutcome,
+        detail: String? = nil,
+        undo: String? = nil,
+        dryRun: Bool
+    ) {
+        guard !dryRun else { return }
+        HistoryStore().record(HistoryEntry(
+            command: command,
+            subject: subject,
+            outcome: outcome,
+            detail: detail,
+            undo: undo
+        ))
+    }
+
     static func printFailure(_ error: Error, json: Bool) {
         if json {
             let payload = MacBayErrorPayload(error: error)

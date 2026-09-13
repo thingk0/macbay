@@ -23,21 +23,36 @@ struct CacheCommand: ParsableCommand {
     }
 
     func run() throws {
-        try CommandSupport.confirm(
-            reset
-                ? "MacBay will remove its managed cache settings from ~/.zshrc."
-                : "MacBay will route developer caches to external storage and update ~/.zshrc.",
-            yes: options.yes,
-            dryRun: options.dryRun
-        )
-        let report = try MacBayService().cache(
-            volumePath: options.volume,
-            dryRun: options.dryRun,
-            reset: reset
-        )
-        try CommandSupport.printValue(report, json: options.json) { $0.cache(report) }
-        if report.exitCode != 0 {
-            throw ExitCode(report.exitCode)
+        let command = reset ? "cache --reset" : "cache --enable"
+        do {
+            try CommandSupport.confirm(
+                reset
+                    ? "MacBay will remove its managed cache settings from ~/.zshrc."
+                    : "MacBay will route developer caches to external storage and update ~/.zshrc.",
+                yes: options.yes,
+                dryRun: options.dryRun
+            )
+            let report = try MacBayService().cache(
+                volumePath: options.volume,
+                dryRun: options.dryRun,
+                reset: reset
+            )
+            try CommandSupport.printValue(report, json: options.json) { $0.cache(report) }
+            CommandSupport.recordHistory(
+                command: command, subject: "developer caches",
+                outcome: report.exitCode == 0 ? .success : .partial,
+                undo: reset ? nil : "mb cache --reset",
+                dryRun: options.dryRun
+            )
+            if report.exitCode != 0 {
+                throw ExitCode(report.exitCode)
+            }
+        } catch {
+            CommandSupport.recordHistory(
+                command: command, subject: "developer caches",
+                outcome: .failure, detail: error.localizedDescription, dryRun: options.dryRun
+            )
+            throw error
         }
     }
 }

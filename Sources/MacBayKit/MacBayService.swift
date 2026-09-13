@@ -197,6 +197,10 @@ public struct MacBayService {
         return try checker.check(volumePath: volumePath, fix: fix, dryRun: dryRun)
     }
 
+    public func history(limit: Int? = nil, command: String? = nil) -> [HistoryEntry] {
+        HistoryStore(fileManager: fileManager).entries(limit: limit, command: command)
+    }
+
     public func references(paths: [String]) throws -> ReferenceReport {
         let checker = ExternalReferenceChecker(fileManager: fileManager)
         let result = checker.check(paths: paths)

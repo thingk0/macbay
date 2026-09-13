@@ -304,6 +304,7 @@ Short aliases accept the same arguments and options as the full commands. Run `m
 | `cache` | `c` |
 | `purge` | `pu` |
 | `teardown` | `td` |
+| `history` | `hist` |
 | `tui` | `ui` |
 
 ```sh
@@ -678,6 +679,19 @@ mb purge --no-homebrew
 - **Untouchable User Data**: Never touches SQLite databases (`.sqlite`, `.db`, `.wal`), credentials or authentication sessions (`IndexedDB`, `Cookies`, `Local Storage`), or application preferences (`settings.json`, `.plist`).
 - **Running App Protection**: Active processes are detected via system process inspection (`/bin/ps`). By default, running applications are skipped to avoid I/O collisions; override explicitly with `--include-running`.
 - **Directory Preservation**: Subdirectory contents are cleared while preserving parent directories and ownership.
+
+### Reviewing Operation History (`history`)
+
+Every mutating command appends one entry to `~/.local/state/macbay/history.jsonl` on the internal disk (respecting `$XDG_STATE_HOME`), so the log stays readable even when the external drive is disconnected. Successes and failures are both recorded; `--dry-run` runs are not. Recording never breaks the operation it describes — a write failure is silently ignored — and the file is rotated to `history.1.jsonl` once it exceeds 5 MB.
+
+```sh
+mb history                 # most recent operations first
+mb history --limit 20
+mb history --command dock
+mb history --json
+```
+
+Each entry shows the command, what it acted on, the outcome, and — for reversible operations like `dock` or `move` — the `undo:` hint with the exact command that would reverse it. History is reference data only: `mb doctor` verdicts and safety checks never consult it, and entries like `teardown`, `purge`, or `xcode` have no undo hint because their effects cannot be safely reconstructed.
 
 ---
 

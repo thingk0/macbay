@@ -31,9 +31,21 @@ struct RepairCommand: ParsableCommand {
 
         // 1. Rollback mode
         if rollback {
-            let result = try service.rollbackRepair(appName: app, volumePath: options.volume)
-            try CommandSupport.printValue(result, json: options.json) { _ in
-                formatter.formatRepairExecutionResult(result)
+            do {
+                let result = try service.rollbackRepair(appName: app, volumePath: options.volume)
+                try CommandSupport.printValue(result, json: options.json) { _ in
+                    formatter.formatRepairExecutionResult(result)
+                }
+                CommandSupport.recordHistory(
+                    command: "repair --rollback", subject: app, outcome: .success,
+                    dryRun: options.dryRun
+                )
+            } catch {
+                CommandSupport.recordHistory(
+                    command: "repair --rollback", subject: app, outcome: .failure,
+                    detail: error.localizedDescription, dryRun: options.dryRun
+                )
+                throw error
             }
             return
         }
@@ -155,9 +167,17 @@ struct RepairCommand: ParsableCommand {
             execProgress.stop()
         } catch {
             execProgress.stop()
+            CommandSupport.recordHistory(
+                command: "repair \(repairAction.rawValue)", subject: app, outcome: .failure,
+                detail: error.localizedDescription, dryRun: options.dryRun
+            )
             throw error
         }
 
+        CommandSupport.recordHistory(
+            command: "repair \(repairAction.rawValue)", subject: app, outcome: .success,
+            dryRun: options.dryRun
+        )
         try CommandSupport.printValue(result, json: options.json) { _ in
             formatter.formatRepairExecutionResult(result)
         }
