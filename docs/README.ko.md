@@ -16,7 +16,7 @@
 
 MacBay는 Apple Silicon Mac을 위해 설계된 개발자 중심의 스토리지 외장화 도구입니다. 대용량 애플리케이션, Xcode DeviceSupport 데이터, 개발자 캐시를 외장 APFS 드라이브로 안전하게 이전하면서도 터미널 CLI, LaunchAgent, macOS Dock에서 사용할 수 있도록 기존 경로를 투명하게 유지합니다.
 
-[![CI](https://github.com/thingk0/macbay/actions/workflows/ci.yml/badge.svg)](https://github.com/thingk0/macbay/actions/workflows/ci.yml)
+[![CI](https://github.com/thingk0/macbay/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/thingk0/macbay/actions/workflows/ci.yml?query=branch%3Amain)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](../LICENSE)
 [![macOS 13+](https://img.shields.io/badge/macOS-13%2B-black.svg?logo=apple)](https://www.apple.com/macos/)
 [![Apple Silicon](https://img.shields.io/badge/Architecture-Apple%20Silicon-orange.svg)](https://en.wikipedia.org/wiki/Apple_silicon)

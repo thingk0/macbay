@@ -187,6 +187,9 @@ MacBay strictly follows the [Conventional Commits 1.0.0](https://www.conventiona
    - `Validate PR Title`: Verifies the PR title adheres to Conventional Commits.
    - `Release`: Runs only on a `v*` tag. Builds the optimized binaries, verifies the tag matches the
      reported version, and publishes the GitHub release.
+   - `Build and Test` and `Release Build` run for pushes to `main` and for pull requests into `main` or `develop`.
+     Direct pushes to `develop` skip them; start the `CI` workflow from the Actions tab when a change needs the
+     Xcode 15.4 toolchain check before a release.
    - CI is skipped while a pull request is a draft, and for changes that only touch Markdown or `docs/`.
      A new push to the same branch cancels the run it supersedes.
 5. **Merge Policy**:

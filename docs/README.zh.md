@@ -16,7 +16,7 @@
 
 MacBay 是一款专为 Apple Silicon Mac 设计的开发者优先存储外部化工具。它能够安全地将大型应用程序、Xcode DeviceSupport 数据以及各类开发者缓存迁移至外置 APFS 驱动器，同时无缝保持终端命令行工具（CLI）、LaunchAgent 和 macOS Dock 栏原有的访问路径不变。
 
-[![CI](https://github.com/thingk0/macbay/actions/workflows/ci.yml/badge.svg)](https://github.com/thingk0/macbay/actions/workflows/ci.yml)
+[![CI](https://github.com/thingk0/macbay/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/thingk0/macbay/actions/workflows/ci.yml?query=branch%3Amain)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](../LICENSE)
 [![macOS 13+](https://img.shields.io/badge/macOS-13%2B-black.svg?logo=apple)](https://www.apple.com/macos/)
 [![Apple Silicon](https://img.shields.io/badge/Architecture-Apple%20Silicon-orange.svg)](https://en.wikipedia.org/wiki/Apple_silicon)

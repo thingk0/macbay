@@ -1,8 +1,11 @@
 name: CI
 
+# Pushes run CI for main only, so direct pushes to develop stay fast. Pull
+# requests still run it; start it manually from the Actions tab when a develop
+# change needs the Xcode 15.4 toolchain check.
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main ]
     paths-ignore:
       - '**/*.md'
       - 'docs/**'
@@ -13,6 +16,7 @@ on:
       - '**/*.md'
       - 'docs/**'
       - '.github/FUNDING.yml'
+  workflow_dispatch:
 
 # A new push to the same branch makes the in-flight run obsolete.
 concurrency:
