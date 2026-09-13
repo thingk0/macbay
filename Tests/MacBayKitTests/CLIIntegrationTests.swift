@@ -400,13 +400,22 @@ final class CLIIntegrationTests: XCTestCase {
         XCTAssertFalse(result.stdout.contains("\u{001B}"))
     }
 
-    func testDoctorRejectsDryRunOption() throws {
+    func testDoctorRejectsDryRunWithoutFix() throws {
         guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
             throw XCTSkip("Binary not found at \(binaryURL.path)")
         }
 
         let result = try runCLI(arguments: ["doctor", "--dry-run"])
         XCTAssertNotEqual(result.status, 0)
+    }
+
+    func testDoctorAcceptsFixDryRun() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+
+        let result = try runCLI(arguments: ["doctor", "--fix", "--dry-run"])
+        XCTAssertTrue([0, 1].contains(result.status), "unexpected exit code \(result.status)")
     }
 
     func testDoctorWithUnknownVolumeExitsTwo() throws {
