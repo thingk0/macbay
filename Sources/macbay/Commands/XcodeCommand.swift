@@ -53,11 +53,24 @@ struct XcodeCommand: ParsableCommand {
             force: force
         )
 
-        let report = try MacBayService().xcode(
-            volumePath: options.volume,
-            options: doctorOptions,
-            dryRun: options.dryRun
-        )
-        try CommandSupport.printValue(report, json: options.json) { $0.xcode(report) }
+        do {
+            let report = try MacBayService().xcode(
+                volumePath: options.volume,
+                options: doctorOptions,
+                dryRun: options.dryRun
+            )
+            try CommandSupport.printValue(report, json: options.json) { $0.xcode(report) }
+            CommandSupport.recordHistory(
+                command: "xcode", subject: "Xcode data",
+                outcome: .success, detail: actions.joined(separator: ", "),
+                dryRun: options.dryRun
+            )
+        } catch {
+            CommandSupport.recordHistory(
+                command: "xcode", subject: "Xcode data",
+                outcome: .failure, detail: error.localizedDescription, dryRun: options.dryRun
+            )
+            throw error
+        }
     }
 }

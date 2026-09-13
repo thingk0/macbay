@@ -17,6 +17,7 @@ struct DockCommand: ParsableCommand {
     @OptionGroup var options: MutatingOptions
 
     func run() throws {
+        // History is recorded inside MacBayService.dock, which the TUI calls too.
         try CommandSupport.confirm(
             "MacBay will move \(app) to external storage and replace it with a symlink.",
             yes: options.yes,

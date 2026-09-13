@@ -106,6 +106,9 @@ final class CLIIntegrationTests: XCTestCase {
     private func configEnvironment(_ configHome: URL, home: URL? = nil) -> [String: String] {
         var environment = ProcessInfo.processInfo.environment
         environment["XDG_CONFIG_HOME"] = configHome.path
+        // Route macbay state (history.jsonl) into the per-test configHome so
+        // test runs never touch the real ~/.local/state/macbay on this machine.
+        environment["XDG_STATE_HOME"] = configHome.appendingPathComponent("xdg-state").path
         if let home {
             environment["HOME"] = home.path
         }
@@ -519,6 +522,47 @@ final class CLIIntegrationTests: XCTestCase {
         XCTAssertNotNil(errorObj["message"] as? String)
         XCTAssertNotNil(errorObj["details"] as? String)
         XCTAssertFalse(FileManager.default.fileExists(atPath: configFilePath(in: configHome)))
+    }
+
+    func testHistoryReportsRecordedCommands() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+
+        let configHome = try makeConfigHome()
+        let stateHome = try makeConfigHome()
+        defer {
+            try? FileManager.default.removeItem(at: configHome)
+            try? FileManager.default.removeItem(at: stateHome)
+        }
+        var env = configEnvironment(configHome)
+        env["XDG_STATE_HOME"] = stateHome.path
+
+        // Empty log.
+        var result = try runCLI(arguments: ["history"], environment: env)
+        XCTAssertEqual(result.status, 0)
+        XCTAssertTrue(result.stdout.contains("No recorded operations"))
+
+        // A failed mutating command is recorded too.
+        _ = try runCLI(
+            arguments: ["init", "--volume", "/DefinitelyMissingVolume", "--json"],
+            environment: env
+        )
+
+        result = try runCLI(arguments: ["history", "--json"], environment: env)
+        XCTAssertEqual(result.status, 0)
+        guard let data = result.stdout.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            return XCTFail("stdout was not a JSON array: \(result.stdout)")
+        }
+        XCTAssertEqual(json.count, 1)
+        XCTAssertEqual(json[0]["command"] as? String, "init")
+        XCTAssertEqual(json[0]["outcome"] as? String, "failure")
+
+        // --command filter
+        result = try runCLI(arguments: ["history", "--command", "dock"], environment: env)
+        XCTAssertEqual(result.status, 0)
+        XCTAssertTrue(result.stdout.contains("No recorded operations"))
     }
 
     func testInitWithClosedStdinIsNotInteractive() throws {

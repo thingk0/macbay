@@ -92,8 +92,23 @@ struct PurgeCommand: ParsableCommand {
                 }
                 throw ExitCode(1)
             }
-            let report = try service.purge(items: previewItems, options: purgeOptions, dryRun: false)
-            try CommandSupport.printValue(report, json: true) { $0.purge(report) }
+            do {
+                let report = try service.purge(items: previewItems, options: purgeOptions, dryRun: false)
+                try CommandSupport.printValue(report, json: true) { $0.purge(report) }
+                CommandSupport.recordHistory(
+                    command: "purge", subject: "\(report.purgedItems.count) item(s)",
+                    outcome: report.failedItems.isEmpty ? .success : .partial,
+                    detail: "freed \(OutputFormatter.humanBytes(report.totalReclaimedBytes))"
+                        + (report.failedItems.isEmpty ? "" : ", \(report.failedItems.count) failed"),
+                    dryRun: dryRun
+                )
+            } catch {
+                CommandSupport.recordHistory(
+                    command: "purge", subject: "\(previewItems.count) item(s)",
+                    outcome: .failure, detail: error.localizedDescription, dryRun: dryRun
+                )
+                throw error
+            }
             return
         }
 
@@ -143,7 +158,23 @@ struct PurgeCommand: ParsableCommand {
             itemsToPurge = confirmedItems
         }
 
-        let report = try service.purge(items: itemsToPurge, options: purgeOptions, dryRun: false)
+        let report: PurgeReport
+        do {
+            report = try service.purge(items: itemsToPurge, options: purgeOptions, dryRun: false)
+        } catch {
+            CommandSupport.recordHistory(
+                command: "purge", subject: "\(itemsToPurge.count) item(s)",
+                outcome: .failure, detail: error.localizedDescription, dryRun: dryRun
+            )
+            throw error
+        }
         print(formatter.purge(report))
+        CommandSupport.recordHistory(
+            command: "purge", subject: "\(report.purgedItems.count) item(s)",
+            outcome: report.failedItems.isEmpty ? .success : .partial,
+            detail: "freed \(OutputFormatter.humanBytes(report.totalReclaimedBytes))"
+                + (report.failedItems.isEmpty ? "" : ", \(report.failedItems.count) failed"),
+            dryRun: dryRun
+        )
     }
 }

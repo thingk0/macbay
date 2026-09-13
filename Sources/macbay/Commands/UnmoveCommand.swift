@@ -14,20 +14,34 @@ struct UnmoveCommand: ParsableCommand {
     @OptionGroup var options: MutatingOptions
 
     func run() throws {
-        try CommandSupport.confirm(
-            "MacBay will restore \(path) to internal storage and remove the symlink.",
-            yes: options.yes,
-            dryRun: options.dryRun
-        )
-        let progress = TerminalProgress(json: options.json)
-        defer { progress.stop() }
-        let result = try MacBayService().unmove(
-            path: path,
-            volumePath: options.volume,
-            dryRun: options.dryRun,
-            progress: progress.update
-        )
-        progress.stop()
-        try CommandSupport.printValue(result, json: options.json) { $0.migration(result) }
+        do {
+            try CommandSupport.confirm(
+                "MacBay will restore \(path) to internal storage and remove the symlink.",
+                yes: options.yes,
+                dryRun: options.dryRun
+            )
+            let progress = TerminalProgress(json: options.json)
+            defer { progress.stop() }
+            let result = try MacBayService().unmove(
+                path: path,
+                volumePath: options.volume,
+                dryRun: options.dryRun,
+                progress: progress.update
+            )
+            progress.stop()
+            try CommandSupport.printValue(result, json: options.json) { $0.migration(result) }
+            // Unmove reports the internal path it restored to as destinationPath.
+            CommandSupport.recordHistory(
+                command: "unmove", subject: result.destinationPath, outcome: .success,
+                undo: "mb move \(ShellEnvironmentWriter.shellQuoted(result.destinationPath))", dryRun: options.dryRun
+            )
+        } catch {
+            guard !CommandSupport.isCancellation(error) else { throw error }
+            CommandSupport.recordHistory(
+                command: "unmove", subject: MacBayPaths.expandedURL(path).path, outcome: .failure,
+                detail: error.localizedDescription, dryRun: options.dryRun
+            )
+            throw error
+        }
     }
 }

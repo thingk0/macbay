@@ -122,6 +122,9 @@ struct AdoptCommand: ParsableCommand {
         }
 
         // 6. 실행 및 결과 출력
+        // History is recorded inside MacBayService.executeAdopt, which the TUI calls too.
+        // `mb undock` is not a valid reversal here (adopted apps were already
+        // external), so no undo hint is recorded.
         let execProgress = TerminalProgress(json: options.json)
         let result: AdoptExecutionResult
         do {

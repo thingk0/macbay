@@ -14,6 +14,7 @@ struct UndockCommand: ParsableCommand {
     @OptionGroup var options: MutatingOptions
 
     func run() throws {
+        // History is recorded inside MacBayService.undock, which the TUI calls too.
         try CommandSupport.confirm(
             "MacBay will restore \(app) to internal storage and remove its external copy.",
             yes: options.yes,

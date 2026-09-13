@@ -35,9 +35,23 @@ struct DoctorCommand: ParsableCommand {
                         dryRun: false
                     )
                     report = try service.doctor(volumePath: options.volume, fix: true)
+                    CommandSupport.recordHistory(
+                        command: "doctor --fix",
+                        subject: options.volume ?? "all volumes",
+                        outcome: report.fixes.contains { $0.status == .failed } ? .partial : .success,
+                        detail: "\(report.fixes.filter { $0.status == .fixed }.count) fixed",
+                        dryRun: false
+                    )
                 }
             }
         } catch {
+            if options.fix, !options.dryRun, !CommandSupport.isCancellation(error) {
+                CommandSupport.recordHistory(
+                    command: "doctor --fix",
+                    subject: options.volume ?? "all volumes",
+                    outcome: .failure, detail: error.localizedDescription, dryRun: false
+                )
+            }
             CommandSupport.printFailure(error, json: options.json)
             throw ExitCode(2)
         }

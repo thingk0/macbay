@@ -60,7 +60,16 @@ final class MacBayServiceTests: XCTestCase {
         return MacBayService(
             fileManager: MockFileManager(mountedPaths: paths),
             volumeManager: volumeManager,
-            configStore: configStore
+            configStore: configStore,
+            historyStore: makeHistoryStore()
+        )
+    }
+
+    /// History written by the service stays inside this test's temp directory.
+    private func makeHistoryStore() -> HistoryStore {
+        HistoryStore(
+            environment: ["XDG_STATE_HOME": tempDir.appendingPathComponent("state").path],
+            homeDirectory: tempDir
         )
     }
 
@@ -71,6 +80,29 @@ final class MacBayServiceTests: XCTestCase {
             withIntermediateDirectories: true
         )
         try Data("INVALID_JSON{[[[".utf8).write(to: configURL)
+    }
+
+    func testFailedDockIsRecordedInInjectedHistoryStore() throws {
+        let service = makeService(mounted: [externalSSD])
+
+        XCTAssertThrowsError(try service.dock(
+            appName: "Missing.app",
+            volumePath: "/Volumes/DoesNotExist",
+            dryRun: false
+        ))
+
+        let entries = service.history()
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertEqual(entries.first?.command, "dock")
+        XCTAssertEqual(entries.first?.outcome, .failure)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: makeHistoryStore().historyURL.path))
+    }
+
+    func testCancellationErrorIsRecognized() {
+        XCTAssertTrue(MacBayError.cancelled.isCancellation)
+        XCTAssertEqual(MacBayError.cancelled, .unsupportedOperation("Cancelled"))
+        XCTAssertFalse(MacBayError.unsupportedOperation("Something else").isCancellation)
+        XCTAssertFalse(MacBayError.pathMissing("/tmp/x").isCancellation)
     }
 
     func testInitializeSavesExplicitVolume() throws {

@@ -22,7 +22,7 @@ enum CommandSupport {
         print("\(message) [y/N] ", terminator: "")
         guard let answer = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
               answer == "y" || answer == "yes" else {
-            throw MacBayError.unsupportedOperation("Cancelled")
+            throw MacBayError.cancelled
         }
     }
 
@@ -35,7 +35,7 @@ enum CommandSupport {
         guard let answer = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines),
               let selected = Int(answer),
               options.indices.contains(selected - 1) else {
-            throw MacBayError.unsupportedOperation("Cancelled")
+            throw MacBayError.cancelled
         }
         return selected - 1
     }
@@ -51,6 +51,32 @@ enum CommandSupport {
         } else {
             print(human(formatter))
         }
+    }
+
+    /// True when the error is the user answering "n" at a confirmation prompt.
+    /// A cancelled operation never ran, so it must not appear in history.
+    static func isCancellation(_ error: Error) -> Bool {
+        (error as? MacBayError)?.isCancellation == true
+    }
+
+    /// Records one history entry for a mutating command. Recording failures are
+    /// swallowed inside HistoryStore — history is reference data only.
+    static func recordHistory(
+        command: String,
+        subject: String,
+        outcome: HistoryOutcome,
+        detail: String? = nil,
+        undo: String? = nil,
+        dryRun: Bool
+    ) {
+        guard !dryRun else { return }
+        HistoryStore().record(HistoryEntry(
+            command: command,
+            subject: subject,
+            outcome: outcome,
+            detail: detail,
+            undo: undo
+        ))
     }
 
     static func printFailure(_ error: Error, json: Bool) {

@@ -729,6 +729,23 @@ public enum MacBayError: Error, Equatable, LocalizedError, Sendable {
     }
 }
 
+extension MacBayError {
+    /// Message carried by the error thrown when the user declines a confirmation prompt.
+    public static let cancelledMessage = "Cancelled"
+
+    /// Thrown when the user declines a confirmation prompt. A cancelled operation
+    /// never ran, so callers such as the history log skip it.
+    public static var cancelled: MacBayError { .unsupportedOperation(cancelledMessage) }
+
+    /// True when this error is a declined confirmation prompt.
+    public var isCancellation: Bool {
+        if case let .unsupportedOperation(message) = self {
+            return message == Self.cancelledMessage
+        }
+        return false
+    }
+}
+
 public struct MacBayErrorPayload: Codable, Equatable, Sendable {
     public struct ErrorBody: Codable, Equatable, Sendable {
         public let code: String

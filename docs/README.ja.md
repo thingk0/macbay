@@ -299,6 +299,7 @@ Healthy · 2
 | `unmove` | `umv` |
 | `cache` | `c` |
 | `teardown` | `td` |
+| `history` | `hist` |
 | `tui` | `ui` |
 
 ```sh
@@ -624,6 +625,19 @@ mb teardown --volume /Volumes/ExternalSSD
 
 > [!IMPORTANT]
 > `teardown` はデータを内蔵ディスクへコピーバックします。内蔵容量が不足する項目はエラーで停止するため、まず `mb teardown --dry-run` で内容を確認してください。
+
+### 操作履歴の確認（`history`）
+
+すべての変更コマンドは、内蔵ディスク上の `~/.local/state/macbay/history.jsonl`（`$XDG_STATE_HOME` 尊重）に1行ずつ追記されるため、外部ドライブを取り外した状態でも履歴を確認できます。成功・失敗の両方が記録され、`--dry-run` は記録されません。記録処理は本来の操作を決して失敗させず、ファイルが 5MB を超えると `history.1.jsonl` へローテーションされます。
+
+```sh
+mb history                 # 新しい操作から順に表示
+mb history --limit 20
+mb history --command dock
+mb history --json
+```
+
+各エントリーにはコマンド・対象・結果が表示され、`dock` や `move` のような可逆操作には、その操作を取り消す正確なコマンドが `undo:` ヒントとして付きます。履歴はあくまで参考情報であり、`mb doctor` の判定や安全チェックには一切使用されません。`teardown`・`purge`・`xcode` などのエントリーは安全に復元できないため、undo ヒントは付きません。
 
 ---
 

@@ -30,6 +30,7 @@ struct RepairCommand: ParsableCommand {
         let formatter = CommandSupport.formatter(json: options.json)
 
         // 1. Rollback mode
+        // History is recorded inside MacBayService.rollbackRepair, which the TUI calls too.
         if rollback {
             let result = try service.rollbackRepair(appName: app, volumePath: options.volume)
             try CommandSupport.printValue(result, json: options.json) { _ in
@@ -144,6 +145,7 @@ struct RepairCommand: ParsableCommand {
         }
 
         // 8. Execution
+        // History is recorded inside MacBayService.executeRepair, which the TUI calls too.
         let execProgress = TerminalProgress(json: options.json)
         let result: RepairExecutionResult
         do {
