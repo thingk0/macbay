@@ -459,5 +459,13 @@ final class AppAdopterTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: standardApp.path))
         let manifest = try manifestStore.load(on: volumeURL)
         XCTAssertEqual(manifest.items.count, 0)
+
+        // Verified: the removed external copy is unregistered from Launch Services
+        // before the restored app is re-registered.
+        let lsregisterCalls = runner.recordedCommands
+            .filter { $0.executable.hasSuffix("/lsregister") }
+            .map(\.arguments)
+        XCTAssertEqual(lsregisterCalls.last, ["-f", linkURL.path])
+        XCTAssertTrue(lsregisterCalls.contains(["-u", standardApp.standardizedFileURL.path]), "\(lsregisterCalls)")
     }
 }

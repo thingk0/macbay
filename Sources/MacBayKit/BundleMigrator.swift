@@ -328,7 +328,9 @@ public struct BundleMigrator {
             }
 
             progress?(.refreshingDock)
-            let dockWarnings = refreshDock(for: source)
+            // The external copy is gone, so drop its Launch Services record too;
+            // otherwise every dock/undock cycle leaves a stale entry behind.
+            let dockWarnings = refreshDock(for: source, unregistering: destination)
             return MigrationResult(
                 operation: "undock",
                 name: source.lastPathComponent,
@@ -387,10 +389,20 @@ public struct BundleMigrator {
         return URL(fileURLWithPath: "/" + volumeComponents.joined(separator: "/"))
     }
 
-    private func refreshDock(for appURL: URL) -> [String] {
+    private func refreshDock(for appURL: URL, unregistering removedURL: URL? = nil) -> [String] {
         var warnings: [String] = []
         let lsregisterPath = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
         if fileManager.isExecutableFile(atPath: lsregisterPath) {
+            if let removedURL {
+                do {
+                    let result = try commandRunner.run(lsregisterPath, arguments: ["-u", removedURL.path])
+                    if result.status != 0 {
+                        warnings.append("Warning: lsregister -u failed with status \(result.status)")
+                    }
+                } catch {
+                    warnings.append("Warning: lsregister -u failed: \(error.localizedDescription)")
+                }
+            }
             do {
                 let result = try commandRunner.run(lsregisterPath, arguments: ["-f", appURL.path])
                 if result.status != 0 {

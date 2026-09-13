@@ -220,6 +220,8 @@ final class TestBundleCommandRunner: CommandRunner, @unchecked Sendable {
     var verifyStderr: String
     var failOnSecondVerify: Bool
     private var verifyCount = 0
+    /// Every (executable, arguments) pair run through this runner, in order.
+    private(set) var recordedCommands: [(executable: String, arguments: [String])] = []
 
     init(
         entitlementsXml: String,
@@ -234,6 +236,7 @@ final class TestBundleCommandRunner: CommandRunner, @unchecked Sendable {
     }
 
     func run(_ executable: String, arguments: [String]) throws -> CommandResult {
+        recordedCommands.append((executable, arguments))
         if arguments.contains("--entitlements") {
             return CommandResult(status: 0, standardOutput: entitlementsXml, standardError: "")
         }
