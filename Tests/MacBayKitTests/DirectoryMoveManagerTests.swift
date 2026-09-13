@@ -206,6 +206,7 @@ final class DirectoryMoveManagerTests: XCTestCase {
 
         // 외장 사본이 남아 있으면 동일한 이름으로 다시 move할 수 없어야 한다.
         let recreated = homeBase.appendingPathComponent("Games")
+        try FileManager.default.removeItem(at: recreated)
         try FileManager.default.createDirectory(at: recreated, withIntermediateDirectories: true)
         XCTAssertThrowsError(try manager.move(path: recreated.path, on: volumeDir, dryRun: false)) { error in
             guard case MacBayError.destinationExists = error else {
