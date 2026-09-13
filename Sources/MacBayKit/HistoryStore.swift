@@ -99,18 +99,21 @@ public struct HistoryStore: Sendable {
         }
     }
 
-    /// Newest-first entries across the current and rotated files.
+    /// Newest-first entries across the current and rotated files. Entries are
+    /// appended in time order, so the last line of each file is its newest —
+    /// per-file reversal orders correctly even when timestamps tie.
     public func entries(limit: Int? = nil, command: String? = nil) -> [HistoryEntry] {
         var loaded: [HistoryEntry] = []
         for url in [historyURL, rotatedURL] where fileManager.fileExists(atPath: url.path) {
             guard let data = try? Data(contentsOf: url) else { continue }
+            var fileEntries: [HistoryEntry] = []
             for rawLine in data.split(separator: 0x0A) {
                 if let entry = try? decoder.decode(HistoryEntry.self, from: rawLine) {
-                    loaded.append(entry)
+                    fileEntries.append(entry)
                 }
             }
+            loaded.append(contentsOf: fileEntries.reversed())
         }
-        loaded.sort { $0.timestamp > $1.timestamp }
         if let command {
             loaded = loaded.filter { $0.command.hasPrefix(command) }
         }
