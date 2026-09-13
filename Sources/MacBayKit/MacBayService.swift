@@ -277,6 +277,13 @@ public struct MacBayService {
         ))
     }
 
+    /// The history subject for an app argument. A path argument is recorded as the
+    /// absolute path it resolves to, so the undo hint and `mb undo` work from any
+    /// directory; a plain name such as `Xcode.app` is kept as typed.
+    private func historySubject(forApp appName: String) -> String {
+        appName.contains("/") ? MacBayPaths.applicationURL(named: appName).path : appName
+    }
+
     public func dock(
         appName: String,
         volumePath: String?,
@@ -284,6 +291,7 @@ public struct MacBayService {
         force: Bool = false,
         progress: ProgressHandler? = nil
     ) throws -> MigrationResult {
+        let subject = historySubject(forApp: appName)
         do {
             progress?(.selectingVolume)
             let selection = try selectVolume(path: volumePath)
@@ -295,13 +303,13 @@ public struct MacBayService {
                 progress: progress
             )
             recordOperation(
-                command: "dock", subject: appName, outcome: .success,
-                undo: "mb undock \(ShellEnvironmentWriter.shellQuoted(appName))", dryRun: dryRun
+                command: "dock", subject: subject, outcome: .success,
+                undo: "mb undock \(ShellEnvironmentWriter.shellQuoted(subject))", dryRun: dryRun
             )
             return result
         } catch {
             recordOperation(
-                command: "dock", subject: appName, outcome: .failure,
+                command: "dock", subject: subject, outcome: .failure,
                 detail: error.localizedDescription, dryRun: dryRun
             )
             throw error
@@ -448,6 +456,7 @@ public struct MacBayService {
     }
 
     public func undock(appName: String, volumePath: String?, dryRun: Bool, progress: ProgressHandler? = nil) throws -> MigrationResult {
+        let subject = historySubject(forApp: appName)
         do {
             progress?(.selectingVolume)
             let volume: URL?
@@ -468,13 +477,13 @@ public struct MacBayService {
                 progress: progress
             )
             recordOperation(
-                command: "undock", subject: appName, outcome: .success,
-                undo: "mb dock \(ShellEnvironmentWriter.shellQuoted(appName))", dryRun: dryRun
+                command: "undock", subject: subject, outcome: .success,
+                undo: "mb dock \(ShellEnvironmentWriter.shellQuoted(subject))", dryRun: dryRun
             )
             return result
         } catch {
             recordOperation(
-                command: "undock", subject: appName, outcome: .failure,
+                command: "undock", subject: subject, outcome: .failure,
                 detail: error.localizedDescription, dryRun: dryRun
             )
             throw error

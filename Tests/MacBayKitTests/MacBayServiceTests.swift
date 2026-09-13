@@ -131,6 +131,24 @@ final class MacBayServiceTests: XCTestCase {
         XCTAssertEqual(try service.planUndo().entry.subject, notALink)
     }
 
+    func testDockAndUndockRecordPathArgumentsAsAbsolutePaths() {
+        let service = makeService(mounted: [externalSSD])
+
+        XCTAssertThrowsError(try service.dock(appName: "./Missing Folder/Missing.app", volumePath: nil, dryRun: false))
+        XCTAssertThrowsError(try service.undock(appName: "Missing Folder/Missing.app", volumePath: nil, dryRun: false))
+        XCTAssertThrowsError(try service.dock(appName: "DefinitelyMissing.app", volumePath: nil, dryRun: false))
+
+        let subjects = service.history().map(\.subject)
+        XCTAssertEqual(subjects.count, 3)
+        // Plain names stay as typed; path arguments become absolute paths.
+        XCTAssertEqual(subjects.first, "DefinitelyMissing.app")
+        for subject in subjects.dropFirst() {
+            XCTAssertTrue(subject.hasPrefix("/"), subject)
+            XCTAssertTrue(subject.hasSuffix("/Missing Folder/Missing.app"), subject)
+            XCTAssertFalse(subject.contains("/./"), subject)
+        }
+    }
+
     func testCancellationErrorIsRecognized() {
         XCTAssertTrue(MacBayError.cancelled.isCancellation)
         XCTAssertEqual(MacBayError.cancelled, .unsupportedOperation("Cancelled"))
