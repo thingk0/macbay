@@ -9,6 +9,7 @@ public struct RepairAppUseCase: RepairAppUseCaseProtocol, @unchecked Sendable {
     private let journal: any RepairJournaling
     private let volumeInspector: any RepairVolumeInspector
     private let systemRefresher: any SystemEnvironmentRefresher
+    private let operationLock: any VolumeOperationLocking
 
     public init(
         safetyInspector: any RepairSafetyInspector = DarwinRepairSafetyInspector(),
@@ -16,7 +17,8 @@ public struct RepairAppUseCase: RepairAppUseCaseProtocol, @unchecked Sendable {
         manifestRepository: any RepairManifestRepository = DarwinRepairManifestRepository(),
         journal: any RepairJournaling = DarwinRepairJournal(),
         volumeInspector: any RepairVolumeInspector = DarwinRepairVolumeInspector(),
-        systemRefresher: any SystemEnvironmentRefresher = DarwinSystemEnvironmentRefresher()
+        systemRefresher: any SystemEnvironmentRefresher = DarwinSystemEnvironmentRefresher(),
+        operationLock: any VolumeOperationLocking = VolumeOperationLock()
     ) {
         self.safetyInspector = safetyInspector
         self.bundleOperations = bundleOperations
@@ -24,6 +26,7 @@ public struct RepairAppUseCase: RepairAppUseCaseProtocol, @unchecked Sendable {
         self.journal = journal
         self.volumeInspector = volumeInspector
         self.systemRefresher = systemRefresher
+        self.operationLock = operationLock
     }
 
     private func normalizeAppName(_ name: String) -> String {
@@ -210,8 +213,9 @@ public struct RepairAppUseCase: RepairAppUseCaseProtocol, @unchecked Sendable {
         }
 
         if journal.load(appName: plan.appName, on: plan.volumeURL) != nil {
-            throw MacBayError.unsupportedOperation(
-                "An incomplete repair operation for '\(plan.appName)' is pending on volume. Run 'mb repair \"\(plan.appName)\" --rollback' first."
+            throw MacBayError.operationInProgress(
+                path: plan.volumeURL.path,
+                details: "An incomplete repair for '\(plan.appName)' is pending. Run 'mb repair \"\(plan.appName)\" --rollback' first."
             )
         }
 
@@ -226,162 +230,164 @@ public struct RepairAppUseCase: RepairAppUseCaseProtocol, @unchecked Sendable {
             throw MacBayError.pathMissing(plan.externalURL.path)
         }
 
-        switch plan.action {
-        case .keepLocal:
-            progress?("Removing migration record from manifest")
-            try manifestRepository.removeItem(named: plan.appName, on: plan.volumeURL)
-            return RepairExecutionResult(
-                action: .keepLocal,
-                appName: plan.appName,
-                outcome: .completed,
-                localPath: plan.localURL.path,
-                externalPath: plan.externalURL.path,
-                backupPath: nil,
-                symlinkPath: nil,
-                freedBytes: 0
-            )
+        return try operationLock.withVolumeLock(on: plan.volumeURL) {
+            switch plan.action {
+            case .keepLocal:
+                progress?("Removing migration record from manifest")
+                try manifestRepository.removeItem(named: plan.appName, on: plan.volumeURL)
+                return RepairExecutionResult(
+                    action: .keepLocal,
+                    appName: plan.appName,
+                    outcome: .completed,
+                    localPath: plan.localURL.path,
+                    externalPath: plan.externalURL.path,
+                    backupPath: nil,
+                    symlinkPath: nil,
+                    freedBytes: 0
+                )
 
-        case .redock:
-            let opId = UUID().uuidString
-            let backupURL = plan.backupURL ?? MacBayPaths.backupsRoot(on: plan.volumeURL)
-                .appendingPathComponent(opId, isDirectory: true)
-                .appendingPathComponent(plan.appName)
-            let stagingURL = plan.stagingURL ?? MacBayPaths.operationsRoot(on: plan.volumeURL)
-                .appendingPathComponent(".staging-\(opId)", isDirectory: true)
-                .appendingPathComponent(plan.appName)
-            let localBackupURL = plan.localURL.deletingLastPathComponent()
-                .appendingPathComponent(".\(plan.appName).macbay-local-backup-\(opId)")
+            case .redock:
+                let opId = UUID().uuidString
+                let backupURL = plan.backupURL ?? MacBayPaths.backupsRoot(on: plan.volumeURL)
+                    .appendingPathComponent(opId, isDirectory: true)
+                    .appendingPathComponent(plan.appName)
+                let stagingURL = plan.stagingURL ?? MacBayPaths.operationsRoot(on: plan.volumeURL)
+                    .appendingPathComponent(".staging-\(opId)", isDirectory: true)
+                    .appendingPathComponent(plan.appName)
+                let localBackupURL = plan.localURL.deletingLastPathComponent()
+                    .appendingPathComponent(".\(plan.appName).macbay-local-backup-\(opId)")
 
-            guard let originalItem = try manifestRepository.findItem(named: plan.appName, on: plan.volumeURL) else {
-                throw MacBayError.pathMissing("Manifest item for \(plan.appName)")
-            }
-
-            var record = RepairJournalRecord(
-                id: opId,
-                appName: plan.appName,
-                localPath: plan.localURL.path,
-                externalPath: plan.externalURL.path,
-                backupPath: backupURL.path,
-                stagingPath: stagingURL.path,
-                localBackupPath: localBackupURL.path,
-                volumePath: plan.volumeURL.path,
-                phase: .started,
-                timestamp: macBayTimestamp(),
-                originalManifestItem: originalItem
-            )
-            try journal.save(record, on: plan.volumeURL)
-
-            // Stage 1: Copy to staging
-            progress?("Staging local bundle on external volume")
-            do {
-                try bundleOperations.copyBundle(from: plan.localURL, to: stagingURL)
-                let stagedCopy = try safetyInspector.inspectBundle(at: stagingURL)
-                if stagedCopy.signatureStatus == "Invalid" {
-                    throw MacBayError.signatureVerificationFailed(
-                        path: stagingURL.path,
-                        details: stagedCopy.signatureDetails ?? "staged bundle signature corrupt"
-                    )
+                guard let originalItem = try manifestRepository.findItem(named: plan.appName, on: plan.volumeURL) else {
+                    throw MacBayError.pathMissing("Manifest item for \(plan.appName)")
                 }
-                record = record.updatingPhase(.staged)
-                try journal.save(record, on: plan.volumeURL)
-            } catch {
-                try? bundleOperations.remove(at: stagingURL)
-                journal.remove(appName: plan.appName, on: plan.volumeURL)
-                throw error
-            }
 
-            // Stage 2: Move existing external copy to backup
-            progress?("Moving existing external copy to backup directory")
-            do {
-                try bundleOperations.moveBundle(from: plan.externalURL, to: backupURL)
-                record = record.updatingPhase(.backedUpExternal)
+                var record = RepairJournalRecord(
+                    id: opId,
+                    appName: plan.appName,
+                    localPath: plan.localURL.path,
+                    externalPath: plan.externalURL.path,
+                    backupPath: backupURL.path,
+                    stagingPath: stagingURL.path,
+                    localBackupPath: localBackupURL.path,
+                    volumePath: plan.volumeURL.path,
+                    phase: .started,
+                    timestamp: macBayTimestamp(),
+                    originalManifestItem: originalItem
+                )
                 try journal.save(record, on: plan.volumeURL)
-            } catch {
-                try? bundleOperations.remove(at: stagingURL)
-                journal.remove(appName: plan.appName, on: plan.volumeURL)
-                throw error
-            }
 
-            // Stage 3: Move staging to destination
-            progress?("Placing new bundle at external destination")
-            do {
-                try bundleOperations.moveBundle(from: stagingURL, to: plan.externalURL)
-                record = record.updatingPhase(.placedNewExternal)
-                try journal.save(record, on: plan.volumeURL)
-            } catch {
-                // Rollback Stage 2: restore backup to external
-                try? bundleOperations.moveBundle(from: backupURL, to: plan.externalURL)
-                try? bundleOperations.remove(at: stagingURL)
-                journal.remove(appName: plan.appName, on: plan.volumeURL)
-                throw error
-            }
-
-            // Stage 4: Swap local app with symlink
-            progress?("Updating local application symlink")
-            do {
-                try bundleOperations.moveBundle(from: plan.localURL, to: localBackupURL)
-                try bundleOperations.createSymlink(at: plan.localURL, pointingTo: plan.externalURL)
-                record = record.updatingPhase(.linked)
-                try journal.save(record, on: plan.volumeURL)
-            } catch {
-                // Rollback Stage 4: remove symlink, restore local app
-                try? bundleOperations.remove(at: plan.localURL)
-                if bundleOperations.fileExists(at: localBackupURL) {
-                    try? bundleOperations.moveBundle(from: localBackupURL, to: plan.localURL)
+                // Stage 1: Copy to staging
+                progress?("Staging local bundle on external volume")
+                do {
+                    try bundleOperations.copyBundle(from: plan.localURL, to: stagingURL)
+                    let stagedCopy = try safetyInspector.inspectBundle(at: stagingURL)
+                    if stagedCopy.signatureStatus == "Invalid" {
+                        throw MacBayError.signatureVerificationFailed(
+                            path: stagingURL.path,
+                            details: stagedCopy.signatureDetails ?? "staged bundle signature corrupt"
+                        )
+                    }
+                    record = record.updatingPhase(.staged)
+                    try journal.save(record, on: plan.volumeURL)
+                } catch {
+                    try? bundleOperations.remove(at: stagingURL)
+                    journal.remove(appName: plan.appName, on: plan.volumeURL)
+                    throw error
                 }
-                // Rollback Stage 3 & 2: restore backup to external
-                try? bundleOperations.remove(at: plan.externalURL)
-                try? bundleOperations.moveBundle(from: backupURL, to: plan.externalURL)
-                journal.remove(appName: plan.appName, on: plan.volumeURL)
-                throw error
-            }
 
-            // Stage 5: Update manifest
-            progress?("Updating manifest record")
-            let newItem = DockedItem(
-                name: originalItem.name,
-                sourcePath: plan.localURL.path,
-                externalPath: plan.externalURL.path,
-                sizeBytes: plan.sizeBytes,
-                kind: originalItem.kind,
-                dockedAt: macBayTimestamp()
-            )
-            do {
-                try manifestRepository.recordItem(newItem, on: plan.volumeURL)
-                record = record.updatingPhase(.manifestUpdated)
-                try journal.save(record, on: plan.volumeURL)
-            } catch {
-                // Rollback Stage 5: restore original manifest
-                try? manifestRepository.recordItem(originalItem, on: plan.volumeURL)
-                // Rollback Stage 4: remove symlink, restore local app
-                try? bundleOperations.remove(at: plan.localURL)
-                if bundleOperations.fileExists(at: localBackupURL) {
-                    try? bundleOperations.moveBundle(from: localBackupURL, to: plan.localURL)
+                // Stage 2: Move existing external copy to backup
+                progress?("Moving existing external copy to backup directory")
+                do {
+                    try bundleOperations.moveBundle(from: plan.externalURL, to: backupURL)
+                    record = record.updatingPhase(.backedUpExternal)
+                    try journal.save(record, on: plan.volumeURL)
+                } catch {
+                    try? bundleOperations.remove(at: stagingURL)
+                    journal.remove(appName: plan.appName, on: plan.volumeURL)
+                    throw error
                 }
-                // Rollback Stage 3 & 2: restore backup to external
-                try? bundleOperations.remove(at: plan.externalURL)
-                try? bundleOperations.moveBundle(from: backupURL, to: plan.externalURL)
+
+                // Stage 3: Move staging to destination
+                progress?("Placing new bundle at external destination")
+                do {
+                    try bundleOperations.moveBundle(from: stagingURL, to: plan.externalURL)
+                    record = record.updatingPhase(.placedNewExternal)
+                    try journal.save(record, on: plan.volumeURL)
+                } catch {
+                    // Rollback Stage 2: restore backup to external
+                    try? bundleOperations.moveBundle(from: backupURL, to: plan.externalURL)
+                    try? bundleOperations.remove(at: stagingURL)
+                    journal.remove(appName: plan.appName, on: plan.volumeURL)
+                    throw error
+                }
+
+                // Stage 4: Swap local app with symlink
+                progress?("Updating local application symlink")
+                do {
+                    try bundleOperations.moveBundle(from: plan.localURL, to: localBackupURL)
+                    try bundleOperations.createSymlink(at: plan.localURL, pointingTo: plan.externalURL)
+                    record = record.updatingPhase(.linked)
+                    try journal.save(record, on: plan.volumeURL)
+                } catch {
+                    // Rollback Stage 4: remove symlink, restore local app
+                    try? bundleOperations.remove(at: plan.localURL)
+                    if bundleOperations.fileExists(at: localBackupURL) {
+                        try? bundleOperations.moveBundle(from: localBackupURL, to: plan.localURL)
+                    }
+                    // Rollback Stage 3 & 2: restore backup to external
+                    try? bundleOperations.remove(at: plan.externalURL)
+                    try? bundleOperations.moveBundle(from: backupURL, to: plan.externalURL)
+                    journal.remove(appName: plan.appName, on: plan.volumeURL)
+                    throw error
+                }
+
+                // Stage 5: Update manifest
+                progress?("Updating manifest record")
+                let newItem = DockedItem(
+                    name: originalItem.name,
+                    sourcePath: plan.localURL.path,
+                    externalPath: plan.externalURL.path,
+                    sizeBytes: plan.sizeBytes,
+                    kind: originalItem.kind,
+                    dockedAt: macBayTimestamp()
+                )
+                do {
+                    try manifestRepository.recordItem(newItem, on: plan.volumeURL)
+                    record = record.updatingPhase(.manifestUpdated)
+                    try journal.save(record, on: plan.volumeURL)
+                } catch {
+                    // Rollback Stage 5: restore original manifest
+                    try? manifestRepository.recordItem(originalItem, on: plan.volumeURL)
+                    // Rollback Stage 4: remove symlink, restore local app
+                    try? bundleOperations.remove(at: plan.localURL)
+                    if bundleOperations.fileExists(at: localBackupURL) {
+                        try? bundleOperations.moveBundle(from: localBackupURL, to: plan.localURL)
+                    }
+                    // Rollback Stage 3 & 2: restore backup to external
+                    try? bundleOperations.remove(at: plan.externalURL)
+                    try? bundleOperations.moveBundle(from: backupURL, to: plan.externalURL)
+                    journal.remove(appName: plan.appName, on: plan.volumeURL)
+                    throw error
+                }
+
+                // Stage 6: Finalize
+                progress?("Cleaning up temporary local backup and journal")
+                try? bundleOperations.remove(at: localBackupURL)
+                try? bundleOperations.remove(at: stagingURL.deletingLastPathComponent())
                 journal.remove(appName: plan.appName, on: plan.volumeURL)
-                throw error
+                systemRefresher.refreshLaunchServices(for: plan.localURL)
+
+                return RepairExecutionResult(
+                    action: .redock,
+                    appName: plan.appName,
+                    outcome: .completed,
+                    localPath: plan.localURL.path,
+                    externalPath: plan.externalURL.path,
+                    backupPath: backupURL.path,
+                    symlinkPath: "\(plan.localURL.path) -> \(plan.externalURL.path)",
+                    freedBytes: plan.sizeBytes
+                )
             }
-
-            // Stage 6: Finalize
-            progress?("Cleaning up temporary local backup and journal")
-            try? bundleOperations.remove(at: localBackupURL)
-            try? bundleOperations.remove(at: stagingURL.deletingLastPathComponent())
-            journal.remove(appName: plan.appName, on: plan.volumeURL)
-            systemRefresher.refreshLaunchServices(for: plan.localURL)
-
-            return RepairExecutionResult(
-                action: .redock,
-                appName: plan.appName,
-                outcome: .completed,
-                localPath: plan.localURL.path,
-                externalPath: plan.externalURL.path,
-                backupPath: backupURL.path,
-                symlinkPath: "\(plan.localURL.path) -> \(plan.externalURL.path)",
-                freedBytes: plan.sizeBytes
-            )
         }
     }
 
@@ -390,86 +396,88 @@ public struct RepairAppUseCase: RepairAppUseCaseProtocol, @unchecked Sendable {
         on volume: URL,
         progress: ProgressHandler? = nil
     ) throws -> RepairExecutionResult {
-        let cleanName = normalizeAppName(appName)
-        guard let record = journal.load(appName: cleanName, on: volume) else {
-            throw MacBayError.unsupportedOperation(
-                "No pending repair operation found for '\(cleanName)' on \(volume.path)."
-            )
-        }
-
-        let localURL = URL(fileURLWithPath: record.localPath)
-        let externalURL = URL(fileURLWithPath: record.externalPath)
-        let backupURL = URL(fileURLWithPath: record.backupPath)
-        let stagingURL = URL(fileURLWithPath: record.stagingPath)
-        let localBackupURL = URL(fileURLWithPath: record.localBackupPath)
-
-        progress?("Rolling back phase: \(record.phase.rawValue)")
-
-        var rollbackErrors: [String] = []
-
-        // If manifest was updated, restore original item
-        if record.phase == .manifestUpdated {
-            do {
-                try manifestRepository.recordItem(record.originalManifestItem, on: volume)
-            } catch {
-                rollbackErrors.append("Failed to restore original manifest: \(error.localizedDescription)")
+        return try operationLock.withVolumeLock(on: volume) {
+            let cleanName = normalizeAppName(appName)
+            guard let record = journal.load(appName: cleanName, on: volume) else {
+                throw MacBayError.unsupportedOperation(
+                    "No pending repair operation found for '\(cleanName)' on \(volume.path)."
+                )
             }
-        }
 
-        // If symlink was linked, restore local app
-        if record.phase == .linked || record.phase == .manifestUpdated {
-            if bundleOperations.isSymbolicLink(at: localURL) {
-                try? bundleOperations.remove(at: localURL)
-            }
-            if bundleOperations.fileExists(at: localBackupURL) {
+            let localURL = URL(fileURLWithPath: record.localPath)
+            let externalURL = URL(fileURLWithPath: record.externalPath)
+            let backupURL = URL(fileURLWithPath: record.backupPath)
+            let stagingURL = URL(fileURLWithPath: record.stagingPath)
+            let localBackupURL = URL(fileURLWithPath: record.localBackupPath)
+
+            progress?("Rolling back phase: \(record.phase.rawValue)")
+
+            var rollbackErrors: [String] = []
+
+            // If manifest was updated, restore original item
+            if record.phase == .manifestUpdated {
                 do {
-                    try bundleOperations.moveBundle(from: localBackupURL, to: localURL)
+                    try manifestRepository.recordItem(record.originalManifestItem, on: volume)
                 } catch {
-                    rollbackErrors.append("Failed to restore local app from \(localBackupURL.path): \(error.localizedDescription)")
+                    rollbackErrors.append("Failed to restore original manifest: \(error.localizedDescription)")
                 }
             }
-        }
 
-        // If new bundle was placed at externalURL, remove it
-        if record.phase == .placedNewExternal || record.phase == .linked || record.phase == .manifestUpdated {
-            if bundleOperations.fileExists(at: externalURL) && bundleOperations.fileExists(at: backupURL) {
-                try? bundleOperations.remove(at: externalURL)
-            }
-        }
-
-        // If external was backed up, restore it to externalURL
-        if record.phase == .backedUpExternal || record.phase == .placedNewExternal || record.phase == .linked || record.phase == .manifestUpdated {
-            if bundleOperations.fileExists(at: backupURL) && !bundleOperations.fileExists(at: externalURL) {
-                do {
-                    try bundleOperations.moveBundle(from: backupURL, to: externalURL)
-                } catch {
-                    rollbackErrors.append("Failed to restore external backup to \(externalURL.path): \(error.localizedDescription)")
+            // If symlink was linked, restore local app
+            if record.phase == .linked || record.phase == .manifestUpdated {
+                if bundleOperations.isSymbolicLink(at: localURL) {
+                    try? bundleOperations.remove(at: localURL)
+                }
+                if bundleOperations.fileExists(at: localBackupURL) {
+                    do {
+                        try bundleOperations.moveBundle(from: localBackupURL, to: localURL)
+                    } catch {
+                        rollbackErrors.append("Failed to restore local app from \(localBackupURL.path): \(error.localizedDescription)")
+                    }
                 }
             }
-        }
 
-        // Clean up staging
-        try? bundleOperations.remove(at: stagingURL)
-        try? bundleOperations.remove(at: stagingURL.deletingLastPathComponent())
+            // If new bundle was placed at externalURL, remove it
+            if record.phase == .placedNewExternal || record.phase == .linked || record.phase == .manifestUpdated {
+                if bundleOperations.fileExists(at: externalURL) && bundleOperations.fileExists(at: backupURL) {
+                    try? bundleOperations.remove(at: externalURL)
+                }
+            }
 
-        if !rollbackErrors.isEmpty {
-            throw MacBayError.unsupportedOperation(
-                "Rollback incomplete for '\(cleanName)': \(rollbackErrors.joined(separator: "; "))"
+            // If external was backed up, restore it to externalURL
+            if record.phase == .backedUpExternal || record.phase == .placedNewExternal || record.phase == .linked || record.phase == .manifestUpdated {
+                if bundleOperations.fileExists(at: backupURL) && !bundleOperations.fileExists(at: externalURL) {
+                    do {
+                        try bundleOperations.moveBundle(from: backupURL, to: externalURL)
+                    } catch {
+                        rollbackErrors.append("Failed to restore external backup to \(externalURL.path): \(error.localizedDescription)")
+                    }
+                }
+            }
+
+            // Clean up staging
+            try? bundleOperations.remove(at: stagingURL)
+            try? bundleOperations.remove(at: stagingURL.deletingLastPathComponent())
+
+            if !rollbackErrors.isEmpty {
+                throw MacBayError.unsupportedOperation(
+                    "Rollback incomplete for '\(cleanName)': \(rollbackErrors.joined(separator: "; "))"
+                )
+            }
+
+            journal.remove(appName: cleanName, on: volume)
+            systemRefresher.refreshLaunchServices(for: localURL)
+
+            return RepairExecutionResult(
+                action: .redock,
+                appName: cleanName,
+                outcome: .noChanges(reason: "Rollback completed: original local and external copies and manifest restored."),
+                localPath: localURL.path,
+                externalPath: externalURL.path,
+                backupPath: backupURL.path,
+                symlinkPath: nil,
+                freedBytes: 0
             )
         }
-
-        journal.remove(appName: cleanName, on: volume)
-        systemRefresher.refreshLaunchServices(for: localURL)
-
-        return RepairExecutionResult(
-            action: .redock,
-            appName: cleanName,
-            outcome: .noChanges(reason: "Rollback completed: original local and external copies and manifest restored."),
-            localPath: localURL.path,
-            externalPath: externalURL.path,
-            backupPath: backupURL.path,
-            symlinkPath: nil,
-            freedBytes: 0
-        )
     }
 }

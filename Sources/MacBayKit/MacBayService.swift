@@ -13,6 +13,9 @@ public struct MacBayService {
     public let repairAppUseCase: any RepairAppUseCaseProtocol
     private let xcodeDoctor: XcodeDoctor
     private let cacheManager: CacheManager
+    private let purgeEngine: PurgeEngine
+    private let directoryMover: DirectoryMoveManager
+    private let teardownManager: TeardownManager
 
     public init(
         fileManager: FileManager = .default,
@@ -71,6 +74,22 @@ public struct MacBayService {
         self.cacheManager = CacheManager(
             fileManager: fileManager,
             commandRunner: commandRunner
+        )
+        self.purgeEngine = PurgeEngine(
+            fileManager: fileManager,
+            commandRunner: commandRunner
+        )
+        self.directoryMover = DirectoryMoveManager(
+            fileManager: fileManager,
+            commandRunner: commandRunner,
+            volumeManager: self.volumeManager
+        )
+        self.teardownManager = TeardownManager(
+            fileManager: fileManager,
+            commandRunner: commandRunner,
+            volumeManager: self.volumeManager,
+            configStore: self.configStore,
+            cacheManager: self.cacheManager
         )
     }
 
@@ -330,9 +349,54 @@ public struct MacBayService {
         )
     }
 
-    public func xcode(volumePath: String?, dryRun: Bool) throws -> XcodeDoctorReport {
+    public func xcode(
+        volumePath: String?,
+        options: XcodeDoctorOptions = XcodeDoctorOptions(),
+        dryRun: Bool
+    ) throws -> XcodeDoctorReport {
         let selection = try selectVolume(path: volumePath)
-        return try xcodeDoctor.run(on: URL(fileURLWithPath: selection.volume.path), dryRun: dryRun)
+        return try xcodeDoctor.run(on: URL(fileURLWithPath: selection.volume.path), options: options, dryRun: dryRun)
+    }
+
+    public func move(
+        path: String,
+        volumePath: String?,
+        dryRun: Bool,
+        progress: ProgressHandler? = nil
+    ) throws -> MigrationResult {
+        progress?(.selectingVolume)
+        let selection = try selectVolume(path: volumePath)
+        return try directoryMover.move(
+            path: path,
+            on: URL(fileURLWithPath: selection.volume.path),
+            dryRun: dryRun,
+            progress: progress
+        )
+    }
+
+    public func unmove(
+        path: String,
+        volumePath: String?,
+        dryRun: Bool,
+        progress: ProgressHandler? = nil
+    ) throws -> MigrationResult {
+        progress?(.selectingVolume)
+        let volume: URL?
+        if let volumePath {
+            let selected = try volumeManager.resolveExternalVolume(path: volumePath)
+            volume = URL(fileURLWithPath: selected.path)
+        } else {
+            volume = nil
+        }
+        return try directoryMover.unmove(path: path, from: volume, dryRun: dryRun, progress: progress)
+    }
+
+    public func teardown(
+        volumePath: String?,
+        dryRun: Bool,
+        progress: ProgressHandler? = nil
+    ) throws -> TeardownReport {
+        try teardownManager.execute(volumePath: volumePath, dryRun: dryRun, progress: progress)
     }
 
     public func cache(volumePath: String?, dryRun: Bool, reset: Bool) throws -> CacheReport {
@@ -341,6 +405,23 @@ public struct MacBayService {
         }
         let selection = try selectVolume(path: volumePath)
         return try cacheManager.enable(on: URL(fileURLWithPath: selection.volume.path), dryRun: dryRun)
+    }
+
+    public func scanPurge(options: PurgeOptions = PurgeOptions()) -> [PurgeItem] {
+        purgeEngine.scan(options: options)
+    }
+
+    public func purge(
+        items: [PurgeItem],
+        options: PurgeOptions = PurgeOptions(),
+        dryRun: Bool
+    ) throws -> PurgeReport {
+        try purgeEngine.execute(items: items, options: options, dryRun: dryRun)
+    }
+
+    public func purge(options: PurgeOptions = PurgeOptions(), dryRun: Bool) throws -> PurgeReport {
+        let items = purgeEngine.scan(options: options)
+        return try purge(items: items, options: options, dryRun: dryRun)
     }
 
     public func initialize(

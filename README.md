@@ -25,11 +25,13 @@ MacBay is a developer-first storage externalizer designed for Apple Silicon Macs
 
 ## Features
 
-- **Interactive TUI Mode (`mb` / `mb tui`)**: Launch a keyboard-driven Terminal User Interface directly by typing `mb` in an interactive terminal. Inspect storage capacity, browse applications with Safe/Review/Blocked status, safely preview and execute moves and restorations, and explore diagnostic findings with actionable recommendations.
+- **Interactive TUI Mode (`mb tui` / `mb ui`)**: Launch an interactive, keyboard-driven Terminal User Interface to visually inspect storage capacity, browse applications with Safe/Review/Blocked status, and preview moves and restorations.
 - **Application Relocation (`dock` / `undock` / `adopt`)**: Migrate large apps to external storage, restore them to internal disk, or adopt already-externalized apps into standard MacBay layout without restoring first. Dock icons and LaunchServices are automatically refreshed.
-- **Safety Engine (`AppInspector`)**: Automatically checks application bundles for virtualization entitlements, kernel/system extensions, and hardcoded relocation signals.
-- **Xcode DeviceSupport Management (`xcode`)**: Offload massive iOS DeviceSupport symbols while keeping Xcode functioning seamlessly. Preserves existing legacy links and cleans up unavailable simulators.
-- **Developer Cache Routing (`cache`)**: Route npm, uv, Gradle, and Hugging Face caches to external storage via a clean, isolated block in `~/.zshrc`.
+- **Lossless Cache Purging (`purge` / `pu`)**: Safely reclaim gigabytes of internal SSD space by purging regenerated Chromium/Electron caches (`Code Cache`, `GPUCache`, `CacheStorage`), ShipIt update installers, Homebrew package downloads, and crash logs without touching user accounts, SQLite databases, or preferences.
+- **Xcode Storage Optimization (`xcode`)**: Offload massive iOS DeviceSupport symbols and build Archives to external APFS storage, safely purge DerivedData and simulator/Xcode caches, and remove unavailable simulators. Preserves existing legacy symlinks.
+- **Arbitrary Directory Relocation (`move` / `unmove`)**: Externalize any directory — game libraries, VM disks, datasets, media — to `<Volume>/MacBay/Data/` with the same manifest-tracked symlink model used for apps.
+- **Developer Cache Routing (`cache`)**: Route npm, pnpm, Yarn, bun, uv, pip, Gradle, CocoaPods, Go modules, Android user data, Homebrew downloads, and Hugging Face caches to external storage via a clean, isolated block in `~/.zshrc`.
+- **Self Teardown (`teardown`)**: Restore every managed app and directory, remove managed cache links and the `~/.zshrc` block, and forget the default volume with a single command before uninstalling.
 - **Strict Volume Validation**: Automatically validates external APFS filesystems and rejects installer DMGs, read-only drives, and internal disks.
 
 ---
@@ -68,19 +70,19 @@ brew upgrade macbay
 > [!CAUTION]
 > `brew uninstall macbay` only removes the CLI executables (`mb` and `macbay`). It **does not** automatically restore relocated applications from external storage or reset `~/.zshrc` cache redirections.
 >
-> **Before uninstalling MacBay**, perform the following cleanup steps:
-> 1. Restore any docked applications back to internal storage:
+> **Before uninstalling MacBay**, restore everything it manages with one command:
+> 1. Run the teardown (preview with `--dry-run` first):
 >    ```sh
->    mb undock <AppName>.app
+>    mb teardown --dry-run
+>    mb teardown
 >    ```
-> 2. Reset the cache environment variables in `~/.zshrc`:
->    ```sh
->    mb cache --reset
->    ```
-> 3. Now safely uninstall the formula:
+>    This restores docked apps and moved directories, removes managed cache links, clears the `~/.zshrc` block, and forgets the default volume.
+> 2. Now safely uninstall the formula:
 >    ```sh
 >    brew uninstall macbay
 >    ```
+>
+> If you prefer manual cleanup, run `mb undock <AppName>.app` for each docked app, `mb unmove <path>` for each moved directory, and `mb cache --reset` instead.
 
 ---
 
@@ -115,18 +117,22 @@ mb --version
 
 ## Quick Start
 
-### 0. Interactive TUI Mode (Default)
+### 0. Quick Help & Interactive TUI Mode
 
-Simply run `mb` without arguments in your terminal to open the keyboard-driven TUI:
+Running `mb` without arguments prints the command summary and help. To launch the keyboard-driven interactive TUI, run `mb tui` (or `mb ui`):
 
 ```sh
+# Print CLI help and subcommands
 mb
-# Or explicitly:
+
+# Launch interactive visual TUI
 mb tui
+# Or with alias:
+mb ui
 ```
 
 > [!NOTE]
-> In non-interactive environments (CI, scripts, pipes) or when `TERM` is unsupported, `mb` prints standard CLI help to stdout. Explicit `mb tui` in a non-interactive environment exits with an error explanation.
+> In non-interactive environments (CI, scripts, pipes) or when `TERM` is unsupported, explicit `mb tui` exits with an error explanation.
 
 #### Keyboard Controls
 
@@ -293,7 +299,11 @@ Short aliases accept the same arguments and options as the full commands. Run `m
 | `undock` | `ud` |
 | `repair` | `rep` |
 | `xcode` | `xc` |
+| `move` | `mv` |
+| `unmove` | `umv` |
 | `cache` | `c` |
+| `purge` | `pu` |
+| `teardown` | `td` |
 | `tui` | `ui` |
 
 ```sh
@@ -513,21 +523,63 @@ Available actions:
 - **Dedicated Repair Journal**: Operations are recorded in `<Volume>/MacBay/.operations/repair-<App>.json` (schema v1). If an operation is interrupted, `mb doctor` reports it (`incomplete_operation`) and guides you to run `mb repair "<App>" --rollback`.
 - **Keep-Local**: `keep-local` removes only the item entry from `manifest.json`. Both local and external applications remain completely untouched, with the external copy becoming an unmanaged archive.
 
+### Moving Any Directory (`move` / `unmove`)
 
-### Xcode Maintenance (`xcode`)
-
-Externalizes `~/Library/Developer/Xcode/iOS DeviceSupport` to the external volume and cleans up unavailable iOS simulators:
+Moves any directory — game libraries, VM disks, datasets, media folders — to `<Volume>/MacBay/Data/<name>` on the external volume and replaces the original with a symbolic link. The item is recorded in `manifest.json` with kind `directory`, so `mb status`, `mb doctor`, and `mb teardown` all see it:
 
 ```sh
-# Preview Xcode externalization
-mb xcode --dry-run
+# Always preview first with --dry-run
+mb move ~/Games --dry-run
 
-# Execute Xcode maintenance
+# Externalize the directory
+mb move ~/Games
+
+# Restore it back to internal storage
+mb unmove ~/Games --dry-run
+mb unmove ~/Games
+```
+
+**How it works**:
+1. **Validation**: Refuses symlinks, non-directories, `.app` bundles (use `mb dock`), protected system locations (`/System`, `/Library`, `/usr`, `/Applications`, `/Volumes`, your home root, `~/Library`, ...), sources already on a non-internal volume, and paths that `mb cache` already manages. Inside `~/Library`, shared/system subtrees (`Containers`, `Group Containers`, `Mobile Documents`, `Keychains`, `Mail`, `Preferences`, `Developer`, ...) are off-limits, as are credential homes like `~/.ssh`, `~/.gnupg`, `~/.cargo`, `~/.rustup`. The `Application Support` and `Caches` roots themselves are blocked, but their children stay movable (e.g. `~/Library/Application Support/Steam`).
+2. **Safety**: Checks for active processes (`lsof`) and SQLite locks, measures the directory size, and previews external free space.
+3. **Copy & Link**: Copies via `ditto` with progress sampling, then atomically swaps the source for a symlink.
+4. **Manifest**: Records the move in `<Volume>/MacBay/manifest.json` so the item can be restored by `mb unmove` or `mb teardown`.
+
+`unmove` resolves the symlink, copies the external copy back, removes the link and the external copy, and drops the manifest record. Recorded items are restored through the manifest; links pointing into MacBay storage without a record are restored only when they sit under the standard `MacBay/Data/` layout, and links to anywhere else are refused.
+
+> [!NOTE]
+> `mb move` does not know how an application keeps working after relocation the way `mb dock` does — there is no codesign verification, LaunchServices refresh, or Dock restart. Prefer `dock` for `.app` bundles.
+
+### Xcode Optimization & Maintenance (`xcode`)
+ 
+Externalizes `~/Library/Developer/Xcode/iOS DeviceSupport` and `~/Library/Developer/Xcode/Archives` to the external volume, cleans up unavailable iOS simulators, and safely purges DerivedData and application caches:
+
+```sh
+# Standard externalization (iOS DeviceSupport + Archives) and unavailable simulator cleanup
+mb xcode --dry-run
 mb xcode
+
+# Purge DerivedData build caches
+mb xcode --clean-derived-data --dry-run
+mb xcode --clean-derived-data
+
+# Purge CoreSimulator and Xcode caches
+mb xcode --clean-caches --dry-run
+mb xcode --clean-caches
+
+# Run standard externalization and purge all caches
+mb xcode --all --dry-run
+mb xcode --all
+
+# Advanced: externalize DerivedData to external storage
+mb xcode --externalize-derived-data --dry-run
 ```
 
 > [!TIP]
 > If you already have a symlink pointing to an external volume (e.g. `/Volumes/<Drive>/Developer/Xcode/iOS DeviceSupport`), MacBay recognizes and validates the link target without unnecessary relocation.
+
+> [!NOTE]
+> `mb xcode` checks whether `Xcode.app` is actively running before modifying its storage or deleting caches. To proceed anyway, pass `-f, --force`.
 
 ### Developer Cache Routing (`cache`)
 
@@ -546,9 +598,78 @@ mb cache --reset
 
 Managed caches include:
 - `npm`: `npm_config_cache`
+- `pnpm store`: `npm_config_store_dir`
+- `Yarn Berry cache` (`~/.yarn/berry/cache`): symlink only — Berry ignores `YARN_CACHE_FOLDER` while its global cache is enabled (the default), and the variable would also override the project `cacheFolder` that zero-install repositories rely on
+- `Yarn v1 cache` (`~/Library/Caches/Yarn`): symlink only, for the same reason
+- `bun cache`: `BUN_INSTALL_CACHE_DIR`
 - `uv`: `UV_CACHE_DIR`
+- `pip`: `PIP_CACHE_DIR`
 - `Gradle`: `GRADLE_USER_HOME`
+- `CocoaPods`: `CP_HOME_DIR`
+- `Go modules`: `GOMODCACHE`
+- `Android user data`: `ANDROID_USER_HOME`
+- `Homebrew downloads`: `HOMEBREW_CACHE`
 - `Hugging Face`: `HF_HOME`
+
+> [!NOTE]
+> Cargo (`~/.cargo`) is intentionally not routed: `CARGO_HOME` also holds the rustup shims in `~/.cargo/bin`, so relocating it would break `cargo`/`rustup` whenever the drive is detached. Move a specific large project directory with `mb move` instead.
+
+### Tearing Everything Down (`teardown`)
+
+Reverts everything MacBay manages in one pass — useful before uninstalling or moving to a different external drive:
+
+```sh
+# Preview the full teardown
+mb teardown --dry-run
+
+# Restore every managed item and reset configuration
+mb teardown
+
+# Limit the teardown to one volume
+mb teardown --volume /Volumes/ExternalSSD
+```
+
+**What it does**:
+1. **Restores records**: For each connected eligible volume (or `--volume`), every manifest item is restored — applications via `undock`, moved directories via the `unmove` path.
+2. **Sweeps known links**: Developer locations that are still symlinks without a manifest record (Xcode targets, cache targets) are cleaned up: links into `MacBay/Caches/` are removed and replaced with empty directories (the external copy is kept as an unmanaged archive), while links into other `MacBay/` roots are fully restored to internal storage.
+3. **Resets configuration**: On a *full* teardown (`--volume` omitted) with zero failures, removes the managed block from `~/.zshrc` and forgets the saved default volume. The default volume is only forgotten if it was actually part of this teardown — an unmounted one is kept (with a note) so its data stays reachable later. Cache links pointing into a MacBay directory on a volume outside the run are reported as skipped, not silently ignored.
+4. **Reports**: Per-item failures are collected instead of aborting the run; the exit code is `1` when anything failed. The `MacBay/` directory itself is left on each volume — backups and unrecorded data are never deleted — and the report notes the leftover directories.
+
+> [!IMPORTANT]
+> `teardown` copies data back to the internal disk. It stops with an error per item when internal space is insufficient, so run `mb teardown --dry-run` first to see what will happen.
+
+### Purging Application Caches (`purge`)
+
+Safely scans and clears regenerable application caches on the internal SSD without moving folders or breaking user accounts:
+
+```sh
+# Preview disposable caches and potential space savings
+mb purge --dry-run
+
+# Purge whitelisted caches with confirmation prompt
+mb purge
+
+# Execute immediately without interactive prompt
+mb purge --yes
+
+# Target a specific application (e.g. Slack, Discord, Chrome)
+mb purge --app Slack
+
+# Include caches belonging to currently running applications
+mb purge --include-running
+
+# Include diagnostic crash reports and logs (~/Library/Logs/DiagnosticReports)
+mb purge --include-logs
+
+# Exclude Homebrew download cache
+mb purge --no-homebrew
+```
+
+**Zero-Risk Safety Model**:
+- **Strictly Whitelisted Folders**: Only purges fully regenerable Chromium/Electron cache directories (`CacheStorage`, `Code Cache`, `GPUCache`, `GPUPersistentCache`, `DawnCache`, `blob_storage`), Electron update archives (`Library/Caches/<App>/ShipIt`), and Homebrew download caches.
+- **Untouchable User Data**: Never touches SQLite databases (`.sqlite`, `.db`, `.wal`), credentials or authentication sessions (`IndexedDB`, `Cookies`, `Local Storage`), or application preferences (`settings.json`, `.plist`).
+- **Running App Protection**: Active processes are detected via system process inspection (`/bin/ps`). By default, running applications are skipped to avoid I/O collisions; override explicitly with `--include-running`.
+- **Directory Preservation**: Subdirectory contents are cleared while preserving parent directories and ownership.
 
 ---
 
@@ -588,7 +709,8 @@ When externalizing, MacBay maintains the following structure on your external dr
 ```text
 /Volumes/<ExternalDrive>/MacBay/
 ├── Applications/       # Relocated application bundles
-├── Caches/             # npm, uv, Gradle, and Hugging Face caches
+├── Caches/             # npm, uv, Gradle, and other developer caches
+├── Data/               # Directories relocated with `mb move`
 ├── Xcode/              # iOS DeviceSupport symbol caches
 └── manifest.json       # Codable metadata manifest of all docked items
 ```

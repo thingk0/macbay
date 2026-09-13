@@ -419,11 +419,32 @@ public struct OutputFormatter {
         } else {
             lines.append("iOS DeviceSupport: not present")
         }
+        if let archives = report.archives {
+            lines.append(migration(archives))
+        }
+        if let derivedData = report.derivedData {
+            lines.append(migration(derivedData))
+        }
         if let cleanup = report.simulatorCleanup {
             lines.append("Simulator cleanup: \(cleanup.succeeded ? "completed" : "failed")")
             if !cleanup.output.isEmpty {
                 lines.append(cleanup.output)
             }
+        }
+        if let derivedDataCleanup = report.derivedDataCleanup {
+            lines.append("DerivedData cleanup: \(derivedDataCleanup.succeeded ? "completed" : "failed")")
+            if !derivedDataCleanup.output.isEmpty {
+                lines.append(derivedDataCleanup.output)
+            }
+        }
+        if let cacheCleanup = report.cacheCleanup {
+            lines.append("Cache cleanup: \(cacheCleanup.succeeded ? "completed" : "failed")")
+            if !cacheCleanup.output.isEmpty {
+                lines.append(cacheCleanup.output)
+            }
+        }
+        if report.freedBytes > 0 {
+            lines.append(style("Total cache storage reclaimed: \(OutputFormatter.humanBytes(report.freedBytes))", color: "32", bold: true))
         }
         return lines.joined(separator: "\n")
     }
@@ -431,12 +452,205 @@ public struct OutputFormatter {
     public func cache(_ report: CacheReport) -> String {
         var lines = [style("MacBay cache configuration", color: "36", bold: true)]
         if report.reset {
-            lines.append("Removed MacBay cache settings from \(report.shellConfigurationPath)")
+            if report.shellConfigurationPaths.count > 1 {
+                lines.append("Removed MacBay cache settings from:")
+                for path in report.shellConfigurationPaths {
+                    lines.append("  • \(path)")
+                }
+            } else {
+                lines.append("Removed MacBay cache settings from \(report.shellConfigurationPath)")
+            }
         } else {
             lines.append("Cache routing: \(report.enabled ? "enabled" : "preview")")
-            lines.append("Shell configuration: \(report.shellConfigurationPath)")
+            if let guardPath = report.guardPath {
+                lines.append("Guard path: \(guardPath)")
+            }
+            if let envPath = report.environmentFilePath {
+                lines.append("Environment file: \(envPath)")
+            }
+            if report.shellConfigurationPaths.count > 1 {
+                lines.append("Shell configurations:")
+                for path in report.shellConfigurationPaths {
+                    lines.append("  • \(path)")
+                }
+            } else {
+                lines.append("Shell configuration: \(report.shellConfigurationPath)")
+            }
             lines.append(contentsOf: report.targets.map { migration($0) })
+            if !report.failures.isEmpty {
+                lines.append(bold("Failed · \(report.failures.count)"))
+                for failure in report.failures {
+                    lines.append("  • \(failure.path) — \(failure.reason)")
+                }
+            }
         }
+        return lines.joined(separator: "\n")
+    }
+
+    public func teardown(_ report: TeardownReport) -> String {
+        var lines = [style(report.dryRun ? "Dry run: MacBay teardown" : "MacBay teardown", color: "36", bold: true)]
+
+        if report.restored.isEmpty && report.unlinkedCaches.isEmpty {
+            lines.append("Nothing to restore or unlink.")
+        }
+
+        if !report.restored.isEmpty {
+            lines.append(bold("Restored · \(report.restored.count)"))
+            for result in report.restored {
+                lines.append("  • \(result.name) (\(OutputFormatter.humanBytes(result.sizeBytes)))")
+                lines.append("    \(result.sourcePath) → \(result.destinationPath)")
+            }
+        }
+
+        if !report.unlinkedCaches.isEmpty {
+            lines.append(bold("Cache links removed · \(report.unlinkedCaches.count)"))
+            for result in report.unlinkedCaches {
+                lines.append("  • \(result.name) — \(result.sourcePath)")
+            }
+        }
+
+        if !report.failures.isEmpty {
+            lines.append("")
+            lines.append(style("Failed · \(report.failures.count)", color: "31", bold: true))
+            for failure in report.failures {
+                lines.append("  ! \(failure.path) — \(failure.reason)")
+            }
+        }
+
+        lines.append("")
+        lines.append("Cache configuration: \(report.cacheConfigurationReset ? (report.dryRun ? "would remove MacBay cache settings from shell configuration" : "removed MacBay cache settings from shell configuration") : "no MacBay cache settings found")")
+        lines.append("Default volume: \(report.defaultVolumeRemoved ? (report.dryRun ? "would forget saved default" : "forgotten") : "none saved")")
+
+        if !report.notes.isEmpty {
+            lines.append("")
+            lines.append(bold("Notes · \(report.notes.count)"))
+            lines.append(contentsOf: report.notes.map { "  • \($0)" })
+        }
+
+        if report.dryRun {
+            lines.append("")
+            lines.append("Dry run: no files were changed.")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    public func purge(_ report: PurgeReport) -> String {
+        var lines = [style("MacBay cache purge", color: "36", bold: true)]
+
+        if report.purgedItems.isEmpty && report.skippedItems.isEmpty && report.failedItems.isEmpty {
+            lines.append("No purgeable caches found.")
+            return lines.joined(separator: "\n")
+        }
+
+        if !report.purgedItems.isEmpty {
+            let title = report.dryRun ? "Targets to purge · \(report.purgedItems.count)" : "Purged items · \(report.purgedItems.count)"
+            lines.append(bold(title))
+            for item in report.purgedItems {
+                let sizeStr = OutputFormatter.humanBytes(item.sizeBytes)
+                let categoryStr = style("[\(item.category.displayName)]", color: "34")
+                lines.append("  • \(item.appName) (\(sizeStr)) \(categoryStr)")
+                lines.append("    \(item.path)")
+            }
+        }
+
+        if !report.skippedItems.isEmpty {
+            lines.append("")
+            lines.append(style("Skipped items (running) · \(report.skippedItems.count)", color: "33", bold: true))
+            for item in report.skippedItems {
+                let sizeStr = OutputFormatter.humanBytes(item.sizeBytes)
+                lines.append("  • \(item.appName) (\(sizeStr)) — application is currently running")
+            }
+        }
+
+        if !report.failedItems.isEmpty {
+            lines.append("")
+            lines.append(style("Failed items · \(report.failedItems.count)", color: "31", bold: true))
+            for item in report.failedItems {
+                lines.append("  ! \(item.appName) — \(item.reason)")
+                lines.append("    \(item.path)")
+            }
+        }
+
+        lines.append("")
+        if report.dryRun {
+            lines.append(style("Estimated space to be reclaimed: \(OutputFormatter.humanBytes(report.totalReclaimedBytes))", color: "32", bold: true))
+            lines.append("Dry run: no files were removed.")
+        } else {
+            lines.append(style("Total storage reclaimed: \(OutputFormatter.humanBytes(report.totalReclaimedBytes))", color: "32", bold: true))
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    public func formatPurgeInteractivePreview(
+        groups: [PurgeAppGroup],
+        skippedItems: [PurgeItem],
+        totalEligibleBytes: UInt64
+    ) -> String {
+        var lines = [
+            style("MacBay cache purge", color: "36", bold: true),
+            bold("Available targets · \(groups.count) app(s) (\(groups.flatMap(\.items).count) caches), reclaiming approximately \(OutputFormatter.humanBytes(totalEligibleBytes))"),
+            ""
+        ]
+
+        let formattedTotal = OutputFormatter.humanBytes(totalEligibleBytes)
+        lines.append("  1) " + bold("[All] Purge all targets (\(formattedTotal))"))
+
+        for (index, group) in groups.enumerated() {
+            let optionNum = index + 2
+            let groupSize = OutputFormatter.humanBytes(group.totalSizeBytes)
+            let categoryStr = group.items.first.map { "[\($0.category.displayName)]" } ?? ""
+            let countStr = group.items.count > 1 ? " · \(group.items.count) caches" : ""
+            lines.append("  \(optionNum)) \(bold(group.appName)) (\(groupSize)\(countStr)) \(style(categoryStr, color: "34"))")
+
+            let sortedItems = group.items.sorted { $0.sizeBytes > $1.sizeBytes }
+            if sortedItems.count == 1 {
+                lines.append("     • \(sortedItems[0].path)")
+            } else {
+                for item in sortedItems.prefix(3) {
+                    var subpath = item.path
+                    if let range = item.path.range(of: group.appName + "/") {
+                        subpath = String(item.path[range.upperBound...])
+                    } else {
+                        subpath = (item.path as NSString).lastPathComponent
+                    }
+                    lines.append("     • \(subpath) (\(OutputFormatter.humanBytes(item.sizeBytes)))")
+                }
+                if sortedItems.count > 3 {
+                    let remaining = sortedItems.dropFirst(3)
+                    let remBytes = remaining.reduce(0) { $0 + $1.sizeBytes }
+                    lines.append("     • + \(remaining.count) other cache directories (\(OutputFormatter.humanBytes(remBytes)))")
+                }
+            }
+        }
+
+        if !skippedItems.isEmpty {
+            lines.append("")
+            let skippedGroups = PurgeAppGroup.group(items: skippedItems)
+            lines.append(style("Skipped items (running) · \(skippedGroups.count) app(s) (\(skippedItems.count) caches)", color: "33", bold: true))
+            for group in skippedGroups {
+                let sizeStr = OutputFormatter.humanBytes(group.totalSizeBytes)
+                lines.append("  • \(group.appName) (\(sizeStr)) — application is currently running")
+            }
+            lines.append("  (Pass --include-running to include caches of running applications)")
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    public func formatPurgeSkippedOnly(skippedItems: [PurgeItem]) -> String {
+        var lines = [
+            style("MacBay cache purge", color: "36", bold: true),
+            "No eligible caches found to purge without --include-running.",
+            ""
+        ]
+        let skippedGroups = PurgeAppGroup.group(items: skippedItems)
+        lines.append(style("Skipped items (running) · \(skippedGroups.count) app(s) (\(skippedItems.count) caches)", color: "33", bold: true))
+        for group in skippedGroups {
+            let sizeStr = OutputFormatter.humanBytes(group.totalSizeBytes)
+            lines.append("  • \(group.appName) (\(sizeStr)) — application is currently running")
+        }
+        lines.append("  (Pass --include-running to include caches of running applications)")
         return lines.joined(separator: "\n")
     }
 

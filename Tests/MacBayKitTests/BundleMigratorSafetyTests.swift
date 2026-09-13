@@ -245,12 +245,17 @@ final class TestBundleCommandRunner: CommandRunner, @unchecked Sendable {
             return CommandResult(status: verifyStatus, standardOutput: "", standardError: verifyStderr)
         }
         if executable.contains("ditto") {
-            // Simulate ditto copying
+            // Simulate ditto copying: dst becomes a copy of src (parent must exist)
             if arguments.count >= 5 {
                 let src = arguments[arguments.count - 2]
                 let dst = arguments[arguments.count - 1]
-                try? FileManager.default.createDirectory(atPath: dst, withIntermediateDirectories: true)
-                try? FileManager.default.copyItem(atPath: src, toPath: dst)
+                let fileManager = FileManager.default
+                try? fileManager.createDirectory(
+                    atPath: (dst as NSString).deletingLastPathComponent,
+                    withIntermediateDirectories: true
+                )
+                try? fileManager.removeItem(atPath: dst)
+                try? fileManager.copyItem(atPath: src, toPath: dst)
             }
             return CommandResult(status: 0, standardOutput: "", standardError: "")
         }

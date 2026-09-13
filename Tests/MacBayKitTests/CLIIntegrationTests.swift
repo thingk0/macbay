@@ -123,7 +123,7 @@ final class CLIIntegrationTests: XCTestCase {
 
         let result = try runCLI(arguments: ["--version"])
         XCTAssertEqual(result.status, 0)
-        XCTAssertTrue(result.stdout.contains("1.4.0"))
+        XCTAssertTrue(result.stdout.contains(MacBayVersion.current))
     }
 
     func testHelpOutputMentionsSubcommands() throws {
@@ -141,7 +141,10 @@ final class CLIIntegrationTests: XCTestCase {
         XCTAssertTrue(result.stdout.contains("undock"))
         XCTAssertTrue(result.stdout.contains("repair"))
         XCTAssertTrue(result.stdout.contains("xcode"))
+        XCTAssertTrue(result.stdout.contains("move"))
+        XCTAssertTrue(result.stdout.contains("unmove"))
         XCTAssertTrue(result.stdout.contains("cache"))
+        XCTAssertTrue(result.stdout.contains("teardown"))
         XCTAssertTrue(result.stdout.contains("init"))
         XCTAssertTrue(result.stdout.contains("Choose and save the default external volume"))
         XCTAssertFalse(result.stdout.contains("clean"))
@@ -255,6 +258,22 @@ final class CLIIntegrationTests: XCTestCase {
         XCTAssertEqual(errorObj["code"] as? String, "configuration_error")
         XCTAssertNotNil(errorObj["message"] as? String)
         XCTAssertNotNil(errorObj["details"] as? String)
+    }
+
+    func testJsonFlagAfterTerminatorIsTreatedAsPositional() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+
+        // dock with terminator before --json: mb dock --dry-run -- --json
+        let result = try runCLI(arguments: ["dock", "--dry-run", "--", "--json"])
+        XCTAssertNotEqual(result.status, 0)
+        XCTAssertTrue(result.stderr.contains("Error: "))
+
+        if let data = result.stderr.data(using: .utf8) {
+            let json = try? JSONSerialization.jsonObject(with: data)
+            XCTAssertNil(json, "stderr must not be a JSON envelope when --json is after terminator '--'")
+        }
     }
 
     func testRemovedDryRunOptionOnStatusFails() throws {

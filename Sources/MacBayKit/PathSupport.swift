@@ -29,8 +29,40 @@ public enum MacBayPaths {
         externalRoot(on: volume).appendingPathComponent("Xcode", isDirectory: true)
     }
 
+    public static func xcodeArchivesRoot(on volume: URL) -> URL {
+        xcodeRoot(on: volume).appendingPathComponent("Archives", isDirectory: true)
+    }
+
+    public static func xcodeDerivedDataRoot(on volume: URL) -> URL {
+        xcodeRoot(on: volume).appendingPathComponent("DerivedData", isDirectory: true)
+    }
+
+    public static func defaultXcodeDeviceSupportURL(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
+        homeDirectory.appendingPathComponent("Library/Developer/Xcode/iOS DeviceSupport")
+    }
+
+    public static func defaultXcodeArchivesURL(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
+        homeDirectory.appendingPathComponent("Library/Developer/Xcode/Archives")
+    }
+
+    public static func defaultXcodeDerivedDataURL(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
+        homeDirectory.appendingPathComponent("Library/Developer/Xcode/DerivedData")
+    }
+
+    public static func defaultCoreSimulatorCachesURL(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
+        homeDirectory.appendingPathComponent("Library/Developer/CoreSimulator/Caches")
+    }
+
+    public static func defaultXcodeCachesURL(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
+        homeDirectory.appendingPathComponent("Library/Caches/com.apple.dt.Xcode")
+    }
+
     public static func cachesRoot(on volume: URL) -> URL {
         externalRoot(on: volume).appendingPathComponent("Caches", isDirectory: true)
+    }
+
+    public static func dataRoot(on volume: URL) -> URL {
+        externalRoot(on: volume).appendingPathComponent("Data", isDirectory: true)
     }
 
     public static func manifestURL(on volume: URL) -> URL {
@@ -39,6 +71,10 @@ public enum MacBayPaths {
 
     public static func manifestLockURL(on volume: URL) -> URL {
         externalRoot(on: volume).appendingPathComponent(".manifest.lock")
+    }
+
+    public static func operationLockURL(on volume: URL) -> URL {
+        externalRoot(on: volume).appendingPathComponent(".macbay.lock")
     }
 
     public static func operationsRoot(on volume: URL) -> URL {
@@ -113,28 +149,37 @@ public struct FileLock: Sendable {
         self.url = url
     }
 
-    public func withLock<T>(_ body: () throws -> T) throws -> T {
+    public func withLock<T>(blocking: Bool = true, _ body: () throws -> T) throws -> T {
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
         let fd = open(url.path, O_CREAT | O_RDWR, 0o644)
         guard fd >= 0 else {
+            let code = errno
             throw MacBayError.commandFailed(
                 executable: "open",
-                status: errno,
-                details: "Failed to open lock file at \(url.path): \(String(cString: strerror(errno)))"
+                status: code,
+                details: "Failed to open lock file at \(url.path): \(String(cString: strerror(code)))"
             )
         }
         defer {
             close(fd)
         }
 
-        guard flock(fd, LOCK_EX) == 0 else {
+        let operation = blocking ? LOCK_EX : (LOCK_EX | LOCK_NB)
+        if flock(fd, operation) != 0 {
+            let code = errno
+            if !blocking, code == EWOULDBLOCK || code == EAGAIN {
+                throw MacBayError.operationInProgress(
+                    path: url.path,
+                    details: "Wait for it to finish and retry."
+                )
+            }
             throw MacBayError.commandFailed(
                 executable: "flock",
-                status: errno,
-                details: "Failed to acquire lock on \(url.path): \(String(cString: strerror(errno)))"
+                status: code,
+                details: "Failed to acquire lock on \(url.path): \(String(cString: strerror(code)))"
             )
         }
         defer {
@@ -246,6 +291,69 @@ public struct OperationJournal {
                 return nil
             }
             return record
+        }
+    }
+}
+
+extension FileManager {
+    /// Deletes a tree even when it contains read-only directories (Go's
+    /// `~/go/pkg/mod` marks module directories read-only, which makes a plain
+    /// `removeItem` fail partway). Owner access is granted to those directories
+    /// first so the removal completes instead of leaving a half-deleted tree.
+    public func removeItemMakingWritable(at url: URL) throws {
+        _ = grantOwnerAccessToDirectories(in: url)
+        try removeItem(at: url)
+    }
+
+    /// Renames a tree that may contain read-only directories. Some macOS versions
+    /// refuse to rename a directory its owner cannot write (e.g. Go's module cache),
+    /// so owner access is granted only where it is missing and every changed mode is
+    /// restored afterwards — the tree keeps its original permissions wherever it ends up.
+    public func moveItemPreservingPermissions(at source: URL, to destination: URL) throws {
+        let changedModes = grantOwnerAccessToDirectories(in: source)
+        do {
+            try moveItem(at: source, to: destination)
+        } catch {
+            restoreDirectoryModes(changedModes, under: source)
+            throw error
+        }
+        restoreDirectoryModes(changedModes, under: destination)
+    }
+
+    /// Adds owner rwx to every directory in the tree that lacks it, without following
+    /// symlinks, and returns the original modes keyed by path relative to `root`.
+    private func grantOwnerAccessToDirectories(in root: URL) -> [(relativePath: String, mode: Int)] {
+        guard let rootAttributes = try? attributesOfItem(atPath: root.path),
+              rootAttributes[.type] as? FileAttributeType == .typeDirectory else {
+            return []
+        }
+        var changed: [(relativePath: String, mode: Int)] = []
+        func grant(_ relativePath: String, _ attributes: [FileAttributeKey: Any]) {
+            guard attributes[.type] as? FileAttributeType == .typeDirectory,
+                  let mode = (attributes[.posixPermissions] as? NSNumber)?.intValue,
+                  mode & 0o700 != 0o700 else { return }
+            let path = relativePath.isEmpty ? root.path : root.appendingPathComponent(relativePath).path
+            if (try? setAttributes([.posixPermissions: mode | 0o700], ofItemAtPath: path)) != nil {
+                changed.append((relativePath, mode))
+            }
+        }
+        grant("", rootAttributes)
+        // 열거자는 디렉터리를 반환한 뒤에 그 안으로 내려가므로, 반환 시점에 권한을 풀면 잠긴 하위도 읽을 수 있다.
+        if let enumerator = enumerator(atPath: root.path) {
+            while let relativePath = enumerator.nextObject() as? String {
+                if let attributes = enumerator.fileAttributes {
+                    grant(relativePath, attributes)
+                }
+            }
+        }
+        return changed
+    }
+
+    private func restoreDirectoryModes(_ modes: [(relativePath: String, mode: Int)], under root: URL) {
+        // 하위부터 되돌려야 상위가 다시 잠겨도 하위 권한 복원이 막히지 않는다.
+        for entry in modes.reversed() {
+            let path = entry.relativePath.isEmpty ? root.path : root.appendingPathComponent(entry.relativePath).path
+            try? setAttributes([.posixPermissions: entry.mode], ofItemAtPath: path)
         }
     }
 }

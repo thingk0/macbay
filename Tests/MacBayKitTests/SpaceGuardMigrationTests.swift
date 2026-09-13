@@ -58,7 +58,8 @@ final class SpaceGuardMigrationTests: XCTestCase {
         return BundleMigrator(
             fileManager: .default,
             commandRunner: TestBundleCommandRunner(entitlementsXml: "<plist><dict></dict></plist>"),
-            volumeManager: volumeManager
+            volumeManager: volumeManager,
+            operationLock: NoOpVolumeOperationLock()
         )
     }
 

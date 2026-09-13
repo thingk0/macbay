@@ -19,26 +19,28 @@ struct MacBay: ParsableCommand {
             AdoptCommand.self,
             UndockCommand.self,
             RepairCommand.self,
+            MoveCommand.self,
+            UnmoveCommand.self,
             XcodeCommand.self,
             CacheCommand.self,
+            PurgeCommand.self,
+            TeardownCommand.self,
             TUICommand.self
         ]
     )
 
+    static func wantsJSONOutput(_ arguments: [String]) -> Bool {
+        for argument in arguments.dropFirst() {
+            if argument == "--" { return false }   // everything after the terminator is a value, not a flag
+            if argument == "--json" { return true }
+        }
+        return false
+    }
+
     static func execute() {
         if CommandLine.arguments.count <= 1 {
-            if MacBayTUI.isInteractiveTerminal() {
-                do {
-                    try MacBayTUI.run()
-                    Darwin.exit(0)
-                } catch {
-                    fputs("Error: \(error.localizedDescription)\n", stderr)
-                    Darwin.exit(1)
-                }
-            } else {
-                print(helpMessage())
-                Darwin.exit(0)
-            }
+            print(helpMessage())
+            Darwin.exit(0)
         }
 
         do {
@@ -50,7 +52,7 @@ struct MacBay: ParsableCommand {
             let code = exitCode(for: error)
             if code.isSuccess {
                 exit(withError: error)
-            } else if CommandLine.arguments.contains("--json") {
+            } else if wantsJSONOutput(CommandLine.arguments) {
                 let payload = MacBayErrorPayload(error: error)
                 if let jsonString = try? OutputFormatter(useColor: false).json(payload) {
                     fputs("\(jsonString)\n", stderr)

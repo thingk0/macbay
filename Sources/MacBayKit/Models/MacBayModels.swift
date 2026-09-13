@@ -9,6 +9,7 @@ public enum DockedItemKind: String, Codable, Sendable {
     case application
     case xcode
     case cache
+    case directory
 }
 
 public struct StorageVolume: Codable, Equatable, Identifiable, Sendable {
@@ -436,11 +437,29 @@ public struct MigrationResult: Codable, Equatable, Sendable {
 
 public struct XcodeDoctorReport: Codable, Equatable, Sendable {
     public let deviceSupport: MigrationResult?
+    public let archives: MigrationResult?
+    public let derivedData: MigrationResult?
     public let simulatorCleanup: CommandResultSummary?
+    public let derivedDataCleanup: CommandResultSummary?
+    public let cacheCleanup: CommandResultSummary?
+    public let freedBytes: UInt64
 
-    public init(deviceSupport: MigrationResult?, simulatorCleanup: CommandResultSummary?) {
+    public init(
+        deviceSupport: MigrationResult? = nil,
+        archives: MigrationResult? = nil,
+        derivedData: MigrationResult? = nil,
+        simulatorCleanup: CommandResultSummary? = nil,
+        derivedDataCleanup: CommandResultSummary? = nil,
+        cacheCleanup: CommandResultSummary? = nil,
+        freedBytes: UInt64 = 0
+    ) {
         self.deviceSupport = deviceSupport
+        self.archives = archives
+        self.derivedData = derivedData
         self.simulatorCleanup = simulatorCleanup
+        self.derivedDataCleanup = derivedDataCleanup
+        self.cacheCleanup = cacheCleanup
+        self.freedBytes = freedBytes
     }
 }
 
@@ -461,19 +480,107 @@ public struct CacheReport: Codable, Equatable, Sendable {
     public let reset: Bool
     public let targets: [MigrationResult]
     public let shellConfigurationPath: String
+    public let shellConfigurationPaths: [String]
+    public let environmentFilePath: String?
+    public let guardPath: String?
+    public let failures: [OperationFailure]
     public let dryRun: Bool
+
+    /// One or more targets failed to migrate.
+    public var exitCode: Int32 {
+        failures.isEmpty ? 0 : 1
+    }
 
     public init(
         enabled: Bool,
         reset: Bool,
         targets: [MigrationResult],
         shellConfigurationPath: String,
+        shellConfigurationPaths: [String] = [],
+        environmentFilePath: String? = nil,
+        guardPath: String? = nil,
+        failures: [OperationFailure] = [],
         dryRun: Bool
     ) {
         self.enabled = enabled
         self.reset = reset
         self.targets = targets
         self.shellConfigurationPath = shellConfigurationPath
+        self.shellConfigurationPaths = shellConfigurationPaths.isEmpty ? [shellConfigurationPath] : shellConfigurationPaths
+        self.environmentFilePath = environmentFilePath
+        self.guardPath = guardPath
+        self.failures = failures
+        self.dryRun = dryRun
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled
+        case reset
+        case targets
+        case shellConfigurationPath
+        case shellConfigurationPaths
+        case environmentFilePath
+        case guardPath
+        case failures
+        case dryRun
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.enabled = try container.decode(Bool.self, forKey: .enabled)
+        self.reset = try container.decode(Bool.self, forKey: .reset)
+        self.targets = try container.decode([MigrationResult].self, forKey: .targets)
+        let primaryPath = try container.decode(String.self, forKey: .shellConfigurationPath)
+        self.shellConfigurationPath = primaryPath
+        self.shellConfigurationPaths = try container.decodeIfPresent([String].self, forKey: .shellConfigurationPaths) ?? [primaryPath]
+        self.environmentFilePath = try container.decodeIfPresent(String.self, forKey: .environmentFilePath)
+        self.guardPath = try container.decodeIfPresent(String.self, forKey: .guardPath)
+        self.failures = try container.decodeIfPresent([OperationFailure].self, forKey: .failures) ?? []
+        self.dryRun = try container.decode(Bool.self, forKey: .dryRun)
+    }
+}
+
+/// A single failed item in a multi-target operation (teardown, cache enable).
+public struct OperationFailure: Codable, Equatable, Sendable {
+    public let path: String
+    public let reason: String
+
+    public init(path: String, reason: String) {
+        self.path = path
+        self.reason = reason
+    }
+}
+
+public typealias TeardownFailure = OperationFailure
+
+public struct TeardownReport: Codable, Equatable, Sendable {
+    public let restored: [MigrationResult]
+    public let unlinkedCaches: [MigrationResult]
+    public let failures: [OperationFailure]
+    public let cacheConfigurationReset: Bool
+    public let defaultVolumeRemoved: Bool
+    public let notes: [String]
+    public let dryRun: Bool
+
+    public var exitCode: Int32 {
+        failures.isEmpty ? 0 : 1
+    }
+
+    public init(
+        restored: [MigrationResult],
+        unlinkedCaches: [MigrationResult],
+        failures: [TeardownFailure],
+        cacheConfigurationReset: Bool,
+        defaultVolumeRemoved: Bool,
+        notes: [String],
+        dryRun: Bool
+    ) {
+        self.restored = restored
+        self.unlinkedCaches = unlinkedCaches
+        self.failures = failures
+        self.cacheConfigurationReset = cacheConfigurationReset
+        self.defaultVolumeRemoved = defaultVolumeRemoved
+        self.notes = notes
         self.dryRun = dryRun
     }
 }
@@ -497,6 +604,8 @@ public enum MacBayError: Error, Equatable, LocalizedError, Sendable {
     case forceRequired(path: String, assessment: CompatibilityAssessment)
     case insufficientSpace(path: String, neededBytes: UInt64, availableBytes: UInt64)
     case spaceCheckFailed(path: String, details: String)
+    case operationInProgress(path: String, details: String)
+    case volumeBusy(path: String, locks: [String])
 
     public var errorCode: String {
         switch self {
@@ -514,7 +623,9 @@ public enum MacBayError: Error, Equatable, LocalizedError, Sendable {
             return "configuration_error"
         case .activeProcesses,
              .sqliteLockDetected,
-             .insufficientSpace:
+             .insufficientSpace,
+             .operationInProgress,
+             .volumeBusy:
             return "retryable_error"
         case .signatureVerificationFailed,
              .commandFailed,
@@ -552,6 +663,10 @@ public enum MacBayError: Error, Equatable, LocalizedError, Sendable {
             return details
         case let .unmanagedLinkDetected(path, targetPath):
             return "Link: \(path) -> \(targetPath)"
+        case let .operationInProgress(_, details):
+            return details
+        case let .volumeBusy(_, locks):
+            return locks.joined(separator: ", ")
         case let .invalidVolume(details),
              let .externalVolumeRequired(details),
              let .invalidApplication(details),
@@ -605,6 +720,11 @@ public enum MacBayError: Error, Equatable, LocalizedError, Sendable {
             return "Not enough space on \(path): need \(OutputFormatter.humanBytes(neededBytes)), available \(OutputFormatter.humanBytes(availableBytes))"
         case let .spaceCheckFailed(path, details):
             return "Unable to verify free space on \(path): \(details)"
+        case let .operationInProgress(path, details):
+            return "Another MacBay operation is already running on \(path). \(details)"
+        case let .volumeBusy(path, locks):
+            let lockDetails = locks.isEmpty ? "" : " (\(locks.joined(separator: ", ")))"
+            return "Volume \(path) is busy with another MacBay operation\(lockDetails). Retry once it completes."
         }
     }
 }
@@ -667,6 +787,7 @@ public enum DoctorStatus: String, Codable, Equatable, Sendable {
 public enum DoctorCategory: String, Codable, Equatable, Sendable {
     case applicationLink = "application_link"
     case developerDataLink = "developer_data_link"
+    case dataLink = "data_link"
     case record
     case externalReference = "external_reference"
     case volume

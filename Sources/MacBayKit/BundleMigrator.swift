@@ -11,12 +11,14 @@ public struct BundleMigrator {
     private let appInspector: AppInspector
     private let spaceEstimator: SpaceEstimator
     private let symlinkResolver: SymlinkResolver
+    private let operationLock: any VolumeOperationLocking
 
     public init(
         fileManager: FileManager = .default,
         commandRunner: any CommandRunner = SystemCommandRunner(),
         volumeManager: VolumeManager? = nil,
-        appInspector: AppInspector? = nil
+        appInspector: AppInspector? = nil,
+        operationLock: any VolumeOperationLocking = VolumeOperationLock()
     ) {
         self.fileManager = fileManager
         self.commandRunner = commandRunner
@@ -40,6 +42,7 @@ public struct BundleMigrator {
             commandRunner: commandRunner
         )
         self.symlinkResolver = SymlinkResolver(fileManager: fileManager)
+        self.operationLock = operationLock
     }
 
     public func dock(
@@ -143,78 +146,81 @@ public struct BundleMigrator {
             )
         }
 
-        // 실행 직전에 여유 공간을 다시 확인하고, 부족하면 복사·링크 변경 전에 중단한다.
-        try spaceEstimator.requireSufficientSpace(copyBytes: sizeBytes, destinationVolume: volume)
+        return try operationLock.withVolumeLock(on: volume) {
+            // 실행 직전에 여유 공간을 다시 확인하고, 부족하면 복사·링크 변경 전에 중단한다.
+            try spaceEstimator.requireSufficientSpace(copyBytes: sizeBytes, destinationVolume: volume)
 
-        try fileManager.createDirectory(
-            at: destination.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        do {
-            progress?(.copying)
-            try runDitto(from: source, to: destination, totalBytes: sizeBytes, progress: progress)
-            progress?(.verifyingSignature)
-            try verifyCodeSignature(at: destination)
-        } catch {
-            if fileManager.fileExists(atPath: destination.path) {
-                try? fileManager.removeItem(at: destination)
+            try fileManager.createDirectory(
+                at: destination.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            do {
+                progress?(.copying)
+                try runDitto(from: source, to: destination, totalBytes: sizeBytes, progress: progress)
+                progress?(.verifyingSignature)
+                try verifyCodeSignature(at: destination)
+            } catch {
+                if fileManager.fileExists(atPath: destination.path) {
+                    try? fileManager.removeItemMakingWritable(at: destination)
+                }
+                throw error
             }
-            throw error
+
+            // 7. 심볼릭 링크
+            progress?(.updatingLink)
+            let backup = source.deletingLastPathComponent().appendingPathComponent(
+                ".\(source.lastPathComponent).macbay-\(UUID().uuidString)"
+            )
+            try fileManager.moveItemPreservingPermissions(at: source, to: backup)
+            do {
+                try fileManager.createSymbolicLink(atPath: source.path, withDestinationPath: destination.path)
+                try fileManager.removeItemMakingWritable(at: backup)
+            } catch {
+                if fileManager.fileExists(atPath: source.path) {
+                    try? fileManager.removeItemMakingWritable(at: source)
+                }
+                if fileManager.fileExists(atPath: backup.path), !fileManager.fileExists(atPath: source.path) {
+                    try? fileManager.moveItemPreservingPermissions(at: backup, to: source)
+                }
+                if fileManager.fileExists(atPath: destination.path) {
+                    try? fileManager.removeItemMakingWritable(at: destination)
+                }
+                throw error
+            }
+
+            // 8. manifest 저장
+            progress?(.savingManifest)
+            let item = DockedItem(
+                name: source.lastPathComponent,
+                sourcePath: source.path,
+                externalPath: destination.path,
+                sizeBytes: sizeBytes,
+                kind: .application,
+                dockedAt: macBayTimestamp()
+            )
+            try manifestStore.updating(on: volume) { manifest in
+                manifest.items.removeAll { $0.sourcePath == item.sourcePath }
+                manifest.items.append(item)
+            }
+
+            // 9. Dock 갱신
+            progress?(.refreshingDock)
+            let dockWarnings = refreshDock(for: source)
+            var finalMessages = messages
+            finalMessages.append("Migration completed")
+            finalMessages.append(contentsOf: dockWarnings)
+
+            return MigrationResult(
+                operation: "dock",
+                name: source.lastPathComponent,
+                sourcePath: source.path,
+                destinationPath: destination.path,
+                sizeBytes: sizeBytes,
+                dryRun: false,
+                messages: finalMessages,
+                compatibility: assessment
+            )
         }
-
-        // 7. 심볼릭 링크
-        progress?(.updatingLink)
-        let backup = source.deletingLastPathComponent().appendingPathComponent(
-            ".\(source.lastPathComponent).macbay-\(UUID().uuidString)"
-        )
-        try fileManager.moveItem(at: source, to: backup)
-        do {
-            try fileManager.createSymbolicLink(atPath: source.path, withDestinationPath: destination.path)
-            try fileManager.removeItem(at: backup)
-        } catch {
-            if fileManager.fileExists(atPath: source.path) {
-                try? fileManager.removeItem(at: source)
-            }
-            if fileManager.fileExists(atPath: backup.path), !fileManager.fileExists(atPath: source.path) {
-                try? fileManager.moveItem(at: backup, to: source)
-            }
-            if fileManager.fileExists(atPath: destination.path) {
-                try? fileManager.removeItem(at: destination)
-            }
-            throw error
-        }
-
-        // 8. manifest 저장
-        progress?(.savingManifest)
-        let item = DockedItem(
-            name: source.lastPathComponent,
-            sourcePath: source.path,
-            externalPath: destination.path,
-            sizeBytes: sizeBytes,
-            kind: .application,
-            dockedAt: macBayTimestamp()
-        )
-        try manifestStore.updating(on: volume) { manifest in
-            manifest.items.removeAll { $0.sourcePath == item.sourcePath }
-            manifest.items.append(item)
-        }
-
-        // 9. Dock 갱신
-        progress?(.refreshingDock)
-        let dockWarnings = refreshDock(for: source)
-        messages.append("Migration completed")
-        messages.append(contentsOf: dockWarnings)
-
-        return MigrationResult(
-            operation: "dock",
-            name: source.lastPathComponent,
-            sourcePath: source.path,
-            destinationPath: destination.path,
-            sizeBytes: sizeBytes,
-            dryRun: false,
-            messages: messages,
-            compatibility: assessment
-        )
     }
 
     public func undock(
@@ -277,59 +283,70 @@ public struct BundleMigrator {
             )
         }
 
-        // 실행 직전에 내장 볼륨 여유 공간을 다시 확인하고, 부족하면 복사 전에 중단한다.
-        try spaceEstimator.requireSufficientSpace(copyBytes: sizeBytes, destinationVolume: internalVolume)
+        let targetVolume = volume ?? inferredVolume(for: destination) ?? fallbackVolume
+        let executeUndock = { () throws -> MigrationResult in
+            // 실행 직전에 내장 볼륨 여유 공간을 다시 확인하고, 부족하면 복사 전에 중단한다.
+            try spaceEstimator.requireSufficientSpace(copyBytes: sizeBytes, destinationVolume: internalVolume)
 
-        let restored = source.deletingLastPathComponent().appendingPathComponent(
-            ".\(source.lastPathComponent).macbay-restore-\(UUID().uuidString)"
-        )
-        try fileManager.createDirectory(at: source.deletingLastPathComponent(), withIntermediateDirectories: true)
-        progress?(.copying)
-        try runDitto(from: destination, to: restored, totalBytes: sizeBytes, progress: progress)
-        do {
-            progress?(.verifyingSignature)
-            try verifyCodeSignature(at: restored)
-        } catch {
-            try? fileManager.removeItem(at: restored)
-            throw error
-        }
-
-        // 기존 링크를 제거한 뒤 복원본 이동이 실패하면 /Applications에서 앱이 사라진다.
-        // 이 경우 원래 링크를 되살려 외장 원본으로 다시 연결한다.
-        progress?(.updatingLink)
-        try fileManager.removeItem(at: source)
-        do {
-            try fileManager.moveItem(at: restored, to: source)
-        } catch {
-            try? fileManager.removeItem(at: restored)
-            if !fileManager.fileExists(atPath: source.path) {
-                try? fileManager.createSymbolicLink(
-                    atPath: source.path,
-                    withDestinationPath: linkDestination
-                )
+            let restored = source.deletingLastPathComponent().appendingPathComponent(
+                ".\(source.lastPathComponent).macbay-restore-\(UUID().uuidString)"
+            )
+            try fileManager.createDirectory(at: source.deletingLastPathComponent(), withIntermediateDirectories: true)
+            progress?(.copying)
+            try runDitto(from: destination, to: restored, totalBytes: sizeBytes, progress: progress)
+            do {
+                progress?(.verifyingSignature)
+                try verifyCodeSignature(at: restored)
+            } catch {
+                try? fileManager.removeItemMakingWritable(at: restored)
+                throw error
             }
-            throw error
-        }
-        try fileManager.removeItem(at: destination)
 
-        if let volume = volume ?? inferredVolume(for: destination) ?? fallbackVolume {
-            progress?(.savingManifest)
-            try manifestStore.updating(on: volume) { manifest in
-                manifest.items.removeAll { $0.sourcePath == source.path || $0.externalPath == destination.path }
+            // 기존 링크를 제거한 뒤 복원본 이동이 실패하면 /Applications에서 앱이 사라진다.
+            // 이 경우 원래 링크를 되살려 외장 원본으로 다시 연결한다.
+            progress?(.updatingLink)
+            try fileManager.removeItem(at: source)
+            do {
+                try fileManager.moveItemPreservingPermissions(at: restored, to: source)
+            } catch {
+                try? fileManager.removeItemMakingWritable(at: restored)
+                if !fileManager.fileExists(atPath: source.path) {
+                    try? fileManager.createSymbolicLink(
+                        atPath: source.path,
+                        withDestinationPath: linkDestination
+                    )
+                }
+                throw error
             }
+            try fileManager.removeItemMakingWritable(at: destination)
+
+            if let volume = targetVolume {
+                progress?(.savingManifest)
+                try manifestStore.updating(on: volume) { manifest in
+                    manifest.items.removeAll { $0.sourcePath == source.path || $0.externalPath == destination.path }
+                }
+            }
+
+            progress?(.refreshingDock)
+            let dockWarnings = refreshDock(for: source)
+            return MigrationResult(
+                operation: "undock",
+                name: source.lastPathComponent,
+                sourcePath: destination.path,
+                destinationPath: source.path,
+                sizeBytes: sizeBytes,
+                dryRun: false,
+                messages: messages + ["Migration completed"] + dockWarnings
+            )
         }
 
-        progress?(.refreshingDock)
-        let dockWarnings = refreshDock(for: source)
-        return MigrationResult(
-            operation: "undock",
-            name: source.lastPathComponent,
-            sourcePath: destination.path,
-            destinationPath: source.path,
-            sizeBytes: sizeBytes,
-            dryRun: false,
-            messages: messages + ["Migration completed"] + dockWarnings
-        )
+        if let targetVolume {
+            return try operationLock.withVolumeLock(on: targetVolume) {
+                try executeUndock()
+            }
+        } else {
+            return try executeUndock()
+        }
     }
 
     private func verifyCodeSignature(at url: URL) throws {
