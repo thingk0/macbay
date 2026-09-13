@@ -298,6 +298,7 @@ Healthy · 2
 | `move` | `mv` |
 | `unmove` | `umv` |
 | `cache` | `c` |
+| `purge` | `pu` |
 | `teardown` | `td` |
 | `history` | `hist` |
 | `undo` | — |
