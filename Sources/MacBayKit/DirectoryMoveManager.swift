@@ -290,6 +290,7 @@ public struct DirectoryMoveManager {
             try fileManager.removeItem(at: source)
         }
         do {
+            fileManager.relaxPermissionsForMove(at: restored)
             try fileManager.moveItem(at: restored, to: source)
         } catch {
             try? fileManager.removeItemMakingWritable(at: restored)
@@ -453,6 +454,7 @@ public struct DirectoryMoveManager {
         let backup = source.deletingLastPathComponent().appendingPathComponent(
             ".\(source.lastPathComponent).macbay-\(UUID().uuidString)"
         )
+        fileManager.relaxPermissionsForMove(at: source)
         try fileManager.moveItem(at: source, to: backup)
         do {
             try fileManager.createSymbolicLink(atPath: source.path, withDestinationPath: destination.path)
@@ -462,6 +464,7 @@ public struct DirectoryMoveManager {
                 try? fileManager.removeItemMakingWritable(at: source)
             }
             if fileManager.fileExists(atPath: backup.path), !fileManager.fileExists(atPath: source.path) {
+                fileManager.relaxPermissionsForMove(at: backup)
                 try? fileManager.moveItem(at: backup, to: source)
             }
             if fileManager.fileExists(atPath: destination.path) {
