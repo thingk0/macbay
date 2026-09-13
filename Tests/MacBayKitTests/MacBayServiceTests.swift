@@ -98,6 +98,39 @@ final class MacBayServiceTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: makeHistoryStore().historyURL.path))
     }
 
+    func testUndoPlansFromTheInjectedHistoryStore() throws {
+        let service = makeService(mounted: [externalSSD])
+        makeHistoryStore().record(HistoryEntry(command: "move", subject: "/Users/me/Game Library", outcome: .success))
+
+        let plan = try service.planUndo()
+        XCTAssertEqual(plan.operation, .unmove)
+        XCTAssertEqual(plan.command, "mb unmove '/Users/me/Game Library'")
+    }
+
+    func testUndoDryRunRefusesStaleMoveWithoutRecording() throws {
+        let service = makeService(mounted: [externalSSD])
+        let notALink = tempDir.appendingPathComponent("NotALink").path
+        makeHistoryStore().record(HistoryEntry(command: "move", subject: notALink, outcome: .success))
+
+        let plan = try service.planUndo()
+        XCTAssertThrowsError(try service.undo(plan, volumePath: nil, dryRun: true))
+        XCTAssertEqual(service.history().count, 1)
+    }
+
+    func testFailedUndoIsRecordedAndCanBeRetried() throws {
+        let service = makeService(mounted: [externalSSD])
+        let notALink = tempDir.appendingPathComponent("NotALink").path
+        makeHistoryStore().record(HistoryEntry(command: "move", subject: notALink, outcome: .success))
+
+        let plan = try service.planUndo()
+        XCTAssertThrowsError(try service.undo(plan, volumePath: nil, dryRun: false))
+        let entries = service.history()
+        XCTAssertEqual(entries.first?.command, "undo")
+        XCTAssertEqual(entries.first?.outcome, .failure)
+        // The failed undo changed nothing, so the move is still what mb undo picks.
+        XCTAssertEqual(try service.planUndo().entry.subject, notALink)
+    }
+
     func testCancellationErrorIsRecognized() {
         XCTAssertTrue(MacBayError.cancelled.isCancellation)
         XCTAssertEqual(MacBayError.cancelled, .unsupportedOperation("Cancelled"))

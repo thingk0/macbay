@@ -149,6 +149,7 @@ final class CLIIntegrationTests: XCTestCase {
         XCTAssertTrue(result.stdout.contains("cache"))
         XCTAssertTrue(result.stdout.contains("teardown"))
         XCTAssertTrue(result.stdout.contains("init"))
+        XCTAssertTrue(result.stdout.contains("undo"))
         XCTAssertTrue(result.stdout.contains("Choose and save the default external volume"))
         XCTAssertFalse(result.stdout.contains("clean"))
     }
@@ -563,6 +564,30 @@ final class CLIIntegrationTests: XCTestCase {
         result = try runCLI(arguments: ["history", "--command", "dock"], environment: env)
         XCTAssertEqual(result.status, 0)
         XCTAssertTrue(result.stdout.contains("No recorded operations"))
+    }
+
+    func testUndoRefusesWithoutAnUndoableOperation() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+
+        let configHome = try makeConfigHome()
+        defer { try? FileManager.default.removeItem(at: configHome) }
+        let env = configEnvironment(configHome)
+
+        // Empty history.
+        var result = try runCLI(arguments: ["undo", "--dry-run"], environment: env)
+        XCTAssertNotEqual(result.status, 0)
+        XCTAssertTrue(result.stderr.contains("Nothing to undo"), result.stderr)
+
+        // The newest successful entry cannot be undone.
+        let stateDir = configHome.appendingPathComponent("xdg-state/macbay")
+        try FileManager.default.createDirectory(at: stateDir, withIntermediateDirectories: true)
+        let purge = #"{"timestamp":"2026-09-13T08:00:00Z","command":"purge","subject":"3 item(s)","outcome":"success"}"#
+        try (purge + "\n").write(to: stateDir.appendingPathComponent("history.jsonl"), atomically: true, encoding: .utf8)
+        result = try runCLI(arguments: ["undo", "--dry-run"], environment: env)
+        XCTAssertNotEqual(result.status, 0)
+        XCTAssertTrue(result.stderr.contains("cannot be restored"), result.stderr)
     }
 
     func testInitWithClosedStdinIsNotInteractive() throws {

@@ -954,6 +954,15 @@ public struct OutputFormatter {
         return lines.joined(separator: "\n")
     }
 
+    public func undo(_ report: UndoReport) -> String {
+        var lines = [style(report.dryRun ? "Dry run: MacBay undo" : "MacBay undo", color: "36", bold: true)]
+        lines.append("  Last operation: \(bold(report.entry.command))  \(report.entry.subject)  (\(report.entry.timestamp))")
+        lines.append("  Reversed with:  \(report.command)")
+        lines.append("")
+        lines.append(migration(report.result))
+        return lines.joined(separator: "\n")
+    }
+
     public func doctor(_ report: DoctorReport) -> String {
         var sections: [[String]] = []
 

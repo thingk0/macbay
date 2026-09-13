@@ -305,6 +305,7 @@ Short aliases accept the same arguments and options as the full commands. Run `m
 | `purge` | `pu` |
 | `teardown` | `td` |
 | `history` | `hist` |
+| `undo` | — |
 | `tui` | `ui` |
 
 ```sh
@@ -692,6 +693,18 @@ mb history --json
 ```
 
 Each entry shows the command, what it acted on, the outcome, and — for reversible operations like `dock` or `move` — the `undo:` hint with the exact command that would reverse it. History is reference data only: `mb doctor` verdicts and safety checks never consult it, and entries like `teardown`, `purge`, or `xcode` have no undo hint because their effects cannot be safely reconstructed.
+
+### Undoing the Last Operation (`undo`)
+
+`mb undo` reverses the newest successful entry in `mb history` when it is a `dock` or a `move`: a dock is undone with `mb undock` and a move with `mb unmove`. It first runs that command as a dry run, so an app that is no longer docked or a path that is no longer a MacBay link is refused before anything changes, and it asks for confirmation unless `--yes` is passed.
+
+```sh
+mb undo --dry-run   # show what would be undone
+mb undo             # undo it after confirming
+mb undo --yes       # skip the confirmation prompt
+```
+
+Only the newest successful entry is considered: failed attempts are skipped because they changed nothing, and `mb undo` never reaches past a newer operation. Anything else is refused with the reason — deleted caches (`purge`, `xcode`) cannot be restored, `cache --enable` and `teardown` cannot be reversed exactly, and an entry that was already undone is not undone again. The undo itself is recorded in `mb history`.
 
 ---
 

@@ -300,6 +300,7 @@ Healthy · 2
 | `cache` | `c` |
 | `teardown` | `td` |
 | `history` | `hist` |
+| `undo` | — |
 | `tui` | `ui` |
 
 ```sh
@@ -638,6 +639,18 @@ mb history --json
 ```
 
 每条记录显示命令、作用对象与结果；对于 `dock`、`move` 这类可逆操作，还会用 `undo:` 提示给出精确的撤销命令。历史仅供参考：`mb doctor` 的判定与安全检查从不读取它，而 `teardown`、`purge`、`xcode` 等条目没有 undo 提示，因为其效果无法安全复原。
+
+### 撤销上一次操作（`undo`）
+
+当 `mb history` 中最新的成功记录是 `dock` 或 `move` 时，`mb undo` 会撤销该操作：dock 通过 `mb undock` 撤销，move 通过 `mb unmove` 撤销。它会先以 dry-run 方式运行该命令，因此已经 undock 的应用或不再是 MacBay 链接的路径会在任何更改之前被拒绝；除非传入 `--yes`，否则会先请求确认。
+
+```sh
+mb undo --dry-run   # 预览将撤销的内容
+mb undo             # 确认后撤销
+mb undo --yes       # 跳过确认
+```
+
+只考虑最新的成功记录：失败的尝试没有改变任何东西，因此会被跳过，`mb undo` 也不会越过更新的操作去撤销更早的操作。其他操作会附带原因被拒绝——已删除的缓存（`purge`、`xcode`）无法恢复，`cache --enable` 与 `teardown` 无法精确撤销，已经撤销过的记录不会再次撤销。撤销操作本身也会记录在 `mb history` 中。
 
 ---
 

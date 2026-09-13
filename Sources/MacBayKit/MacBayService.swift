@@ -204,6 +204,48 @@ public struct MacBayService {
         historyStore.entries(limit: limit, command: command)
     }
 
+    /// The newest history entry `mb undo` may reverse, or an error explaining why none can be.
+    public func planUndo() throws -> UndoPlan {
+        try UndoPlanner.plan(from: historyStore.entries())
+    }
+
+    /// Reverses `plan` with the matching restore. A dry run checks that the current
+    /// state still matches the entry (for example, that the app is still docked)
+    /// without changing anything; only real runs are recorded.
+    public func undo(
+        _ plan: UndoPlan,
+        volumePath: String?,
+        dryRun: Bool,
+        progress: ProgressHandler? = nil
+    ) throws -> UndoReport {
+        let subject = "\(plan.entry.command) \(plan.entry.subject)"
+        do {
+            let result: MigrationResult
+            switch plan.operation {
+            case .undock:
+                // undock records its own history entry.
+                result = try undock(appName: plan.target, volumePath: volumePath, dryRun: dryRun, progress: progress)
+            case .unmove:
+                result = try unmove(path: plan.target, volumePath: volumePath, dryRun: dryRun, progress: progress)
+                recordOperation(
+                    command: "unmove", subject: result.destinationPath, outcome: .success,
+                    undo: "mb move \(ShellEnvironmentWriter.shellQuoted(result.destinationPath))", dryRun: dryRun
+                )
+            }
+            recordOperation(
+                command: "undo", subject: subject, outcome: .success,
+                detail: "ran \(plan.command)", dryRun: dryRun
+            )
+            return UndoReport(entry: plan.entry, command: plan.command, result: result, dryRun: dryRun)
+        } catch {
+            recordOperation(
+                command: "undo", subject: subject, outcome: .failure,
+                detail: error.localizedDescription, dryRun: dryRun
+            )
+            throw error
+        }
+    }
+
     public func references(paths: [String]) throws -> ReferenceReport {
         let checker = ExternalReferenceChecker(fileManager: fileManager)
         let result = checker.check(paths: paths)

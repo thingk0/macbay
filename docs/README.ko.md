@@ -302,6 +302,7 @@ Healthy · 2
 | `purge` | `pu` |
 | `teardown` | `td` |
 | `history` | `hist` |
+| `undo` | — |
 | `tui` | `ui` |
 
 ```sh
@@ -673,6 +674,18 @@ mb history --json
 ```
 
 각 항목은 명령, 대상, 결과를 보여주고, `dock`·`move`처럼 되돌릴 수 있는 작업에는 되돌리는 정확한 명령이 `undo:` 힌트로 표시됩니다. 이력은 참고용일 뿐이며 `mb doctor` 판정이나 안전 검사에는 절대 사용되지 않습니다. `teardown`·`purge`·`xcode` 같은 항목은 안전하게 복구할 수 없어 undo 힌트가 없습니다.
+
+### 마지막 작업 되돌리기 (`undo`)
+
+`mb undo`는 `mb history`에서 가장 최근의 성공한 항목이 `dock`이나 `move`일 때 그 작업을 되돌립니다. dock은 `mb undock`으로, move는 `mb unmove`로 되돌립니다. 먼저 해당 명령을 dry-run으로 실행하므로 이미 undock된 앱이나 더 이상 MacBay 링크가 아닌 경로는 아무것도 바꾸기 전에 거부하며, `--yes`가 없으면 확인을 요청합니다.
+
+```sh
+mb undo --dry-run   # 되돌릴 작업 미리 보기
+mb undo             # 확인 후 되돌리기
+mb undo --yes       # 확인 생략
+```
+
+가장 최근의 성공한 항목만 대상으로 합니다. 실패한 시도는 아무것도 바꾸지 않았으므로 건너뛰고, 더 최근 작업을 넘어 이전 작업을 되돌리지는 않습니다. 그 밖의 작업은 이유와 함께 거부합니다 — 삭제된 캐시(`purge`, `xcode`)는 복구할 수 없고, `cache --enable`과 `teardown`은 정확히 되돌릴 수 없으며, 이미 되돌린 항목은 다시 되돌리지 않습니다. 되돌린 작업도 `mb history`에 기록됩니다.
 
 ---
 

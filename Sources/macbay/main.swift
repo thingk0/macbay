@@ -26,6 +26,7 @@ struct MacBay: ParsableCommand {
             PurgeCommand.self,
             TeardownCommand.self,
             HistoryCommand.self,
+            UndoCommand.self,
             TUICommand.self
         ]
     )
