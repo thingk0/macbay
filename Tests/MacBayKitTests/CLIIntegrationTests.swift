@@ -400,13 +400,14 @@ final class CLIIntegrationTests: XCTestCase {
         XCTAssertFalse(result.stdout.contains("\u{001B}"))
     }
 
-    func testDoctorRejectsDryRunOption() throws {
+    func testDoctorAcceptsDryRunOption() throws {
         guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
             throw XCTSkip("Binary not found at \(binaryURL.path)")
         }
 
+        // --dry-run은 --fix의 복구를 미리 보기 위한 플래그로 허용된다.
         let result = try runCLI(arguments: ["doctor", "--dry-run"])
-        XCTAssertNotEqual(result.status, 0)
+        XCTAssertTrue([0, 1].contains(result.status), "unexpected exit code \(result.status)")
     }
 
     func testDoctorWithUnknownVolumeExitsTwo() throws {
