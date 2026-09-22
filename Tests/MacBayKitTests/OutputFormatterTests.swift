@@ -353,6 +353,53 @@ final class OutputFormatterTests: XCTestCase {
         XCTAssertTrue(output.contains("Antigravity.app"))
         XCTAssertTrue(output.contains("Safe"))
 
+        let coloredOutput = OutputFormatter(useColor: true).scan(report, terminalWidth: 80)
+        XCTAssertTrue(coloredOutput.contains("\u{001B}[36mSafe\u{001B}[0m"))
+        XCTAssertTrue(coloredOutput.contains("\u{001B}[33mReview\u{001B}[0m"))
+        XCTAssertTrue(coloredOutput.contains("\u{001B}[31mBlocked\u{001B}[0m"))
+
+        let lines = output.components(separatedBy: "\n")
+        guard let headerIndex = lines.firstIndex(where: {
+            $0.contains("NAME") && $0.contains("SIZE") && $0.contains("STATUS")
+        }) else {
+            XCTFail("Expected the Applications table header")
+            return
+        }
+        let divider = lines[headerIndex + 1]
+        XCTAssertTrue(divider.allSatisfy { $0 == " " || $0 == "-" })
+        XCTAssertEqual(
+            OutputFormatter.displayWidth(of: lines[headerIndex]),
+            OutputFormatter.displayWidth(of: divider)
+        )
+
+        guard let cacheHeaderIndex = lines.firstIndex(where: {
+            $0.contains("CACHE") && $0.contains("SIZE")
+        }) else {
+            XCTFail("Expected the Developer caches table header")
+            return
+        }
+        let cacheDivider = lines[cacheHeaderIndex + 1]
+        XCTAssertTrue(cacheDivider.allSatisfy { $0 == " " || $0 == "-" })
+        XCTAssertEqual(
+            OutputFormatter.displayWidth(of: lines[cacheHeaderIndex]),
+            OutputFormatter.displayWidth(of: cacheDivider)
+        )
+        XCTAssertEqual(OutputFormatter.displayWidth(of: lines[cacheHeaderIndex + 2]), OutputFormatter.displayWidth(of: cacheDivider))
+
+        guard let externalHeaderIndex = lines.firstIndex(where: {
+            $0.contains("APP") && $0.contains("SIZE") && $0.contains("MANAGEMENT")
+        }) else {
+            XCTFail("Expected the Already external table header")
+            return
+        }
+        let externalDivider = lines[externalHeaderIndex + 1]
+        XCTAssertTrue(externalDivider.allSatisfy { $0 == " " || $0 == "-" })
+        XCTAssertEqual(
+            OutputFormatter.displayWidth(of: lines[externalHeaderIndex]),
+            OutputFormatter.displayWidth(of: externalDivider)
+        )
+        XCTAssertEqual(OutputFormatter.displayWidth(of: lines[externalHeaderIndex + 2]), OutputFormatter.displayWidth(of: externalDivider))
+
         // Legends
         XCTAssertTrue(output.contains("Safe: no relocation signals detected"))
         XCTAssertTrue(output.contains("Review: check compatibility details before using --force"))
@@ -369,6 +416,129 @@ final class OutputFormatterTests: XCTestCase {
         XCTAssertTrue(output.contains("1.3 GB"))
         XCTAssertTrue(output.contains("Unmanaged"))
         XCTAssertTrue(output.contains("Unmanaged: no matching MacBay migration record"))
+
+        XCTAssertTrue(coloredOutput.contains("\u{001B}[33mUnmanaged\u{001B}[0m"))
+    }
+
+    func testScanCacheAndExternalTablesWrapNamesAndFallBackWhenTooNarrow() {
+        let formatter = OutputFormatter(useColor: false)
+        let cacheName = "LongDeveloperCacheNameThatNeedsWrapping"
+        let externalName = "LongExternalApplicationNameThatNeedsWrapping.app"
+        let cache = AppCandidate(
+            name: cacheName,
+            path: "/Users/test/Library/Developer/LongDeveloperCacheNameThatNeedsWrapping",
+            sizeBytes: 200_802_304,
+            kind: .developerCache,
+            compatibility: nil
+        )
+        let external = ExternalApplication(
+            name: externalName,
+            sourcePath: "/Applications/\(externalName)",
+            destinationPath: "/Volumes/ExternalSSD/MacBay/Applications/\(externalName)",
+            sizeBytes: nil,
+            managementStatus: .unmanaged
+        )
+        let report = ScanReport(
+            generatedAt: "2026-09-10T12:00:00Z",
+            minimumApplicationSizeBytes: 200 * 1024 * 1024,
+            candidates: [cache],
+            externalApplications: [external],
+            unresolvedApplicationLinks: [],
+            warnings: []
+        )
+
+        let output = formatter.scan(report, terminalWidth: 40)
+        let lines = output.components(separatedBy: "\n")
+
+        guard let cacheHeaderIndex = lines.firstIndex(where: { $0.contains("CACHE") && $0.contains("SIZE") }),
+              let externalHeaderIndex = lines.firstIndex(where: { $0.contains("APP") && $0.contains("MANAGEMENT") }) else {
+            XCTFail("Expected both cache and external application table headers")
+            return
+        }
+
+        let cacheDivider = lines[cacheHeaderIndex + 1]
+        let cacheRows = Array(lines.dropFirst(cacheHeaderIndex + 2).prefix {
+            OutputFormatter.displayWidth(of: $0) == OutputFormatter.displayWidth(of: cacheDivider)
+        })
+        let cacheNameWidth = cacheDivider.distance(
+            from: cacheDivider.index(cacheDivider.startIndex, offsetBy: 2),
+            to: cacheDivider.range(of: "  ", range: cacheDivider.index(cacheDivider.startIndex, offsetBy: 2)..<cacheDivider.endIndex)!.lowerBound
+        )
+        XCTAssertGreaterThan(cacheRows.count, 1)
+        XCTAssertEqual(
+            cacheRows.map { String($0.dropFirst(2).prefix(cacheNameWidth)).trimmingCharacters(in: .whitespaces) }.joined(),
+            cacheName
+        )
+        XCTAssertTrue(cacheRows.dropFirst().allSatisfy {
+            String($0.dropFirst(2 + cacheNameWidth + 2)).trimmingCharacters(in: .whitespaces).isEmpty
+        })
+        XCTAssertTrue(cacheRows.allSatisfy { OutputFormatter.displayWidth(of: $0) <= 40 })
+
+        let externalDivider = lines[externalHeaderIndex + 1]
+        let externalRows = Array(lines.dropFirst(externalHeaderIndex + 2).prefix {
+            OutputFormatter.displayWidth(of: $0) == OutputFormatter.displayWidth(of: externalDivider)
+        })
+        let externalNameWidth = externalDivider.distance(
+            from: externalDivider.index(externalDivider.startIndex, offsetBy: 2),
+            to: externalDivider.range(of: "  ", range: externalDivider.index(externalDivider.startIndex, offsetBy: 2)..<externalDivider.endIndex)!.lowerBound
+        )
+        XCTAssertGreaterThan(externalRows.count, 1)
+        XCTAssertEqual(
+            externalRows.map { String($0.dropFirst(2).prefix(externalNameWidth)).trimmingCharacters(in: .whitespaces) }.joined(),
+            externalName
+        )
+        XCTAssertTrue(externalRows.dropFirst().allSatisfy { !$0.contains("Unknown") && !$0.contains("Unmanaged") })
+        XCTAssertTrue(externalRows.allSatisfy { OutputFormatter.displayWidth(of: $0) <= 40 })
+
+        let narrowOutput = formatter.scan(report, terminalWidth: 16)
+        XCTAssertFalse(narrowOutput.contains("  CACHE"))
+        XCTAssertFalse(narrowOutput.contains("  APP"))
+        XCTAssertTrue(narrowOutput.contains("  \(cacheName)\n    191.5 MB"))
+        XCTAssertTrue(narrowOutput.contains("  \(externalName)\n    Unknown  Unmanaged"))
+    }
+
+    func testScanTableAlignsWideApplicationNames() {
+        let formatter = OutputFormatter(useColor: false)
+        let apps = [
+            AppCandidate(
+                name: "카카오톡.app",
+                path: "/Applications/카카오톡.app",
+                sizeBytes: 512_000_000,
+                kind: .application,
+                compatibility: CompatibilityAssessment(grade: .safe, reasons: [])
+            ),
+            AppCandidate(
+                name: "🚀Editor.app",
+                path: "/Applications/🚀Editor.app",
+                sizeBytes: 1_000_000_000,
+                kind: .application,
+                compatibility: CompatibilityAssessment(grade: .popupRisk, reasons: ["Risk"])
+            )
+        ]
+        let report = ScanReport(
+            generatedAt: "2026-09-10T12:00:00Z",
+            minimumApplicationSizeBytes: 200 * 1024 * 1024,
+            candidates: apps,
+            externalApplications: [],
+            unresolvedApplicationLinks: [],
+            warnings: []
+        )
+
+        let output = formatter.scan(report, terminalWidth: 60)
+        let lines = output.components(separatedBy: "\n")
+        guard let headerIndex = lines.firstIndex(where: {
+            $0.contains("NAME") && $0.contains("SIZE") && $0.contains("STATUS")
+        }) else {
+            XCTFail("Expected the Applications table header")
+            return
+        }
+        let rows = Array(lines.dropFirst(headerIndex + 2).prefix(while: { !$0.isEmpty }))
+        let tableLines = [lines[headerIndex], lines[headerIndex + 1]] + rows
+
+        XCTAssertEqual(rows.count, 2)
+        XCTAssertTrue(output.contains("카카오톡.app"))
+        XCTAssertTrue(output.contains("🚀Editor.app"))
+        XCTAssertEqual(Set(tableLines.map { OutputFormatter.displayWidth(of: $0) }).count, 1)
     }
 
     func testScanNarrowTerminalWrapping() {
@@ -391,9 +561,44 @@ final class OutputFormatterTests: XCTestCase {
         )
 
         let output = formatter.scan(report, terminalWidth: 40)
-        XCTAssertTrue(output.contains("  \(longName)\n    1.0 GB  Safe"))
-        // Name should never be truncated
-        XCTAssertTrue(output.contains(longName))
+        let lines = output.components(separatedBy: "\n")
+        guard let headerIndex = lines.firstIndex(where: {
+            $0.contains("NAME") && $0.contains("SIZE") && $0.contains("STATUS")
+        }) else {
+            XCTFail("Expected the Applications table header at 40 columns")
+            return
+        }
+        let rows = Array(lines.dropFirst(headerIndex + 2).prefix(while: { !$0.isEmpty }))
+        let reconstructedName = rows.map {
+            String($0.dropFirst(2).prefix(22)).trimmingCharacters(in: .whitespaces)
+        }.joined()
+
+        XCTAssertEqual(reconstructedName, longName)
+        XCTAssertTrue(rows.contains { $0.contains("1.0 GB  Safe") })
+        XCTAssertTrue(rows.allSatisfy { OutputFormatter.displayWidth(of: $0) <= 40 })
+    }
+
+    func testScanUsesStackedRowsWhenTerminalIsTooNarrowForTable() {
+        let formatter = OutputFormatter(useColor: false)
+        let app = AppCandidate(
+            name: "Narrow.app",
+            path: "/Applications/Narrow.app",
+            sizeBytes: 1_073_741_824,
+            kind: .application,
+            compatibility: CompatibilityAssessment(grade: .safe, reasons: [])
+        )
+        let report = ScanReport(
+            generatedAt: "2026-09-10T12:00:00Z",
+            minimumApplicationSizeBytes: 200 * 1024 * 1024,
+            candidates: [app],
+            externalApplications: [],
+            unresolvedApplicationLinks: [],
+            warnings: []
+        )
+
+        let output = formatter.scan(report, terminalWidth: 20)
+        XCTAssertFalse(output.contains("\n  NAME"))
+        XCTAssertTrue(output.contains("  Narrow.app\n    1.0 GB  Safe"))
     }
 
     func testScanVerboseMode() {

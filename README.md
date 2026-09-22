@@ -203,25 +203,30 @@ MacBay scan
 App threshold: 200.0 MB
 
 Applications · 8
-  NAME                    SIZE  STATUS
-  HeavyStudio.app       2.1 GB  Review
-  VirtualMachine.app    1.8 GB  Blocked
-  ContainerRuntime.app  1.2 GB  Blocked
-  DeveloperIDE.app    850.0 MB  Safe
-  CloudStorage.app    620.4 MB  Safe
-  SystemHelper.app    410.2 MB  Review
-  DriverDaemon.app    320.0 MB  Blocked
-  Messenger.app       240.5 MB  Safe
+  NAME                      SIZE  STATUS
+  --------------------  --------  -------
+  HeavyStudio.app         2.1 GB  Review
+  VirtualMachine.app      1.8 GB  Blocked
+  ContainerRuntime.app    1.2 GB  Blocked
+  DeveloperIDE.app      850.0 MB  Safe
+  CloudStorage.app      620.4 MB  Safe
+  SystemHelper.app      410.2 MB  Review
+  DriverDaemon.app      320.0 MB  Blocked
+  Messenger.app         240.5 MB  Safe
 
   Safe: no relocation signals detected
   Review: check compatibility details before using --force
   Blocked: migration not allowed
 
 Developer caches · 2
+  CACHE              SIZE
+  -------------  --------
   CoreSimulator  191.5 MB
   npm cache      124.2 MB
 
 Already external · 2
+  APP                SIZE  MANAGEMENT
+  ---------------  ------  ----------
   DesignKit.app    1.5 GB  Unmanaged
     → /Volumes/ExternalSSD/Applications/DesignKit.app
   AudioEngine.app  1.2 GB  MacBay

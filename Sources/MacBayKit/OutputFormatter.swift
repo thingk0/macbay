@@ -190,34 +190,58 @@ public struct OutputFormatter {
                 )
             }
 
-            let maxSizeWidth = max(appRows.map { Self.displayWidth(of: $0.sizeString) }.max() ?? 4, 4)
-            let maxStatusWidth = max(appRows.map { Self.displayWidth(of: $0.statusText) }.max() ?? 6, 6)
-            let fixedColumnsWidth = 2 + 2 + maxSizeWidth + 2 + maxStatusWidth
+            let sizeColWidth = max(
+                appRows.map { Self.displayWidth(of: $0.sizeString) }.max() ?? 4,
+                Self.displayWidth(of: "SIZE")
+            )
+            let statusColWidth = max(
+                appRows.map { Self.displayWidth(of: $0.statusText) }.max() ?? 6,
+                Self.displayWidth(of: "STATUS")
+            )
+            let minimumNameWidth = Self.displayWidth(of: "NAME")
+            let fixedColumnsWidth = 2 + 2 + sizeColWidth + 2 + statusColWidth
             let maxAllowedNameWidth = termWidth - fixedColumnsWidth
+            let canRenderTable = maxAllowedNameWidth >= minimumNameWidth
+            let longestNameWidth = appRows.map { Self.displayWidth(of: $0.name) }.max() ?? minimumNameWidth
+            let nameColWidth = canRenderTable
+                ? max(minimumNameWidth, min(longestNameWidth, maxAllowedNameWidth))
+                : minimumNameWidth
 
-            let fittingRows = appRows.filter { Self.displayWidth(of: $0.name) <= maxAllowedNameWidth }
-            let nameColWidth = max(fittingRows.map { Self.displayWidth(of: $0.name) }.max() ?? 4, 4)
-
-            if maxAllowedNameWidth >= 4 && !fittingRows.isEmpty {
-                let h1 = "  " + padRight("NAME", rawText: "NAME", toDisplayWidth: nameColWidth)
-                let h2 = "  " + padLeft("SIZE", rawText: "SIZE", toDisplayWidth: maxSizeWidth)
-                let h3 = "  STATUS"
-                appLines.append(dim(h1 + h2 + h3))
+            if canRenderTable {
+                let nameHeader = padRight("NAME", rawText: "NAME", toDisplayWidth: nameColWidth)
+                let sizeHeader = padLeft("SIZE", rawText: "SIZE", toDisplayWidth: sizeColWidth)
+                let statusHeader = padRight("STATUS", rawText: "STATUS", toDisplayWidth: statusColWidth)
+                appLines.append(dim("  " + nameHeader + "  " + sizeHeader + "  " + statusHeader))
+                appLines.append(dim(
+                    "  " + String(repeating: "-", count: nameColWidth) +
+                    "  " + String(repeating: "-", count: sizeColWidth) +
+                    "  " + String(repeating: "-", count: statusColWidth)
+                ))
             }
 
             for row in appRows {
-                let nameWidth = Self.displayWidth(of: row.name)
                 let styledName = bold(row.name)
                 let styledStatus = style(row.statusText, color: row.statusColor)
 
-                if nameWidth <= maxAllowedNameWidth {
-                    let c1 = "  " + padRight(styledName, rawText: row.name, toDisplayWidth: nameColWidth)
-                    let c2 = "  " + padLeft(row.sizeString, rawText: row.sizeString, toDisplayWidth: maxSizeWidth)
-                    let c3 = "  " + styledStatus
-                    appLines.append(c1 + c2 + c3)
+                if canRenderTable {
+                    let nameLines = Self.wrappedLines(row.name, maxDisplayWidth: nameColWidth)
+                    for (lineIndex, nameLine) in nameLines.enumerated() {
+                        let nameCell = padRight(
+                            bold(nameLine),
+                            rawText: nameLine,
+                            toDisplayWidth: nameColWidth
+                        )
+                        let sizeCell = lineIndex == 0
+                            ? padLeft(row.sizeString, rawText: row.sizeString, toDisplayWidth: sizeColWidth)
+                            : String(repeating: " ", count: sizeColWidth)
+                        let statusCell = lineIndex == 0
+                            ? padRight(styledStatus, rawText: row.statusText, toDisplayWidth: statusColWidth)
+                            : String(repeating: " ", count: statusColWidth)
+                        appLines.append("  " + nameCell + "  " + sizeCell + "  " + statusCell)
+                    }
                 } else {
                     appLines.append("  " + styledName)
-                    appLines.append("    " + padLeft(row.sizeString, rawText: row.sizeString, toDisplayWidth: maxSizeWidth) + "  " + styledStatus)
+                    appLines.append("    " + padLeft(row.sizeString, rawText: row.sizeString, toDisplayWidth: sizeColWidth) + "  " + styledStatus)
                 }
 
                 if verbose {
@@ -261,24 +285,42 @@ public struct OutputFormatter {
             var cacheLines = [bold("Developer caches · \(cacheCount)")]
 
             let cacheSizes = caches.map { (cache: $0, sizeString: Self.humanBytes($0.sizeBytes)) }
-            let maxSizeWidth = max(cacheSizes.map { Self.displayWidth(of: $0.sizeString) }.max() ?? 4, 4)
-            let fixedColumnsWidth = 2 + 2 + maxSizeWidth
+            let sizeColWidth = max(
+                cacheSizes.map { Self.displayWidth(of: $0.sizeString) }.max() ?? 4,
+                Self.displayWidth(of: "SIZE")
+            )
+            let minimumNameWidth = Self.displayWidth(of: "CACHE")
+            let fixedColumnsWidth = 2 + 2 + sizeColWidth
             let maxAllowedNameWidth = termWidth - fixedColumnsWidth
+            let canRenderTable = maxAllowedNameWidth >= minimumNameWidth
+            let longestNameWidth = cacheSizes.map { Self.displayWidth(of: $0.cache.name) }.max() ?? minimumNameWidth
+            let nameColWidth = canRenderTable
+                ? max(minimumNameWidth, min(longestNameWidth, maxAllowedNameWidth))
+                : minimumNameWidth
 
-            let fittingCaches = cacheSizes.filter { Self.displayWidth(of: $0.cache.name) <= maxAllowedNameWidth }
-            let nameColWidth = max(fittingCaches.map { Self.displayWidth(of: $0.cache.name) }.max() ?? 4, 4)
+            if canRenderTable {
+                let nameHeader = padRight("CACHE", rawText: "CACHE", toDisplayWidth: nameColWidth)
+                let sizeHeader = padLeft("SIZE", rawText: "SIZE", toDisplayWidth: sizeColWidth)
+                cacheLines.append(dim("  " + nameHeader + "  " + sizeHeader))
+                cacheLines.append(dim(
+                    "  " + String(repeating: "-", count: nameColWidth) +
+                    "  " + String(repeating: "-", count: sizeColWidth)
+                ))
+            }
 
             for item in cacheSizes {
-                let nameWidth = Self.displayWidth(of: item.cache.name)
-                let styledName = bold(item.cache.name)
-
-                if nameWidth <= maxAllowedNameWidth {
-                    let c1 = "  " + padRight(styledName, rawText: item.cache.name, toDisplayWidth: nameColWidth)
-                    let c2 = "  " + padLeft(item.sizeString, rawText: item.sizeString, toDisplayWidth: maxSizeWidth)
-                    cacheLines.append(c1 + c2)
+                if canRenderTable {
+                    let nameLines = Self.wrappedLines(item.cache.name, maxDisplayWidth: nameColWidth)
+                    for (lineIndex, nameLine) in nameLines.enumerated() {
+                        let nameCell = padRight(bold(nameLine), rawText: nameLine, toDisplayWidth: nameColWidth)
+                        let sizeCell = lineIndex == 0
+                            ? padLeft(item.sizeString, rawText: item.sizeString, toDisplayWidth: sizeColWidth)
+                            : String(repeating: " ", count: sizeColWidth)
+                        cacheLines.append("  " + nameCell + "  " + sizeCell)
+                    }
                 } else {
-                    cacheLines.append("  " + styledName)
-                    cacheLines.append("    " + padLeft(item.sizeString, rawText: item.sizeString, toDisplayWidth: maxSizeWidth))
+                    cacheLines.append("  " + bold(item.cache.name))
+                    cacheLines.append("    " + padLeft(item.sizeString, rawText: item.sizeString, toDisplayWidth: sizeColWidth))
                 }
 
                 if verbose {
@@ -325,27 +367,53 @@ public struct OutputFormatter {
                 )
             }
 
-            let maxSizeWidth = max(extRows.map { Self.displayWidth(of: $0.sizeString) }.max() ?? 4, 4)
-            let maxStatusWidth = max(extRows.map { Self.displayWidth(of: $0.statusText) }.max() ?? 6, 6)
-            let fixedColumnsWidth = 2 + 2 + maxSizeWidth + 2 + maxStatusWidth
+            let sizeColWidth = max(
+                extRows.map { Self.displayWidth(of: $0.sizeString) }.max() ?? 4,
+                Self.displayWidth(of: "SIZE")
+            )
+            let managementColWidth = max(
+                extRows.map { Self.displayWidth(of: $0.statusText) }.max() ?? 6,
+                Self.displayWidth(of: "MANAGEMENT")
+            )
+            let minimumNameWidth = Self.displayWidth(of: "APP")
+            let fixedColumnsWidth = 2 + 2 + sizeColWidth + 2 + managementColWidth
             let maxAllowedNameWidth = termWidth - fixedColumnsWidth
+            let canRenderTable = maxAllowedNameWidth >= minimumNameWidth
+            let longestNameWidth = extRows.map { Self.displayWidth(of: $0.name) }.max() ?? minimumNameWidth
+            let nameColWidth = canRenderTable
+                ? max(minimumNameWidth, min(longestNameWidth, maxAllowedNameWidth))
+                : minimumNameWidth
 
-            let fittingRows = extRows.filter { Self.displayWidth(of: $0.name) <= maxAllowedNameWidth }
-            let nameColWidth = max(fittingRows.map { Self.displayWidth(of: $0.name) }.max() ?? 4, 4)
+            if canRenderTable {
+                let nameHeader = padRight("APP", rawText: "APP", toDisplayWidth: nameColWidth)
+                let sizeHeader = padLeft("SIZE", rawText: "SIZE", toDisplayWidth: sizeColWidth)
+                let managementHeader = padRight("MANAGEMENT", rawText: "MANAGEMENT", toDisplayWidth: managementColWidth)
+                extLines.append(dim("  " + nameHeader + "  " + sizeHeader + "  " + managementHeader))
+                extLines.append(dim(
+                    "  " + String(repeating: "-", count: nameColWidth) +
+                    "  " + String(repeating: "-", count: sizeColWidth) +
+                    "  " + String(repeating: "-", count: managementColWidth)
+                ))
+            }
 
             for row in extRows {
-                let nameWidth = Self.displayWidth(of: row.name)
-                let styledName = bold(row.name)
                 let styledStatus = style(row.statusText, color: row.statusColor)
 
-                if nameWidth <= maxAllowedNameWidth {
-                    let c1 = "  " + padRight(styledName, rawText: row.name, toDisplayWidth: nameColWidth)
-                    let c2 = "  " + padLeft(row.sizeString, rawText: row.sizeString, toDisplayWidth: maxSizeWidth)
-                    let c3 = "  " + styledStatus
-                    extLines.append(c1 + c2 + c3)
+                if canRenderTable {
+                    let nameLines = Self.wrappedLines(row.name, maxDisplayWidth: nameColWidth)
+                    for (lineIndex, nameLine) in nameLines.enumerated() {
+                        let nameCell = padRight(bold(nameLine), rawText: nameLine, toDisplayWidth: nameColWidth)
+                        let sizeCell = lineIndex == 0
+                            ? padLeft(row.sizeString, rawText: row.sizeString, toDisplayWidth: sizeColWidth)
+                            : String(repeating: " ", count: sizeColWidth)
+                        let managementCell = lineIndex == 0
+                            ? padRight(styledStatus, rawText: row.statusText, toDisplayWidth: managementColWidth)
+                            : String(repeating: " ", count: managementColWidth)
+                        extLines.append("  " + nameCell + "  " + sizeCell + "  " + managementCell)
+                    }
                 } else {
-                    extLines.append("  " + styledName)
-                    extLines.append("    " + padLeft(row.sizeString, rawText: row.sizeString, toDisplayWidth: maxSizeWidth) + "  " + styledStatus)
+                    extLines.append("  " + bold(row.name))
+                    extLines.append("    " + padLeft(row.sizeString, rawText: row.sizeString, toDisplayWidth: sizeColWidth) + "  " + styledStatus)
                 }
 
                 if verbose {
@@ -1172,6 +1240,33 @@ public struct OutputFormatter {
 
     private static func percent(_ value: Double) -> String {
         String(format: "%.1f%%", value)
+    }
+
+    private static func wrappedLines(_ text: String, maxDisplayWidth: Int) -> [String] {
+        guard maxDisplayWidth > 0 else { return [text] }
+
+        var lines: [String] = []
+        var currentLine = ""
+        var currentWidth = 0
+
+        // Iterate by Character so combining marks and emoji sequences stay intact.
+        for character in text {
+            let characterText = String(character)
+            let characterWidth = displayWidth(of: characterText)
+            if !currentLine.isEmpty && currentWidth + characterWidth > maxDisplayWidth {
+                lines.append(currentLine)
+                currentLine = characterText
+                currentWidth = characterWidth
+            } else {
+                currentLine.append(character)
+                currentWidth += characterWidth
+            }
+        }
+
+        if !currentLine.isEmpty || lines.isEmpty {
+            lines.append(currentLine)
+        }
+        return lines
     }
 
     private func style(_ value: String, color: String, bold: Bool = false) -> String {
