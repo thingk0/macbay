@@ -47,7 +47,7 @@ public struct TerminalRenderer {
         guard terminalHeight >= 24 else { return 1 }
         let contentHeight = terminalHeight - 5
         switch screen {
-        case .appMoveList, .appRestoreList:
+        case .appMoveList, .appRestoreList, .explorer:
             return max(4, contentHeight - 13)
         case .doctorSummary:
             return max(4, contentHeight - 10)
@@ -143,6 +143,10 @@ public struct TerminalRenderer {
             breadcrumb = "\u{001B}[1mHome\u{001B}[0m"
         case .appMoveList:
             breadcrumb = "\u{001B}[2mHome >\u{001B}[0m \u{001B}[1;32mMove Application\u{001B}[0m"
+        case .explorer:
+            breadcrumb = "\u{001B}[2mHome >\u{001B}[0m \u{001B}[1;32mExplore Disk Usage\u{001B}[0m"
+        case .explorerDetail(let entry):
+            breadcrumb = "\u{001B}[2mHome > Explore >\u{001B}[0m \u{001B}[1m\(entry.name)\u{001B}[0m"
         case .riskReview(let cand):
             breadcrumb = "\u{001B}[2mHome > Move >\u{001B}[0m \u{001B}[1;33mRisk Review (\(cand.name))\u{001B}[0m"
         case .volumeSelect(let cand, _):
@@ -201,6 +205,10 @@ public struct TerminalRenderer {
             text = state.isSearching
                 ? "Type to search · [Enter] Apply · [Esc] Clear · [Backspace] Delete"
                 : "[↑/↓] Move [Enter] Select [/] Search [f] Filter [s] Sort [c] Clear [Esc] Back"
+        case .explorer, .explorerDetail:
+            text = state.isSearching
+                ? "Type to search · [Enter] Apply · [Esc] Clear · [Backspace] Delete"
+                : "[↑/↓] Move [Enter] Open [←] Up [/] Search [s] Sort [c] Clear [m] Move [o] Finder [r] Rescan [Esc] Back"
         case .riskReview:
             text = "\u{001B}[1m[↑/↓]\u{001B}[0m Scroll  \u{001B}[1m[←/→/Tab]\u{001B}[0m Button  \u{001B}[1m[Enter]\u{001B}[0m Select  \u{001B}[1m[Esc]\u{001B}[0m Cancel"
         case .volumeSelect:
@@ -234,6 +242,13 @@ public struct TerminalRenderer {
             return renderHome(state: state, width: width, height: height)
         case .appMoveList:
             return renderAppMoveList(state: state, width: width, height: height)
+        case .explorer:
+            return renderExplorer(state: state, width: width, height: height)
+        case .explorerDetail(let entry):
+            let body = explorerDetailBody(state: state, entry: entry, width: width)
+            let viewport = max(1, height - Self.outcomeFooterHeight)
+            let footer = [scrollIndicator(bodyCount: body.count, viewport: viewport, scrollOffset: state.detailScrollOffset)]
+            return composeDetail(body: body, footer: footer, height: height, scrollOffset: state.detailScrollOffset)
         case .riskReview(let candidate):
             let body = riskReviewBody(candidate: candidate, width: width)
             let viewport = max(1, height - Self.confirmFooterHeight)
@@ -317,6 +332,7 @@ public struct TerminalRenderer {
 
         let menuOptions = [
             ("Move Application", "Move internal apps to external APFS storage (dock)"),
+            ("Explore Disk Usage", "Browse folders by disk usage and move large items out"),
             ("Restore Application", "Restore external apps back to /Applications (undock)"),
             ("Diagnosis", "Run doctor checks on links, records, and volume health"),
             ("Quit", "Exit MacBay TUI")
@@ -346,6 +362,129 @@ public struct TerminalRenderer {
     }
 
     // MARK: - App Move List View
+
+    private func renderExplorer(state: TUIState, width: Int, height: Int) -> [String] {
+        var lines: [String] = []
+        if let status = state.cachedStatus {
+            let iv = status.internalVolume
+            let ivRatio = iv.totalBytes > 0 ? Double(iv.usedBytes) / Double(iv.totalBytes) : 0
+            lines.append("  \u{001B}[1mInternal\u{001B}[0m \(Int(ivRatio * 100))% used (\(OutputFormatter.humanBytes(iv.usedBytes)) / \(OutputFormatter.humanBytes(iv.totalBytes))) · avail \(OutputFormatter.humanBytes(iv.availableBytes))")
+            if let external = status.externalVolumes.first {
+                lines.append("  \u{001B}[1mExternal\u{001B}[0m \(external.name): \(OutputFormatter.humanBytes(external.availableBytes)) free")
+            } else {
+                lines.append("  \u{001B}[33mExternal: none detected\u{001B}[0m")
+            }
+        }
+        if let report = state.cachedExplorer {
+            lines.append("  \u{001B}[1mExplore:\u{001B}[0m \(report.rootPath) · allocated \(OutputFormatter.humanBytes(report.totalAllocatedBytes)) · logical \(OutputFormatter.humanBytes(report.totalLogicalBytes))")
+            if !report.complete {
+                lines.append("  \u{001B}[33mPartial scan: \(report.unreadablePaths.count) unreadable path(s), not 0 B\u{001B}[0m")
+            }
+            if report.previousGeneratedAt == nil {
+                lines.append("  \u{001B}[2mFirst scan recorded; deltas appear on the next scan\u{001B}[0m")
+            }
+        } else if state.explorerLoading {
+            lines.append("  Scanning directory by disk usage…")
+        } else {
+            lines.append("  \u{001B}[1mExplore:\u{001B}[0m \(state.explorerRoot)")
+        }
+        let entries = state.explorerEntries
+        lines.append(contentsOf: renderListSearch(query: state.explorerSearch, editing: state.isSearching,
+                                                   filter: "All",
+                                                   sort: state.explorerSortByName ? "Name" : "Size", count: entries.count))
+
+        if entries.isEmpty {
+            if state.explorerLoading {
+                lines.append(center("Scanning… entries appear as they are measured.", width: width))
+            } else {
+                lines.append(center("No matching entries. Clear filters with [c] or rescan with [r].", width: width))
+            }
+            return lines
+        }
+
+        let deltas = state.explorerDeltaByPath
+        let listHeight = listVisibleRows(for: .explorer, terminalHeight: height + 5)
+        let selectedIndex = min(max(0, state.explorerIndex), entries.count - 1)
+
+        lines.append("\u{001B}[1m  Entry                              Disk Use      Change\u{001B}[0m")
+        lines.append("  " + String(repeating: "─", count: min(width - 4, 70)))
+
+        let startIndex = min(state.explorerScrollOffset, max(0, entries.count - listHeight))
+        let endIndex = min(entries.count, startIndex + listHeight)
+
+        for i in startIndex..<endIndex {
+            let item = entries[i]
+            let isSelected = (i == selectedIndex)
+            let marker: String
+            switch item.kind {
+            case .directory: marker = "▸"
+            case .application: marker = "◈"
+            case .file: marker = "•"
+            case .symlink: marker = "→"
+            case .other: marker = "?"
+            }
+            let nameCol = padRight(marker + " " + item.name, width: 34)
+            let sizeCol = padLeft(item.unreadable ? "unreadable" : OutputFormatter.humanBytes(item.allocatedBytes), width: 11)
+            let deltaCol = padRight(explorerDeltaShort(deltas[item.path]), width: 10)
+            if isSelected {
+                lines.append("\u{001B}[7m ➜ \(nameCol) \(sizeCol) \(deltaCol) \u{001B}[0m")
+            } else {
+                lines.append("   \(nameCol) \(sizeCol) \(deltaCol)")
+            }
+        }
+
+        lines.append(contentsOf: repeatElement("", count: listHeight - (endIndex - startIndex)))
+        lines.append("")
+        lines.append("  " + String(repeating: "─", count: min(width - 4, 70)))
+        let sel = entries[selectedIndex]
+        let delta = deltas[sel.path].map { OutputFormatter.explorerDeltaText($0) } ?? ""
+        lines.append("  \u{001B}[1mSelected:\u{001B}[0m \(sel.name) (\(sel.unreadable ? "unreadable" : OutputFormatter.humanBytes(sel.allocatedBytes))\(delta)) [\(sel.action.label)]")
+        lines.append("  \u{001B}[2mPath:\u{001B}[0m \(shortenPath(sel.path, maxWidth: max(12, width - 10)))")
+
+        return lines
+    }
+
+    private func explorerDeltaShort(_ delta: ExplorerDelta?) -> String {
+        guard let delta else { return "" }
+        switch delta.status {
+        case .unchanged, .uncomparable: return ""
+        case .added: return "new"
+        case .removed: return "removed"
+        case .grown:
+            guard let amount = delta.deltaAllocatedBytes else { return "+”" }
+            return "+\(OutputFormatter.humanBytes(UInt64(amount)))"
+        case .shrunk:
+            guard let amount = delta.deltaAllocatedBytes else { return "-”" }
+            return "-\(OutputFormatter.humanBytes(amount.magnitude))"
+        }
+    }
+
+    private func explorerDetailBody(state: TUIState, entry: ExplorerEntry, width: Int) -> [String] {
+        var lines: [String] = []
+        let pathBudget = max(12, width - 14)
+        let delta = state.explorerDeltaByPath[entry.path].map { OutputFormatter.explorerDeltaText($0) } ?? ""
+        lines.append("\u{001B}[1mExplore Detail · \(entry.name)\u{001B}[0m")
+        lines.append("")
+        lines.append("  \u{001B}[1mPath:\u{001B}[0m \(shortenPath(entry.path, maxWidth: pathBudget))")
+        lines.append("  \u{001B}[1mKind:\u{001B}[0m \(entry.kind.rawValue)")
+        lines.append("  \u{001B}[1mDisk use:\u{001B}[0m \(entry.unreadable ? "unreadable (not 0 B)" : OutputFormatter.humanBytes(entry.allocatedBytes))\(delta)")
+        lines.append("  \u{001B}[1mLogical:\u{001B}[0m \(OutputFormatter.humanBytes(entry.logicalBytes))")
+        lines.append("  \u{001B}[1mFiles:\u{001B}[0m \(entry.fileCount)")
+        lines.append("  \u{001B}[1mAction:\u{001B}[0m \(entry.action.label)")
+        if let target = entry.externalTarget {
+            lines.append("  \u{001B}[1mLink target:\u{001B}[0m \(shortenPath(target, maxWidth: pathBudget))")
+        }
+        if case .blocked(let reason) = entry.action, !reason.isEmpty {
+            lines.append("")
+            lines.append("  \u{001B}[33m\(reason)\u{001B}[0m")
+        }
+        lines.append("")
+        lines.append("  Allocated size is an upper bound; APFS clones, shared blocks, and snapshots can make the actual freed space smaller.")
+        lines.append("  Moving keeps a symlink at the original path; disconnecting the external volume makes this data unavailable.")
+        lines.append("")
+        lines.append("  \u{001B}[1mPress [m] to move, [o] to reveal in Finder, [Esc] to return.\u{001B}[0m")
+        return lines
+    }
 
     private func renderAppMoveList(state: TUIState, width: Int, height: Int) -> [String] {
         var lines: [String] = []
@@ -503,7 +642,12 @@ public struct TerminalRenderer {
     private func dryRunPreviewBody(plan: MigrationPlanPreview, width: Int) -> [String] {
         var lines: [String] = []
 
-        let opTitle = plan.operation == "dock" ? "Move Application (dock)" : "Restore Application (undock)"
+        let opTitle: String
+        switch plan.operation {
+        case "dock": opTitle = "Move Application (dock)"
+        case "move": opTitle = "Move to External Storage (move)"
+        default: opTitle = "Restore Application (undock)"
+        }
         lines.append("\u{001B}[1;36mDry-Run Migration Preview · \(opTitle)\u{001B}[0m")
         lines.append("")
 
@@ -536,7 +680,7 @@ public struct TerminalRenderer {
 
     private func dryRunPreviewFooter(state: TUIState, plan: MigrationPlanPreview, bodyCount: Int, viewport: Int) -> [String] {
         let cancelBtn = state.confirmFocusIndex == 0 ? "\u{001B}[7;1m [ Cancel ] \u{001B}[0m" : " [ Cancel ] "
-        let confirmText = plan.operation == "dock" ? "[ Confirm & Move ]" : "[ Confirm & Restore ]"
+        let confirmText = plan.operation == "undock" ? "[ Confirm & Restore ]" : "[ Confirm & Move ]"
         let confirmBtn = state.confirmFocusIndex == 1 ? "\u{001B}[7;1;32m \(confirmText) \u{001B}[0m" : " \(confirmText) "
 
         return [

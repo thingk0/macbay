@@ -11,11 +11,14 @@ public struct DirectoryMoveManager {
     private let volumeManager: VolumeManager
     private let spaceEstimator: SpaceEstimator
     private let symlinkResolver: SymlinkResolver
+    private let journal: OperationJournal
+    private let operationLock: any VolumeOperationLocking
 
     public init(
         fileManager: FileManager = .default,
         commandRunner: any CommandRunner = SystemCommandRunner(),
-        volumeManager: VolumeManager? = nil
+        volumeManager: VolumeManager? = nil,
+        operationLock: (any VolumeOperationLocking)? = nil
     ) {
         self.fileManager = fileManager
         self.commandRunner = commandRunner
@@ -31,6 +34,8 @@ public struct DirectoryMoveManager {
         )
         self.spaceEstimator = SpaceEstimator(diskInfoProvider: self.volumeManager.diskInfoProvider)
         self.symlinkResolver = SymlinkResolver(fileManager: fileManager)
+        self.journal = OperationJournal(fileManager: fileManager)
+        self.operationLock = operationLock ?? VolumeOperationLock()
     }
 
     /// Paths that must never be externalized, including everything below them.
@@ -59,8 +64,14 @@ public struct DirectoryMoveManager {
         }
         var isDirectory: ObjCBool = false
         _ = fileManager.fileExists(atPath: source.path, isDirectory: &isDirectory)
-        guard isDirectory.boolValue else {
-            throw MacBayError.unsupportedOperation("Only directories can be moved: \(source.path)")
+        let isFile = !isDirectory.boolValue
+        if isFile {
+            return try moveFile(
+                source: source,
+                on: volume,
+                dryRun: dryRun,
+                progress: progress
+            )
         }
         guard source.pathExtension.lowercased() != "app" else {
             throw MacBayError.unsupportedOperation(
@@ -121,47 +132,77 @@ public struct DirectoryMoveManager {
         // 실행 직전에 여유 공간을 다시 확인하고, 부족하면 복사·링크 변경 전에 중단한다.
         try spaceEstimator.requireSufficientSpace(copyBytes: sizeBytes, destinationVolume: volume)
 
-        try fileManager.createDirectory(
-            at: destination.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        do {
-            progress?(.copying)
-            try runDitto(from: source, to: destination, totalBytes: sizeBytes, progress: progress)
-        } catch {
-            if fileManager.fileExists(atPath: destination.path) {
-                try? fileManager.removeItemMakingWritable(at: destination)
+        return try operationLock.withVolumeLock(on: volume) {
+            try fileManager.createDirectory(
+                at: destination.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            let record = MoveOperationRecord(
+                id: UUID().uuidString,
+                kind: .move,
+                name: source.lastPathComponent,
+                sourcePath: source.path,
+                destinationPath: destination.path,
+                volumePath: volume.path,
+                phase: .started,
+                timestamp: macBayTimestamp()
+            )
+            try? journal.saveMove(record, on: volume)
+            do {
+                progress?(.copying)
+                try runDitto(from: source, to: destination, totalBytes: sizeBytes, progress: progress)
+            } catch {
+                if fileManager.fileExists(atPath: destination.path) {
+                    try? fileManager.removeItemMakingWritable(at: destination)
+                }
+                journal.removeMove(id: record.id, on: volume)
+                throw error
             }
-            throw error
+
+            try? journal.saveMove(record.updatingPhase(.copied), on: volume)
+
+            progress?(.updatingLink)
+            do {
+                try replaceSourceWithSymlink(source: source, destination: destination)
+            } catch {
+                journal.removeMove(id: record.id, on: volume)
+                throw error
+            }
+
+            try? journal.saveMove(record.updatingPhase(.linkSwapped), on: volume)
+
+            progress?(.savingManifest)
+            let item = DockedItem(
+                name: source.lastPathComponent,
+                sourcePath: source.path,
+                externalPath: destination.path,
+                sizeBytes: sizeBytes,
+                kind: .directory,
+                dockedAt: macBayTimestamp()
+            )
+            do {
+                try manifestStore.updating(on: volume) { manifest in
+                    manifest.items.removeAll { $0.sourcePath == item.sourcePath }
+                    manifest.items.append(item)
+                }
+            } catch {
+                journal.removeMove(id: record.id, on: volume)
+                throw error
+            }
+
+            try? journal.saveMove(record.updatingPhase(.manifestSaved), on: volume)
+            journal.removeMove(id: record.id, on: volume)
+
+            return MigrationResult(
+                operation: "move",
+                name: source.lastPathComponent,
+                sourcePath: source.path,
+                destinationPath: destination.path,
+                sizeBytes: sizeBytes,
+                dryRun: false,
+                messages: messages + ["Migration completed"]
+            )
         }
-
-        progress?(.updatingLink)
-        try replaceSourceWithSymlink(source: source, destination: destination)
-
-        progress?(.savingManifest)
-        let item = DockedItem(
-            name: source.lastPathComponent,
-            sourcePath: source.path,
-            externalPath: destination.path,
-            sizeBytes: sizeBytes,
-            kind: .directory,
-            dockedAt: macBayTimestamp()
-        )
-        try manifestStore.updating(on: volume) { manifest in
-            manifest.items.removeAll { $0.sourcePath == item.sourcePath }
-            manifest.items.append(item)
-        }
-
-        messages.append("Migration completed")
-        return MigrationResult(
-            operation: "move",
-            name: source.lastPathComponent,
-            sourcePath: source.path,
-            destinationPath: destination.path,
-            sizeBytes: sizeBytes,
-            dryRun: false,
-            messages: messages
-        )
     }
 
     /// Restores a moved directory given its original (now symlinked) path.
@@ -219,7 +260,11 @@ public struct DirectoryMoveManager {
             sourcePath: source.path,
             externalPath: target.path,
             sizeBytes: 0,
-            kind: .directory,
+            kind: {
+                var isDir: ObjCBool = false
+                _ = fileManager.fileExists(atPath: target.path, isDirectory: &isDir)
+                return isDir.boolValue ? .directory : .file
+            }(),
             dockedAt: ""
         )
         return try restore(
@@ -230,8 +275,9 @@ public struct DirectoryMoveManager {
         )
     }
 
-    /// Restores one recorded directory item: copies the external copy back to its
-    /// recorded source path, removes the link and the external copy, and drops the record.
+    /// Restores one recorded directory or file item: copies the external copy
+    /// back to its recorded source path, removes the link and the external
+    /// copy, and drops the record.
     @discardableResult
     public func restore(
         item: DockedItem,
@@ -275,52 +321,239 @@ public struct DirectoryMoveManager {
         // 실행 직전에 내장 볼륨 여유 공간을 다시 확인하고, 부족하면 복사 전에 중단한다.
         try spaceEstimator.requireSufficientSpace(copyBytes: sizeBytes, destinationVolume: internalVolume)
 
-        let restored = source.deletingLastPathComponent().appendingPathComponent(
-            ".\(source.lastPathComponent).macbay-restore-\(UUID().uuidString)"
-        )
-        try fileManager.createDirectory(at: source.deletingLastPathComponent(), withIntermediateDirectories: true)
-        progress?(.copying)
-        try runDitto(from: destination, to: restored, totalBytes: sizeBytes, progress: progress)
-
-        // 기존 링크를 제거한 뒤 복원본 이동이 실패하면 원래 링크를 되살려 외장 원본으로 다시 연결한다.
-        progress?(.updatingLink)
-        let linkDestination = (try? fileManager.destinationOfSymbolicLink(atPath: source.path))
-            ?? destination.path
-        if fileManager.fileExists(atPath: source.path) || isSymbolicLink(source) {
-            try fileManager.removeItem(at: source)
-        }
-        do {
-            try fileManager.moveItemPreservingPermissions(at: restored, to: source)
-        } catch {
-            try? fileManager.removeItemMakingWritable(at: restored)
-            if !fileManager.fileExists(atPath: source.path) {
-                try? fileManager.createSymbolicLink(
-                    atPath: source.path,
-                    withDestinationPath: linkDestination
-                )
-            }
-            throw error
-        }
-        try fileManager.removeItemMakingWritable(at: destination)
-
-        if let volume = volume ?? inferredVolume(for: destination) {
-            progress?(.savingManifest)
-            try manifestStore.updating(on: volume) { manifest in
-                manifest.items.removeAll {
-                    $0.sourcePath == item.sourcePath || $0.externalPath == item.externalPath
+        let lockVolume = volume ?? inferredVolume(for: destination)
+        let performRestore: () throws -> MigrationResult = {
+            let restored = source.deletingLastPathComponent().appendingPathComponent(
+                ".\(source.lastPathComponent).macbay-restore-\(UUID().uuidString)"
+            )
+            let journalVolume = lockVolume ?? internalVolume
+            let record = MoveOperationRecord(
+                id: UUID().uuidString,
+                kind: .restore,
+                name: item.name,
+                sourcePath: source.path,
+                destinationPath: destination.path,
+                backupPath: restored.path,
+                volumePath: journalVolume.path,
+                phase: .started,
+                timestamp: macBayTimestamp()
+            )
+            try? self.journal.saveMove(record, on: journalVolume)
+            do {
+                try fileManager.createDirectory(at: source.deletingLastPathComponent(), withIntermediateDirectories: true)
+                progress?(.copying)
+                try runDitto(from: destination, to: restored, totalBytes: sizeBytes, progress: progress)
+            } catch {
+                if fileManager.fileExists(atPath: restored.path) {
+                    try? fileManager.removeItemMakingWritable(at: restored)
                 }
+                journal.removeMove(id: record.id, on: journalVolume)
+                throw error
             }
+
+            try? journal.saveMove(record.updatingPhase(.copied), on: journalVolume)
+
+            // 기존 링크를 제거한 뒤 복원본 이동이 실패하면 원래 링크를 되살려 외장 원본으로 다시 연결한다.
+            progress?(.updatingLink)
+            let linkDestination = (try? fileManager.destinationOfSymbolicLink(atPath: source.path))
+                ?? destination.path
+            if fileManager.fileExists(atPath: source.path) || isSymbolicLink(source) {
+                try fileManager.removeItem(at: source)
+            }
+            do {
+                try fileManager.moveItemPreservingPermissions(at: restored, to: source)
+            } catch {
+                try? fileManager.removeItemMakingWritable(at: restored)
+                if !fileManager.fileExists(atPath: source.path) {
+                    try? fileManager.createSymbolicLink(
+                        atPath: source.path,
+                        withDestinationPath: linkDestination
+                    )
+                }
+                journal.removeMove(id: record.id, on: journalVolume)
+                throw error
+            }
+            try? journal.saveMove(record.updatingPhase(.linkSwapped), on: journalVolume)
+            try fileManager.removeItemMakingWritable(at: destination)
+
+            if let volume = volume ?? inferredVolume(for: destination) {
+                progress?(.savingManifest)
+                do {
+                    try manifestStore.updating(on: volume) { manifest in
+                        manifest.items.removeAll {
+                            $0.sourcePath == item.sourcePath || $0.externalPath == item.externalPath
+                        }
+                    }
+                } catch {
+                    journal.removeMove(id: record.id, on: journalVolume)
+                    throw error
+                }
+                try? journal.saveMove(record.updatingPhase(.manifestSaved), on: journalVolume)
+            }
+
+            journal.removeMove(id: record.id, on: journalVolume)
+
+            return MigrationResult(
+                operation: "unmove",
+                name: item.name,
+                sourcePath: destination.path,
+                destinationPath: source.path,
+                sizeBytes: sizeBytes,
+                dryRun: false,
+                messages: messages + ["Migration completed"]
+            )
         }
 
-        return MigrationResult(
-            operation: "unmove",
-            name: item.name,
-            sourcePath: destination.path,
-            destinationPath: source.path,
-            sizeBytes: sizeBytes,
-            dryRun: false,
-            messages: messages + ["Migration completed"]
+        if let lockVolume {
+            return try operationLock.withVolumeLock(on: lockVolume, performRestore)
+        }
+        return try performRestore()
+    }
+
+    /// Moves a single regular file to external storage and replaces it with a
+    /// symlink, using the same journaled ditto + manifest flow as directories
+    /// so an interrupted run leaves a recoverable record instead of a half copy.
+    public func moveFile(
+        source: URL,
+        on volume: URL,
+        dryRun: Bool,
+        progress: ProgressHandler? = nil
+    ) throws -> MigrationResult {
+        progress?(.validating)
+        guard fileManager.fileExists(atPath: source.path) else {
+            throw MacBayError.pathMissing(source.path)
+        }
+        guard !isSymbolicLink(source) else {
+            throw MacBayError.unsupportedOperation("Path is already a symbolic link: \(source.path)")
+        }
+        var isDirectory: ObjCBool = false
+        _ = fileManager.fileExists(atPath: source.path, isDirectory: &isDirectory)
+        guard !isDirectory.boolValue else {
+            throw MacBayError.unsupportedOperation("Path is a directory, not a file: \(source.path)")
+        }
+        try requireMovableLocation(source)
+
+        let sourceInfo = try volumeManager.diskInfoProvider.diskInfo(for: source.path)
+        guard sourceInfo.isInternal else {
+            throw MacBayError.unsupportedOperation(
+                "Path is already on a non-internal volume (\(sourceInfo.mountPoint)): \(source.path)"
+            )
+        }
+
+        let volumeInfo = try volumeManager.diskInfoProvider.diskInfo(for: volume.path)
+        let check = volumeManager.eligibilityCheck(for: volumeInfo)
+        guard check.isEligible else {
+            if volumeInfo.isInternal {
+                throw MacBayError.externalVolumeRequired("Volume is internal: \(volume.path)")
+            }
+            throw MacBayError.invalidVolume("\(check.reason ?? "Volume is not eligible"): \(volume.path)")
+        }
+
+        let destination = MacBayPaths.dataRoot(on: volume)
+            .appendingPathComponent(source.lastPathComponent, isDirectory: false)
+        guard !fileManager.fileExists(atPath: destination.path) else {
+            throw MacBayError.destinationExists(destination.path)
+        }
+
+        progress?(.checkingProcesses)
+        try processInspector.assertSafeToMove(path: source)
+
+        progress?(.inspectingStorage)
+        let sizeBytes = try sizeCalculator.size(of: source)
+        var messages: [String] = []
+        let estimate = spaceEstimator.estimate(
+            copyBytes: sizeBytes,
+            destinationVolume: volume,
+            internalFreedBytes: sizeBytes
         )
+        messages.append(contentsOf: estimate.reportLines())
+
+        if dryRun {
+            messages.append("Dry run: no files were changed")
+            return MigrationResult(
+                operation: "move",
+                name: source.lastPathComponent,
+                sourcePath: source.path,
+                destinationPath: destination.path,
+                sizeBytes: sizeBytes,
+                dryRun: true,
+                messages: messages
+            )
+        }
+
+        try spaceEstimator.requireSufficientSpace(copyBytes: sizeBytes, destinationVolume: volume)
+
+        return try operationLock.withVolumeLock(on: volume) {
+            try fileManager.createDirectory(
+                at: destination.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            let record = MoveOperationRecord(
+                id: UUID().uuidString,
+                kind: .move,
+                name: source.lastPathComponent,
+                sourcePath: source.path,
+                destinationPath: destination.path,
+                volumePath: volume.path,
+                phase: .started,
+                timestamp: macBayTimestamp()
+            )
+            try? journal.saveMove(record, on: volume)
+            do {
+                progress?(.copying)
+                try runDitto(from: source, to: destination, totalBytes: sizeBytes, progress: progress)
+            } catch {
+                if fileManager.fileExists(atPath: destination.path) {
+                    try? fileManager.removeItemMakingWritable(at: destination)
+                }
+                journal.removeMove(id: record.id, on: volume)
+                throw error
+            }
+
+            try? journal.saveMove(record.updatingPhase(.copied), on: volume)
+
+            progress?(.updatingLink)
+            do {
+                try replaceFileWithSymlink(source: source, destination: destination)
+            } catch {
+                journal.removeMove(id: record.id, on: volume)
+                throw error
+            }
+
+            try? journal.saveMove(record.updatingPhase(.linkSwapped), on: volume)
+
+            progress?(.savingManifest)
+            let item = DockedItem(
+                name: source.lastPathComponent,
+                sourcePath: source.path,
+                externalPath: destination.path,
+                sizeBytes: sizeBytes,
+                kind: .file,
+                dockedAt: macBayTimestamp()
+            )
+            do {
+                try manifestStore.updating(on: volume) { manifest in
+                    manifest.items.removeAll { $0.sourcePath == item.sourcePath }
+                    manifest.items.append(item)
+                }
+            } catch {
+                journal.removeMove(id: record.id, on: volume)
+                throw error
+            }
+
+            try? journal.saveMove(record.updatingPhase(.manifestSaved), on: volume)
+            journal.removeMove(id: record.id, on: volume)
+
+            return MigrationResult(
+                operation: "move",
+                name: source.lastPathComponent,
+                sourcePath: source.path,
+                destinationPath: destination.path,
+                sizeBytes: sizeBytes,
+                dryRun: false,
+                messages: messages + ["Migration completed"]
+            )
+        }
     }
 
     /// Removes a managed cache link and recreates an empty directory in its place.
@@ -407,7 +640,7 @@ public struct DirectoryMoveManager {
             let volumeURL = URL(fileURLWithPath: volume.path)
             guard let manifest = try? manifestStore.load(on: volumeURL) else { continue }
             if let item = manifest.items.first(where: { item in
-                item.kind == .directory &&
+                (item.kind == .directory || item.kind == .file) &&
                 URL(fileURLWithPath: item.sourcePath).standardizedFileURL.path
                     .caseInsensitiveCompare(standardizedSource) == .orderedSame
             }) {
@@ -463,6 +696,32 @@ public struct DirectoryMoveManager {
             }
             if fileManager.fileExists(atPath: backup.path), !fileManager.fileExists(atPath: source.path) {
                 try? fileManager.moveItemPreservingPermissions(at: backup, to: source)
+            }
+            if fileManager.fileExists(atPath: destination.path) {
+                try? fileManager.removeItemMakingWritable(at: destination)
+            }
+            throw error
+        }
+    }
+
+    private func replaceFileWithSymlink(source: URL, destination: URL) throws {
+        let backup = source.deletingLastPathComponent().appendingPathComponent(
+            ".\(source.lastPathComponent).macbay-\(UUID().uuidString)"
+        )
+        do {
+            try fileManager.moveItem(at: source, to: backup)
+        } catch {
+            throw error
+        }
+        do {
+            try fileManager.createSymbolicLink(atPath: source.path, withDestinationPath: destination.path)
+            try fileManager.removeItem(at: backup)
+        } catch {
+            if fileManager.fileExists(atPath: source.path) || isSymbolicLink(source) {
+                try? fileManager.removeItem(at: source)
+            }
+            if fileManager.fileExists(atPath: backup.path), !fileManager.fileExists(atPath: source.path) {
+                try? fileManager.moveItem(at: backup, to: source)
             }
             if fileManager.fileExists(atPath: destination.path) {
                 try? fileManager.removeItemMakingWritable(at: destination)

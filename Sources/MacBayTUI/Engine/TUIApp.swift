@@ -6,6 +6,8 @@ public final class TUIApp: @unchecked Sendable {
         case status
         case scan
         case doctor
+        case explorer
+        case explorerRefresh
         case preview
         case adoptPlan
         case recovery
@@ -16,6 +18,10 @@ public final class TUIApp: @unchecked Sendable {
                 return "Checking storage status…"
             case .scan:
                 return "Scanning applications under /Applications…"
+            case .explorer:
+                return "Scanning directory by disk usage…"
+            case .explorerRefresh:
+                return "Refreshing changed entries…"
             case .doctor:
                 return "Diagnosing MacBay links and volume records…"
             case .preview:
@@ -33,6 +39,9 @@ public final class TUIApp: @unchecked Sendable {
     private let renderer: TerminalRenderer
     private let workerQueue: DispatchQueue
     private let lock = NSRecursiveLock()
+    private var explorerMonitor: ExplorerChangeMonitor?
+    private var explorerMonitorRoot: String?
+    private var explorerMonitorSubscription: UUID?
 
     // Guarded by `lock`: at most one request per kind is in flight, the rest wait their turn.
     private var requestsInFlight: Set<DataRequest> = []
@@ -204,6 +213,102 @@ public final class TUIApp: @unchecked Sendable {
         }
     }
 
+    public func loadExplorer(root: String? = nil, force: Bool = false) {
+        lock.lock()
+        defer { lock.unlock() }
+        if let root {
+            state.explorerRoot = root
+        }
+        guard force || !state.explorerLoaded else { return }
+        state.explorerLoading = true
+
+        enqueueRequest(.explorer, force: force) { [weak self] in
+            guard let self else { return }
+            let rootPath: String = {
+                self.lock.lock()
+                defer { self.lock.unlock() }
+                return self.state.explorerRoot
+            }()
+            do {
+                let report = try self.service.explore(path: rootPath)
+                self.lock.lock()
+                self.state.cachedExplorer = report
+                self.state.explorerRoot = report.rootPath
+                self.state.explorerLoaded = true
+                self.state.explorerLoading = false
+                self.state.explorerIndex = min(self.state.explorerIndex, max(0, self.state.explorerEntries.count - 1))
+                self.state.explorerScrollOffset = min(self.state.explorerScrollOffset, self.state.explorerIndex)
+                self.lock.unlock()
+                self.restartExplorerMonitor(root: report.rootPath)
+            } catch {
+                self.lock.lock()
+                self.state.explorerLoading = false
+                self.lock.unlock()
+                self.recordRequestError(error)
+            }
+        }
+    }
+
+    public func applyExplorerChangeEvent(changedPaths: [String], droppedEvents: Bool = false) {
+        lock.lock()
+        guard state.explorerLoaded, let report = state.cachedExplorer else {
+            lock.unlock()
+            return
+        }
+        let root = report.rootPath
+        lock.unlock()
+
+        enqueueRequest(.explorerRefresh, force: true) { [weak self] in
+            guard let self else { return }
+            guard let result = self.service.refreshExplorer(
+                root: root,
+                changedPaths: changedPaths,
+                droppedEvents: droppedEvents
+            ) else { return }
+            self.lock.lock()
+            guard self.state.cachedExplorer?.rootPath == root else {
+                self.lock.unlock()
+                return
+            }
+            self.state.cachedExplorer = result.report
+            self.state.explorerRoot = result.report.rootPath
+            self.state.explorerIndex = min(self.state.explorerIndex, max(0, self.state.explorerEntries.count - 1))
+            self.state.explorerScrollOffset = min(self.state.explorerScrollOffset, self.state.explorerIndex)
+            self.lock.unlock()
+            self.requestRedraw()
+        }
+    }
+
+    private func restartExplorerMonitor(root: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        if explorerMonitorRoot == root, explorerMonitor != nil {
+            return
+        }
+        if let monitor = explorerMonitor, let subscription = explorerMonitorSubscription {
+            monitor.unsubscribe(subscription)
+        }
+        explorerMonitor = nil
+        explorerMonitorSubscription = nil
+        explorerMonitorRoot = root
+        let monitor = ExplorerChangeMonitor(watchedRoot: root)
+        explorerMonitor = monitor
+        explorerMonitorSubscription = monitor.subscribe { [weak self] event in
+            self?.applyExplorerChangeEvent(changedPaths: event.changedPaths, droppedEvents: event.droppedEvents)
+        }
+    }
+
+    public func stopExplorerMonitor() {
+        lock.lock()
+        defer { lock.unlock() }
+        if let monitor = explorerMonitor, let subscription = explorerMonitorSubscription {
+            monitor.unsubscribe(subscription)
+        }
+        explorerMonitor = nil
+        explorerMonitorSubscription = nil
+        explorerMonitorRoot = nil
+    }
+
     // MARK: - Request Coordination
     //
     // Requests are tracked per kind so that navigating while a load is in flight never drops the
@@ -297,6 +402,8 @@ public final class TUIApp: @unchecked Sendable {
             handleHomeKey(key)
         case .appMoveList:
             handleAppMoveListKey(key)
+        case .explorer, .explorerDetail:
+            handleExplorerKey(key)
         case .riskReview(let candidate):
             handleRiskReviewKey(key, candidate: candidate)
         case .volumeSelect(let candidate, let force):
@@ -329,7 +436,7 @@ public final class TUIApp: @unchecked Sendable {
         case .up, .char("k"), .char("K"):
             state.homeMenuIndex = max(0, state.homeMenuIndex - 1)
         case .down, .char("j"), .char("J"):
-            state.homeMenuIndex = min(3, state.homeMenuIndex + 1)
+            state.homeMenuIndex = min(4, state.homeMenuIndex + 1)
         case .char("q"), .char("Q"):
             shouldExit = true
         case .char("r"), .char("R"):
@@ -340,13 +447,16 @@ public final class TUIApp: @unchecked Sendable {
                 state.pushScreen(.appMoveList)
                 if !state.scanLoaded { loadScan() }
             case 1:
+                state.pushScreen(.explorer)
+                loadExplorer(force: !state.explorerLoaded)
+            case 2:
                 state.pushScreen(.appRestoreList)
                 if !state.statusLoaded { loadStatus() }
                 if !state.scanLoaded { loadScan() }
-            case 2:
+            case 3:
                 state.pushScreen(.doctorSummary)
                 if !state.doctorLoaded { loadDoctor() }
-            case 3:
+            case 4:
                 shouldExit = true
             default:
                 break
@@ -524,6 +634,198 @@ public final class TUIApp: @unchecked Sendable {
         }
     }
 
+    private func handleExplorerKey(_ key: Key) {
+        if state.isSearching {
+            switch key {
+            case .enter: state.isSearching = false
+            case .escape: state.explorerSearch = ""; state.isSearching = false
+            case .backspace: if !state.explorerSearch.isEmpty { state.explorerSearch.removeLast() }
+            case .char(let character):
+                if state.explorerSearch.count < 100 { state.explorerSearch.append(character) }
+            default: return
+            }
+            state.explorerIndex = 0
+            state.explorerScrollOffset = 0
+            return
+        }
+
+        if case .explorerDetail = state.currentScreen {
+            switch key {
+            case .escape:
+                state.popScreen()
+                return
+            case .up, .char("k"), .char("K"):
+                scrollDetail(by: -1)
+                return
+            case .down, .char("j"), .char("J"):
+                scrollDetail(by: 1)
+                return
+            default:
+                break
+            }
+        }
+
+        let entries = state.explorerEntries
+        let listHeight = listRowCapacity(for: .explorer)
+
+        switch key {
+        case .escape:
+            _ = state.popScreen()
+        case .char("q"), .char("Q"):
+            shouldExit = true
+        case .char("r"), .char("R"):
+            loadExplorer(force: true)
+        case .char("/"):
+            state.isSearching = true
+        case .char("s"), .char("S"):
+            state.explorerSortByName.toggle()
+            state.explorerIndex = 0
+            state.explorerScrollOffset = 0
+        case .char("c"), .char("C"):
+            state.explorerSearch = ""
+            state.explorerSortByName = false
+            state.explorerIndex = 0
+            state.explorerScrollOffset = 0
+        case .up, .char("k"), .char("K"):
+            if state.explorerIndex > 0 {
+                state.explorerIndex -= 1
+                if state.explorerIndex < state.explorerScrollOffset {
+                    state.explorerScrollOffset = state.explorerIndex
+                }
+            }
+        case .down, .char("j"), .char("J"):
+            if state.explorerIndex < entries.count - 1 {
+                state.explorerIndex += 1
+                if state.explorerIndex >= state.explorerScrollOffset + listHeight {
+                    state.explorerScrollOffset = state.explorerIndex - listHeight + 1
+                }
+            }
+        case .left:
+            navigateExplorerUp()
+        case .enter:
+            guard entries.indices.contains(state.explorerIndex) else { return }
+            enterExplorerEntry(entries[state.explorerIndex])
+        case .char("m"), .char("M"):
+            guard entries.indices.contains(state.explorerIndex) else { return }
+            startExplorerMoveFlow(entry: entries[state.explorerIndex])
+        case .char("o"), .char("O"):
+            guard entries.indices.contains(state.explorerIndex) else { return }
+            openExplorerEntryInFinder(entries[state.explorerIndex])
+        default:
+            break
+        }
+    }
+
+    private func navigateExplorerUp() {
+        let root = URL(fileURLWithPath: state.explorerRoot).standardizedFileURL
+        let parent = root.deletingLastPathComponent()
+        guard parent.path != root.path, parent.path.hasPrefix("/") else { return }
+        state.explorerIndex = 0
+        state.explorerScrollOffset = 0
+        state.explorerSearch = ""
+        loadExplorer(root: parent.path, force: true)
+    }
+
+    private func enterExplorerEntry(_ entry: ExplorerEntry) {
+        switch entry.kind {
+        case .directory:
+            state.explorerIndex = 0
+            state.explorerScrollOffset = 0
+            state.explorerSearch = ""
+            loadExplorer(root: entry.path, force: true)
+        case .application, .file, .symlink, .other:
+            state.pushScreen(.explorerDetail(entry: entry))
+        }
+    }
+
+    private func openExplorerEntryInFinder(_ entry: ExplorerEntry) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        process.arguments = [entry.path]
+        try? process.run()
+    }
+
+    private func startExplorerMoveFlow(entry: ExplorerEntry) {
+        switch entry.action {
+        case .directoryMove, .appDock, .fileMove:
+            startExplorerDryRun(entry: entry)
+        case .blocked(let reason):
+            state.pushScreen(.infoModal(
+                title: "Protected Location",
+                message: reason.isEmpty ? "This location cannot be moved: \(entry.path)" : reason,
+                guidance: "Choose a different folder. System and shared app data stay on internal storage."
+            ))
+        case .externalLink:
+            state.pushScreen(.infoModal(
+                title: "Already External",
+                message: "This link already points outside internal storage: \(entry.externalTarget ?? entry.path)",
+                guidance: "Use restore flows to bring it back instead of moving it again."
+            ))
+        case .unreadable:
+            state.pushScreen(.infoModal(
+                title: "Unreadable Entry",
+                message: "MacBay could not read \(entry.path); the size is unknown, not 0 B.",
+                guidance: "Grant Full Disk Access if this path needs it, then press 'r' to rescan."
+            ))
+        }
+    }
+
+    private func startExplorerDryRun(entry: ExplorerEntry) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !state.isMutating else { return }
+
+        let volumePath = state.sessionVolumePath
+            ?? state.cachedStatus?.defaultVolume?.mountedPath
+            ?? state.cachedStatus?.defaultVolume?.path
+            ?? (try? service.defaultVolume())?.path
+
+        let message = "Preparing dry-run preview for \(entry.name)…"
+        enqueueRequest(.preview, message: message) { [weak self] in
+            guard let self else { return }
+            do {
+                let res: MigrationResult
+                if entry.action == .appDock {
+                    res = try self.service.dock(
+                        appName: entry.name,
+                        volumePath: volumePath,
+                        dryRun: true,
+                        force: false,
+                        progress: nil
+                    )
+                } else {
+                    res = try self.service.exploreMovePreview(path: entry.path, volumePath: volumePath)
+                }
+                let plan = MigrationPlanPreview(
+                    appName: entry.name,
+                    operation: entry.action == .appDock ? "dock" : "move",
+                    sourcePath: res.sourcePath,
+                    destinationPath: res.destinationPath,
+                    sizeBytes: res.sizeBytes,
+                    volumePath: volumePath,
+                    force: false,
+                    messages: res.messages + [
+                        "Original path stays as a symlink; disconnecting the external volume makes this data unavailable"
+                    ],
+                    notice: entry.action == .appDock ? nil : "Allocated size is an upper bound; actual freed space can be smaller on APFS"
+                )
+                self.lock.lock()
+                self.state.confirmFocusIndex = 0
+                self.state.pushScreen(.dryRunPreview(plan))
+                self.lock.unlock()
+            } catch {
+                self.lock.lock()
+                let msg = (error as? MacBayError)?.errorDescription ?? error.localizedDescription
+                self.state.pushScreen(.infoModal(
+                    title: "Dry-Run Failed",
+                    message: msg,
+                    guidance: (error as? MacBayError)?.errorDetails
+                ))
+                self.lock.unlock()
+            }
+        }
+    }
+
     private func startDryRunDock(candidate: AppCandidate, volumePath: String, force: Bool) {
         lock.lock()
         defer { lock.unlock() }
@@ -616,6 +918,15 @@ public final class TUIApp: @unchecked Sendable {
                             self?.handleProgress(step)
                         }
                     )
+                } else if plan.operation == "move" {
+                    result = try self.service.move(
+                        path: plan.sourcePath,
+                        volumePath: plan.volumePath,
+                        dryRun: false,
+                        progress: { [weak self] step in
+                            self?.handleProgress(step)
+                        }
+                    )
                 } else {
                     result = try self.service.undock(
                         appName: plan.appName,
@@ -686,6 +997,7 @@ public final class TUIApp: @unchecked Sendable {
         // Reload data
         loadStatus(force: true)
         loadScan(force: true)
+        loadExplorer(force: true)
     }
 
     private func handleMigrationFailure(error: Error) {
@@ -710,6 +1022,7 @@ public final class TUIApp: @unchecked Sendable {
         // Reload data
         loadStatus(force: true)
         loadScan(force: true)
+        loadExplorer(force: true)
     }
 
     private func handleMutatingProgressKey(_ key: Key) {

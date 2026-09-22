@@ -17,6 +17,9 @@ public struct MacBayService {
     private let directoryMover: DirectoryMoveManager
     private let teardownManager: TeardownManager
     private let historyStore: HistoryStore
+    private let explorerScanner: ExplorerScanner
+    private let scanRecordStore: ScanRecordStore
+    private let explorerRefresher: ExplorerRefresher
 
     public init(
         fileManager: FileManager = .default,
@@ -86,6 +89,18 @@ public struct MacBayService {
             fileManager: fileManager,
             commandRunner: commandRunner,
             volumeManager: self.volumeManager
+        )
+        self.explorerScanner = ExplorerScanner(
+            fileManager: fileManager,
+            diskInfoProvider: self.volumeManager.diskInfoProvider
+        )
+        self.scanRecordStore = ScanRecordStore(
+            fileManager: fileManager
+        )
+        self.explorerRefresher = ExplorerRefresher(
+            fileManager: fileManager,
+            diskInfoProvider: self.volumeManager.diskInfoProvider,
+            recordStore: self.scanRecordStore
         )
         self.teardownManager = TeardownManager(
             fileManager: fileManager,
@@ -198,6 +213,61 @@ public struct MacBayService {
             configStore: configStore
         )
         return try checker.check(volumePath: volumePath, fix: fix, dryRun: dryRun)
+    }
+
+    public func explore(
+        path: String,
+        recordScan: Bool = true
+    ) throws -> ExplorerScanReport {
+        let root = MacBayPaths.expandedURL(path)
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: root.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            throw MacBayError.pathMissing(root.path)
+        }
+        let scan = explorerScanner.scanDirectory(root)
+        let previous = scanRecordStore.load(forRootPath: scan.rootPath)
+        let report = scanRecordStore.buildReport(from: scan, previous: previous)
+        if recordScan {
+            try? scanRecordStore.save(report)
+        }
+        return report
+    }
+
+    public func explorePreview(path: String, dryRun: Bool = true) -> ExplorerScanReport? {
+        guard let report = try? explore(path: path, recordScan: false) else { return nil }
+        _ = dryRun
+        return report
+    }
+
+    public func exploreMovePreview(path: String, volumePath: String?) throws -> MigrationResult {
+        if let volumePath {
+            let selected = try volumeManager.resolveExternalVolume(path: volumePath)
+            return try directoryMover.move(
+                path: path,
+                on: URL(fileURLWithPath: selected.path),
+                dryRun: true
+            )
+        }
+        let selection = try selectVolume(path: nil)
+        return try directoryMover.move(
+            path: path,
+            on: URL(fileURLWithPath: selection.volume.path),
+            dryRun: true
+        )
+    }
+
+    public func refreshExplorer(
+        root: String,
+        changedPaths: [String],
+        droppedEvents: Bool = false,
+        recordScan: Bool = true
+    ) -> ExplorerRefreshResult? {
+        explorerRefresher.refresh(
+            root: root,
+            event: ExplorerChangeEvent(changedPaths: changedPaths, droppedEvents: droppedEvents),
+            recordScan: recordScan
+        )
     }
 
     public func history(limit: Int? = nil, command: String? = nil) -> [HistoryEntry] {

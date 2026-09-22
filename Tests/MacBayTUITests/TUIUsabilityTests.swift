@@ -74,7 +74,7 @@ final class TUIUsabilityTests: XCTestCase {
         let app = TUIApp(service: service)
         app.loadDoctor()
         wait(app) { !app.state.isLoading }
-        app.handleKey(.down); app.handleKey(.down); app.handleKey(.enter); app.handleKey(.enter)
+        app.handleKey(.down); app.handleKey(.down); app.handleKey(.down); app.handleKey(.enter); app.handleKey(.enter)
         return (app, service)
     }
 
@@ -162,7 +162,7 @@ final class TUIUsabilityTests: XCTestCase {
         let app = TUIApp(service: service)
         app.loadInitialData()
         wait(app) { !app.state.isLoading }
-        app.handleKey(.down); app.handleKey(.enter)
+        app.handleKey(.down); app.handleKey(.down); app.handleKey(.enter)
         app.handleKey(.char("s"))
         XCTAssertEqual(app.state.restoreItems.map(\.name), ["Zulu.app", "Alpha.app"])
         app.handleKey(.char("/")); app.handleKey(.char("z")); app.handleKey(.enter)

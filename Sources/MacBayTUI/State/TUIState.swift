@@ -4,6 +4,8 @@ import MacBayKit
 public enum TUIScreen: Equatable {
     case home
     case appMoveList
+    case explorer
+    case explorerDetail(entry: ExplorerEntry)
     case riskReview(candidate: AppCandidate)
     case volumeSelect(candidate: AppCandidate, force: Bool)
     case dryRunPreview(MigrationPlanPreview)
@@ -28,6 +30,14 @@ public struct TUIState: Equatable {
     public var cachedStatus: StatusReport?
     public var cachedScan: ScanReport?
     public var cachedDoctor: DoctorReport?
+    public var cachedExplorer: ExplorerScanReport?
+    public var explorerLoaded = false
+    public var explorerLoading = false
+    public var explorerRoot: String = NSHomeDirectory() + "/Library/Application Support"
+    public var explorerIndex = 0
+    public var explorerScrollOffset = 0
+    public var explorerSearch = ""
+    public var explorerSortByName = false
 
     public var statusLoaded = false
     public var scanLoaded = false
@@ -148,6 +158,23 @@ public struct TUIState: Equatable {
 
     public var doctorFindings: [DoctorFinding] {
         cachedDoctor?.findings ?? []
+    }
+
+    public var explorerEntries: [ExplorerEntry] {
+        guard let report = cachedExplorer else { return [] }
+        let filtered = report.entries.filter {
+            explorerSearch.isEmpty || $0.name.localizedCaseInsensitiveContains(explorerSearch)
+        }
+        if explorerSortByName {
+            return filtered.sorted {
+                $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+        }
+        return filtered
+    }
+
+    public var explorerDeltaByPath: [String: ExplorerDelta] {
+        Dictionary(uniqueKeysWithValues: (cachedExplorer?.deltas ?? []).map { ($0.path, $0) })
     }
 
     public mutating func pushScreen(_ newScreen: TUIScreen) {

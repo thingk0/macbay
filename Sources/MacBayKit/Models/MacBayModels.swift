@@ -10,6 +10,7 @@ public enum DockedItemKind: String, Codable, Sendable {
     case xcode
     case cache
     case directory
+    case file
 }
 
 public struct StorageVolume: Codable, Equatable, Identifiable, Sendable {
@@ -1120,6 +1121,268 @@ public struct AdoptOperationRecord: Codable, Equatable, Sendable {
             originalExternalPath: originalExternalPath,
             targetExternalPath: targetExternalPath,
             originalLinkTarget: originalLinkTarget,
+            volumePath: volumePath,
+            phase: newPhase,
+            timestamp: timestamp
+        )
+    }
+}
+
+public enum ExplorerEntryKind: String, Codable, Equatable, Sendable {
+    case directory
+    case application
+    case file
+    case symlink
+    case other
+}
+
+public enum ExplorerAction: Codable, Equatable, Sendable {
+    case appDock
+    case directoryMove
+    case fileMove
+    case blocked(reason: String)
+    case externalLink
+    case unreadable
+
+    public var label: String {
+        switch self {
+        case .appDock: return "dock"
+        case .directoryMove: return "move"
+        case .fileMove: return "move"
+        case .blocked: return "blocked"
+        case .externalLink: return "external link"
+        case .unreadable: return "unreadable"
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case kind
+        case reason
+    }
+
+    private enum Kind: String, Codable {
+        case appDock
+        case directoryMove
+        case fileMove
+        case fileUnsupported
+        case blocked
+        case externalLink
+        case unreadable
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(Kind.self, forKey: .kind) {
+        case .appDock: self = .appDock
+        case .directoryMove: self = .directoryMove
+        case .fileMove: self = .fileMove
+        case .fileUnsupported: self = .fileMove
+        case .blocked:
+            self = .blocked(reason: try container.decodeIfPresent(String.self, forKey: .reason) ?? "")
+        case .externalLink: self = .externalLink
+        case .unreadable: self = .unreadable
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .appDock: try container.encode(Kind.appDock, forKey: .kind)
+        case .directoryMove: try container.encode(Kind.directoryMove, forKey: .kind)
+        case .fileMove: try container.encode(Kind.fileMove, forKey: .kind)
+        case .blocked(let reason):
+            try container.encode(Kind.blocked, forKey: .kind)
+            try container.encode(reason, forKey: .reason)
+        case .externalLink: try container.encode(Kind.externalLink, forKey: .kind)
+        case .unreadable: try container.encode(Kind.unreadable, forKey: .kind)
+        }
+    }
+
+    @available(*, deprecated, renamed: "fileMove")
+    public static var fileUnsupported: ExplorerAction { .fileMove }
+}
+
+public struct ExplorerEntry: Codable, Equatable, Identifiable, Sendable {
+    public let name: String
+    public let path: String
+    public let kind: ExplorerEntryKind
+    public let logicalBytes: UInt64
+    public let allocatedBytes: UInt64
+    public let fileCount: Int
+    public let unreadable: Bool
+    public let externalTarget: String?
+    public let action: ExplorerAction
+
+    public var id: String { path }
+
+    public init(
+        name: String,
+        path: String,
+        kind: ExplorerEntryKind,
+        logicalBytes: UInt64 = 0,
+        allocatedBytes: UInt64 = 0,
+        fileCount: Int = 0,
+        unreadable: Bool = false,
+        externalTarget: String? = nil,
+        action: ExplorerAction
+    ) {
+        self.name = name
+        self.path = path
+        self.kind = kind
+        self.logicalBytes = logicalBytes
+        self.allocatedBytes = allocatedBytes
+        self.fileCount = fileCount
+        self.unreadable = unreadable
+        self.externalTarget = externalTarget
+        self.action = action
+    }
+}
+
+public enum ExplorerDeltaStatus: String, Codable, Equatable, Sendable {
+    case grown
+    case shrunk
+    case unchanged
+    case added
+    case removed
+    case uncomparable
+}
+
+public struct ExplorerDelta: Codable, Equatable, Sendable {
+    public let path: String
+    public let name: String
+    public let previousAllocatedBytes: UInt64?
+    public let currentAllocatedBytes: UInt64
+    public let deltaAllocatedBytes: Int64?
+    public let status: ExplorerDeltaStatus
+
+    public init(
+        path: String,
+        name: String,
+        previousAllocatedBytes: UInt64?,
+        currentAllocatedBytes: UInt64,
+        deltaAllocatedBytes: Int64?,
+        status: ExplorerDeltaStatus
+    ) {
+        self.path = path
+        self.name = name
+        self.previousAllocatedBytes = previousAllocatedBytes
+        self.currentAllocatedBytes = currentAllocatedBytes
+        self.deltaAllocatedBytes = deltaAllocatedBytes
+        self.status = status
+    }
+}
+
+public struct ExplorerScanReport: Codable, Equatable, Sendable {
+    public let rootPath: String
+    public let generatedAt: String
+    public let previousGeneratedAt: String?
+    public let entries: [ExplorerEntry]
+    public let totalLogicalBytes: UInt64
+    public let totalAllocatedBytes: UInt64
+    public let complete: Bool
+    public let unreadablePaths: [String]
+    public let warnings: [String]
+    public let deltas: [ExplorerDelta]
+
+    public init(
+        rootPath: String,
+        generatedAt: String,
+        previousGeneratedAt: String? = nil,
+        entries: [ExplorerEntry],
+        totalLogicalBytes: UInt64,
+        totalAllocatedBytes: UInt64,
+        complete: Bool = true,
+        unreadablePaths: [String] = [],
+        warnings: [String] = [],
+        deltas: [ExplorerDelta] = []
+    ) {
+        self.rootPath = rootPath
+        self.generatedAt = generatedAt
+        self.previousGeneratedAt = previousGeneratedAt
+        self.entries = entries
+        self.totalLogicalBytes = totalLogicalBytes
+        self.totalAllocatedBytes = totalAllocatedBytes
+        self.complete = complete
+        self.unreadablePaths = unreadablePaths
+        self.warnings = warnings
+        self.deltas = deltas
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case rootPath, generatedAt, previousGeneratedAt, entries
+        case totalLogicalBytes, totalAllocatedBytes, complete
+        case unreadablePaths, warnings, deltas
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.rootPath = try container.decode(String.self, forKey: .rootPath)
+        self.generatedAt = try container.decode(String.self, forKey: .generatedAt)
+        self.previousGeneratedAt = try container.decodeIfPresent(String.self, forKey: .previousGeneratedAt)
+        self.entries = try container.decodeIfPresent([ExplorerEntry].self, forKey: .entries) ?? []
+        self.totalLogicalBytes = try container.decodeIfPresent(UInt64.self, forKey: .totalLogicalBytes) ?? 0
+        self.totalAllocatedBytes = try container.decodeIfPresent(UInt64.self, forKey: .totalAllocatedBytes) ?? 0
+        self.complete = try container.decodeIfPresent(Bool.self, forKey: .complete) ?? true
+        self.unreadablePaths = try container.decodeIfPresent([String].self, forKey: .unreadablePaths) ?? []
+        self.warnings = try container.decodeIfPresent([String].self, forKey: .warnings) ?? []
+        self.deltas = try container.decodeIfPresent([ExplorerDelta].self, forKey: .deltas) ?? []
+    }
+}
+
+public struct MoveOperationRecord: Codable, Equatable, Sendable {
+    public enum Kind: String, Codable, Sendable {
+        case move
+        case restore
+    }
+
+    public enum Phase: String, Codable, Sendable {
+        case started
+        case copied
+        case linkSwapped = "link_swapped"
+        case manifestSaved = "manifest_saved"
+        case completed
+    }
+
+    public let id: String
+    public let kind: Kind
+    public let name: String
+    public let sourcePath: String
+    public let destinationPath: String
+    public let backupPath: String?
+    public let volumePath: String
+    public var phase: Phase
+    public let timestamp: String
+
+    public init(
+        id: String,
+        kind: Kind,
+        name: String,
+        sourcePath: String,
+        destinationPath: String,
+        backupPath: String? = nil,
+        volumePath: String,
+        phase: Phase,
+        timestamp: String
+    ) {
+        self.id = id
+        self.kind = kind
+        self.name = name
+        self.sourcePath = sourcePath
+        self.destinationPath = destinationPath
+        self.backupPath = backupPath
+        self.volumePath = volumePath
+        self.phase = phase
+        self.timestamp = timestamp
+    }
+
+    public func updatingPhase(_ newPhase: Phase) -> MoveOperationRecord {
+        MoveOperationRecord(
+            id: id,
+            kind: kind,
+            name: name,
+            sourcePath: sourcePath,
+            destinationPath: destinationPath,
+            backupPath: backupPath,
             volumePath: volumePath,
             phase: newPhase,
             timestamp: timestamp

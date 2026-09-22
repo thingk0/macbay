@@ -14,6 +14,10 @@ public final class FakeTUIService: @unchecked Sendable, TUIServiceProtocol {
     public var doctorCalls = 0
     public var dockCalls: [(appName: String, volumePath: String?, dryRun: Bool, force: Bool)] = []
     public var undockCalls: [(appName: String, volumePath: String?, dryRun: Bool)] = []
+    public var moveCalls: [(path: String, volumePath: String?, dryRun: Bool)] = []
+    public var exploreCalls: [String] = []
+    public var exploreReportToReturn: ExplorerScanReport?
+    public var exploreMovePreviewToReturn: MigrationResult?
     public var adoptPlanCalls: [(appName: String, volumePath: String)] = []
     public var adoptExecuteCalls: [(appName: String, force: Bool)] = []
 
@@ -209,10 +213,65 @@ public final class FakeTUIService: @unchecked Sendable, TUIServiceProtocol {
         )
     }
 
+    public func refreshExplorer(root: String, changedPaths: [String], droppedEvents: Bool) -> ExplorerRefreshResult? {
+        guard let report = exploreReportToReturn else { return nil }
+        return ExplorerRefreshResult(report: report, refreshedPaths: changedPaths, fullRescan: droppedEvents)
+    }
+
     public func volumePath(containing path: String) -> String? {
         mountedVolumePaths
             .filter { path == $0 || path.hasPrefix($0.hasSuffix("/") ? $0 : $0 + "/") }
             .max { $0.count < $1.count }
+    }
+
+    public func explore(path: String) throws -> ExplorerScanReport {
+        exploreCalls.append(path)
+        if let report = exploreReportToReturn {
+            return report
+        }
+        return ExplorerScanReport(
+            rootPath: path,
+            generatedAt: macBayTimestamp(),
+            entries: [],
+            totalLogicalBytes: 0,
+            totalAllocatedBytes: 0
+        )
+    }
+
+    public func exploreMovePreview(path: String, volumePath: String?) throws -> MigrationResult {
+        if let preview = exploreMovePreviewToReturn {
+            return preview
+        }
+        return MigrationResult(
+            operation: "move",
+            name: URL(fileURLWithPath: path).lastPathComponent,
+            sourcePath: path,
+            destinationPath: "\(volumePath ?? "/Volumes/External")/MacBay/Data/\(URL(fileURLWithPath: path).lastPathComponent)",
+            sizeBytes: 1_000_000_000,
+            dryRun: true,
+            messages: ["Space: estimated internal space freed 1 GB"]
+        )
+    }
+
+    public func move(
+        path: String,
+        volumePath: String?,
+        dryRun: Bool,
+        progress: ProgressHandler?
+    ) throws -> MigrationResult {
+        moveCalls.append((path, volumePath, dryRun))
+        progress?(.validating)
+        progress?(.copying)
+        progress?(.updatingLink)
+        return MigrationResult(
+            operation: "move",
+            name: URL(fileURLWithPath: path).lastPathComponent,
+            sourcePath: path,
+            destinationPath: "\(volumePath ?? "/Volumes/External")/MacBay/Data/\(URL(fileURLWithPath: path).lastPathComponent)",
+            sizeBytes: 1_000_000_000,
+            dryRun: dryRun,
+            messages: ["Migration completed"]
+        )
     }
 
     public func planAdopt(

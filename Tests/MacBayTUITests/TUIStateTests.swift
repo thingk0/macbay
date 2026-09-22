@@ -77,14 +77,21 @@ final class TUIStateTests: XCTestCase {
         app.handleKey(.escape)
         XCTAssertEqual(app.state.currentScreen, .home)
 
-        // Enter Restore Application
+        // Enter Explore Disk Usage (menu index 1)
+        app.handleKey(.down)
+        app.handleKey(.enter)
+        XCTAssertEqual(app.state.currentScreen, .explorer)
+        app.handleKey(.escape)
+        XCTAssertEqual(app.state.currentScreen, .home)
+
+        // Enter Restore Application (menu index 2: from 1, press down once)
         app.handleKey(.down)
         app.handleKey(.enter)
         XCTAssertEqual(app.state.currentScreen, .appRestoreList)
         app.handleKey(.escape)
         XCTAssertEqual(app.state.currentScreen, .home)
 
-        // Enter Doctor (menu index 2: from 1, press down once)
+        // Enter Doctor (menu index 3: from 2, press down once)
         app.handleKey(.down)
         app.handleKey(.enter)
         XCTAssertEqual(app.state.currentScreen, .doctorSummary)
@@ -122,7 +129,8 @@ final class TUIStateTests: XCTestCase {
         XCTAssertEqual(app.state.currentScreen, .appMoveList)
         app.handleKey(.escape)
 
-        // Enter Restore List (menu index 1)
+        // Enter Restore List (menu index 2: press down from explorer at 1)
+        app.handleKey(.down)
         app.handleKey(.down)
         app.handleKey(.enter)
         XCTAssertEqual(app.state.currentScreen, .appRestoreList)
@@ -133,7 +141,7 @@ final class TUIStateTests: XCTestCase {
         XCTAssertEqual(app.state.currentScreen, .appRestoreList)
         app.handleKey(.escape)
 
-        // Enter Doctor List (menu index 2: press down once from 1)
+        // Enter Doctor List (menu index 3: press down once from 2)
         app.handleKey(.down)
         app.handleKey(.enter)
         XCTAssertEqual(app.state.currentScreen, .doctorSummary)
@@ -363,7 +371,8 @@ final class TUIStateTests: XCTestCase {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { exp.fulfill() }
         wait(for: [exp], timeout: 1.0)
 
-        // Open Restore list
+        // Open Restore list (menu index 2 now that explorer is index 1)
+        app.handleKey(.down)
         app.handleKey(.down)
         app.handleKey(.enter)
         XCTAssertEqual(app.state.currentScreen, .appRestoreList)

@@ -4,11 +4,11 @@ import MacBayKit
 struct UnmoveCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "unmove",
-        abstract: "Restore a moved directory back to internal storage.",
+        abstract: "Restore a moved directory or file back to internal storage.",
         aliases: ["umv"]
     )
 
-    @Argument(help: "Original directory path that is now a symlink.")
+    @Argument(help: "Original directory or file path that is now a symlink.")
     var path: String
 
     @OptionGroup var options: MutatingOptions

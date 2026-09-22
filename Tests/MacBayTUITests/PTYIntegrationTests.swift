@@ -159,7 +159,10 @@ final class PTYIntegrationTests: XCTestCase {
 
         XCTAssertTrue(session.waitForOutput(containing: "MacBay", timeout: 2.0))
 
-        // Navigate down to Restore Application (item index 1)
+        // Navigate down to Explore Disk Usage (item index 1), then once more to
+        // Restore Application (item index 2)
+        session.write("\u{001B}[B")
+        usleep(100_000)
         session.write("\u{001B}[B")
         usleep(100_000)
 

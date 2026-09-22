@@ -88,6 +88,7 @@ final class TUIAdoptFlowTests: XCTestCase {
         app.loadScan()
         XCTAssertTrue(waitUntil { app.state.scanLoaded }, "Scan must finish")
         app.handleKey(.down)
+        app.handleKey(.down)
         app.handleKey(.enter)
         XCTAssertEqual(app.state.currentScreen, .appRestoreList)
     }
@@ -620,6 +621,7 @@ final class TUIAdoptFlowTests: XCTestCase {
 
         app.loadScan()
         XCTAssertTrue(waitUntil { app.state.scanLoaded })
+        app.handleKey(.down)
         app.handleKey(.down)
         app.handleKey(.enter)
 

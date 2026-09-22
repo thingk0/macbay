@@ -144,6 +144,32 @@ public struct DefaultTUIService: @unchecked Sendable, TUIServiceProtocol {
         )
     }
 
+    public func explore(path: String) throws -> ExplorerScanReport {
+        try service.explore(path: path)
+    }
+
+    public func exploreMovePreview(path: String, volumePath: String?) throws -> MigrationResult {
+        try service.exploreMovePreview(path: path, volumePath: volumePath)
+    }
+
+    public func refreshExplorer(root: String, changedPaths: [String], droppedEvents: Bool) -> ExplorerRefreshResult? {
+        service.refreshExplorer(root: root, changedPaths: changedPaths, droppedEvents: droppedEvents)
+    }
+
+    public func move(
+        path: String,
+        volumePath: String?,
+        dryRun: Bool,
+        progress: ProgressHandler?
+    ) throws -> MigrationResult {
+        try service.move(
+            path: path,
+            volumePath: volumePath,
+            dryRun: dryRun,
+            progress: progress
+        )
+    }
+
     public func volumePath(containing path: String) -> String? {
         guard !path.isEmpty else { return nil }
         let url = URL(fileURLWithPath: path).standardizedFileURL

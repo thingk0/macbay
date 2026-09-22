@@ -25,6 +25,15 @@ public protocol TUIServiceProtocol: Sendable {
         dryRun: Bool,
         progress: ProgressHandler?
     ) throws -> MigrationResult
+    func explore(path: String) throws -> ExplorerScanReport
+    func exploreMovePreview(path: String, volumePath: String?) throws -> MigrationResult
+    func refreshExplorer(root: String, changedPaths: [String], droppedEvents: Bool) -> ExplorerRefreshResult?
+    func move(
+        path: String,
+        volumePath: String?,
+        dryRun: Bool,
+        progress: ProgressHandler?
+    ) throws -> MigrationResult
     func volumePath(containing path: String) -> String?
     func planAdopt(
         appName: String,

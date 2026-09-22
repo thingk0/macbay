@@ -21,6 +21,7 @@ struct MacBay: ParsableCommand {
             RepairCommand.self,
             MoveCommand.self,
             UnmoveCommand.self,
+            ExploreCommand.self,
             XcodeCommand.self,
             CacheCommand.self,
             PurgeCommand.self,

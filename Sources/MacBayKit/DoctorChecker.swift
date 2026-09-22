@@ -14,6 +14,7 @@ public struct DoctorChecker {
     private let symlinkResolver: SymlinkResolver
     private let sizeCalculator: FileSizeCalculator
     private let operationJournal: OperationJournal
+    private let moveJournal: OperationJournal
     private let operationLock: any VolumeOperationLocking
 
     public init(
@@ -34,6 +35,7 @@ public struct DoctorChecker {
         self.symlinkResolver = SymlinkResolver(fileManager: fileManager)
         self.sizeCalculator = FileSizeCalculator(fileManager: fileManager)
         self.operationJournal = OperationJournal(fileManager: fileManager)
+        self.moveJournal = OperationJournal(fileManager: fileManager)
         self.operationLock = operationLock
         self.repairJournal = DarwinRepairJournal(fileManager: fileManager)
     }
@@ -288,6 +290,41 @@ public struct DoctorChecker {
                     recommendation: "Run 'mb repair \"\(record.appName)\" --rollback' to restore, or inspect the paths manually."
                 ))
             }
+
+            let incompleteMoves = moveJournal.listIncompleteMoves(on: volumeURL)
+            for record in incompleteMoves {
+                let category: DoctorCategory = .dataLink
+                let paths = [record.sourcePath, record.destinationPath]
+                let detail: String
+                let recommendation: String
+                switch record.kind {
+                case .move:
+                    switch record.phase {
+                    case .started, .copied:
+                        detail = "Interrupted move of \(record.name) (phase: \(record.phase.rawValue)): external copy at \(record.destinationPath) may be incomplete or orphaned while the source is unchanged"
+                        recommendation = "Reconnect the volume, remove the partial copy at \(record.destinationPath) if present, then run 'mb move \(record.sourcePath)' again."
+                    case .linkSwapped, .manifestSaved:
+                        detail = "Interrupted move of \(record.name) (phase: \(record.phase.rawValue)): source link was replaced but records may be unsaved"
+                        recommendation = "Run 'mb doctor --fix' to reconcile the link and manifest, or inspect both paths manually."
+                    case .completed:
+                        continue
+                    }
+                case .restore:
+                    detail = "Interrupted restore of \(record.name) (phase: \(record.phase.rawValue)): source at \(record.sourcePath) and external copy at \(record.destinationPath) may both exist with staged data"
+                    recommendation = "Inspect \(record.sourcePath) and \(record.destinationPath) before retrying 'mb unmove \(record.sourcePath)'."
+                }
+                findings.append(DoctorFinding(
+                    code: .incompleteOperation,
+                    status: .needsAttention,
+                    category: category,
+                    name: record.name,
+                    paths: paths,
+                    detail: detail,
+                    recommendation: recommendation
+                ))
+            }
+
+            findings.append(contentsOf: orphanedMoveCopies(on: volumeURL, manifest: manifest))
         }
 
         findings.sort(by: Self.isOrderedBefore)
@@ -336,6 +373,10 @@ public struct DoctorChecker {
             switch finding.code {
             case .linkTargetUnavailable, .linkCircular:
                 fixes.append(fixUnreachableLink(finding, consulted: consulted, dryRun: dryRun))
+            case .incompleteOperation where finding.category == .dataLink:
+                fixes.append(fixInterruptedMove(finding, consulted: consulted, dryRun: dryRun))
+            case .localDataDetected where finding.category == .dataLink:
+                fixes.append(fixOrphanedMoveCopy(finding, consulted: consulted, dryRun: dryRun))
             default:
                 fixes.append(DoctorFix(
                     code: finding.code,
@@ -437,19 +478,212 @@ public struct DoctorChecker {
         return URL(fileURLWithPath: path).standardizedFileURL.path.hasPrefix(root + "/")
     }
 
+    private func orphanedMoveCopies(on volume: URL, manifest: DockManifest?) -> [DoctorFinding] {
+        let dataRoot = MacBayPaths.dataRoot(on: volume).standardizedFileURL.path
+        let recorded = Set((manifest?.items ?? []).map {
+            URL(fileURLWithPath: $0.externalPath).standardizedFileURL.path
+        })
+        guard let children = try? fileManager.contentsOfDirectory(
+            at: MacBayPaths.dataRoot(on: volume),
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+        let incompleteSources = Set(moveJournal.listIncompleteMoves(on: volume).map { $0.destinationPath })
+        var findings: [DoctorFinding] = []
+        for child in children {
+            let standardized = child.standardizedFileURL.path
+            guard standardized.hasPrefix(dataRoot + "/"), !recorded.contains(standardized),
+                  !incompleteSources.contains(standardized) else { continue }
+            findings.append(DoctorFinding(
+                code: .localDataDetected,
+                status: .needsAttention,
+                category: .dataLink,
+                name: child.lastPathComponent,
+                paths: [standardized],
+                detail: "Unrecorded external copy at \(standardized): the source link or manifest record is missing",
+                recommendation: "Verify nothing references this copy, then remove it manually or run 'mb doctor --fix'."
+            ))
+        }
+        return findings
+    }
+
+    private func fixInterruptedMove(
+        _ finding: DoctorFinding,
+        consulted: [ConsultedVolume],
+        dryRun: Bool
+    ) -> DoctorFix {
+        let source = finding.paths.first ?? ""
+        let destination = finding.paths.count > 1 ? finding.paths[1] : ""
+        guard !source.isEmpty, !destination.isEmpty else {
+            return DoctorFix(
+                code: finding.code, name: finding.name, paths: finding.paths,
+                status: .skipped,
+                detail: "Interrupted move record is missing paths; inspect the volume's .operations directory manually."
+            )
+        }
+        let records = consulted.flatMap { volume in
+            moveJournal.listIncompleteMoves(on: URL(fileURLWithPath: volume.info.mountPoint)).map { ($0, volume.info.mountPoint) }
+        }.filter { $0.0.sourcePath == source && $0.0.destinationPath == destination }
+        guard let (record, mountPoint) = records.first else {
+            return DoctorFix(
+                code: finding.code, name: finding.name, paths: finding.paths,
+                status: .skipped,
+                detail: "No interrupted move journal for \(source); the volume may be disconnected."
+            )
+        }
+        switch record.phase {
+        case .started, .copied:
+            guard !dryRun else {
+                return DoctorFix(
+                    code: finding.code, name: finding.name, paths: finding.paths,
+                    status: .planned,
+                    detail: "Would remove the partial external copy at \(destination) and clear the interrupted move journal"
+                )
+            }
+            do {
+                return try operationLock.withVolumeLock(on: URL(fileURLWithPath: mountPoint)) {
+                    if !isSymbolicLink(at: source),
+                       fileManager.fileExists(atPath: source),
+                       fileManager.fileExists(atPath: destination) {
+                        try fileManager.removeItemMakingWritable(at: URL(fileURLWithPath: destination))
+                    }
+                    moveJournal.removeMove(id: record.id, on: URL(fileURLWithPath: mountPoint))
+                    return DoctorFix(
+                        code: finding.code, name: finding.name, paths: finding.paths,
+                        status: .fixed,
+                        detail: "Removed the partial external copy at \(destination); retry 'mb move \(source)'."
+                    )
+                }
+            } catch {
+                return DoctorFix(
+                    code: finding.code, name: finding.name, paths: finding.paths,
+                    status: .failed,
+                    detail: "Could not clear the interrupted move: \(error.localizedDescription)"
+                )
+            }
+        case .linkSwapped, .manifestSaved:
+            let matches = recordedItems(forSourcePath: source, in: consulted).filter {
+                fileManager.fileExists(atPath: $0.item.externalPath)
+                    && isUnderManagedRoot($0.item.externalPath, onMountPoint: $0.mountPoint)
+            }
+            guard !dryRun else {
+                return DoctorFix(
+                    code: finding.code, name: finding.name, paths: finding.paths,
+                    status: .planned,
+                    detail: "Would reconcile the link at \(source) with its recorded copy and clear the interrupted move journal"
+                )
+            }
+            do {
+                return try operationLock.withVolumeLock(on: URL(fileURLWithPath: mountPoint)) {
+                    if let match = matches.first, matches.count == 1 {
+                        if !isSymbolicLink(at: source) {
+                            if fileManager.fileExists(atPath: source) {
+                                return DoctorFix(
+                                    code: finding.code, name: finding.name, paths: finding.paths,
+                                    status: .skipped,
+                                    detail: "Local data exists at \(source); inspect before reconciling the interrupted move."
+                                )
+                            }
+                            try fileManager.createSymbolicLink(atPath: source, withDestinationPath: match.item.externalPath)
+                        }
+                    }
+                    moveJournal.removeMove(id: record.id, on: URL(fileURLWithPath: mountPoint))
+                    return DoctorFix(
+                        code: finding.code, name: finding.name, paths: finding.paths,
+                        status: .fixed,
+                        detail: "Cleared the interrupted move journal for \(source); verify with 'mb doctor'."
+                    )
+                }
+            } catch {
+                return DoctorFix(
+                    code: finding.code, name: finding.name, paths: finding.paths,
+                    status: .failed,
+                    detail: "Could not reconcile the interrupted move: \(error.localizedDescription)"
+                )
+            }
+        case .completed:
+            return DoctorFix(
+                code: finding.code, name: finding.name, paths: finding.paths,
+                status: .skipped,
+                detail: "The interrupted move already completed; re-run 'mb doctor'."
+            )
+        }
+    }
+
+    private func fixOrphanedMoveCopy(
+        _ finding: DoctorFinding,
+        consulted: [ConsultedVolume],
+        dryRun: Bool
+    ) -> DoctorFix {
+        let external = finding.paths.count > 1 ? finding.paths[1] : finding.paths.first ?? ""
+        guard !external.isEmpty else {
+            return DoctorFix(
+                code: finding.code, name: finding.name, paths: finding.paths,
+                status: .skipped,
+                detail: "No automatic fix is available; follow the recommendation for this finding."
+            )
+        }
+        let mountPoint = consulted.first {
+            URL(fileURLWithPath: external).standardizedFileURL.path.hasPrefix(
+                MacBayPaths.dataRoot(on: URL(fileURLWithPath: $0.info.mountPoint)).standardizedFileURL.path + "/"
+            )
+        }?.info.mountPoint
+        guard let mountPoint else {
+            return DoctorFix(
+                code: finding.code, name: finding.name, paths: finding.paths,
+                status: .skipped,
+                detail: "No automatic fix is available; follow the recommendation for this finding."
+            )
+        }
+        guard !dryRun else {
+            return DoctorFix(
+                code: finding.code, name: finding.name, paths: finding.paths,
+                status: .planned,
+                detail: "Would remove the unrecorded external copy at \(external)"
+            )
+        }
+        do {
+            return try operationLock.withVolumeLock(on: URL(fileURLWithPath: mountPoint)) {
+                let recorded = consulted.flatMap { $0.manifest?.items ?? [] }.contains {
+                    URL(fileURLWithPath: $0.externalPath).standardizedFileURL.path
+                        == URL(fileURLWithPath: external).standardizedFileURL.path
+                }
+                guard !recorded else {
+                    return DoctorFix(
+                        code: finding.code, name: finding.name, paths: finding.paths,
+                        status: .skipped,
+                        detail: "The copy at \(external) is now recorded; leaving it untouched."
+                    )
+                }
+                try fileManager.removeItemMakingWritable(at: URL(fileURLWithPath: external))
+                return DoctorFix(
+                    code: finding.code, name: finding.name, paths: finding.paths,
+                    status: .fixed,
+                    detail: "Removed the unrecorded external copy at \(external)"
+                )
+            }
+        } catch {
+            return DoctorFix(
+                code: finding.code, name: finding.name, paths: finding.paths,
+                status: .failed,
+                detail: "Could not remove the unrecorded copy: \(error.localizedDescription)"
+            )
+        }
+    }
+
     private func inspectRecord(_ item: DockedItem) -> DoctorFinding {
         let sourceURL = URL(fileURLWithPath: item.sourcePath)
         let externalURL = URL(fileURLWithPath: item.externalPath)
         let localExists = fileManager.fileExists(atPath: item.sourcePath)
         let externalExists = fileManager.fileExists(atPath: item.externalPath)
-
+        let recordCategory: DoctorCategory = item.kind == .directory ? .dataLink : .record
         if localExists && externalExists {
             let localSize = try? sizeCalculator.size(of: sourceURL)
             let externalSize = try? sizeCalculator.size(of: externalURL)
             return DoctorFinding(
                 code: .localDataDetected,
                 status: .needsAttention,
-                category: .record,
+                category: recordCategory,
                 name: item.name,
                 paths: [item.sourcePath, item.externalPath],
                 detail: "Local data detected at \(item.sourcePath)\(Self.sizeNote(localSize)); recorded copy exists at \(item.externalPath)\(Self.sizeNote(externalSize))",
@@ -464,7 +698,7 @@ public struct DoctorChecker {
             return DoctorFinding(
                 code: .recordSourceMissing,
                 status: .needsAttention,
-                category: .record,
+                category: recordCategory,
                 name: item.name,
                 paths: [item.sourcePath, item.externalPath],
                 detail: "Recorded source path is missing: \(item.sourcePath); the recorded copy exists at \(item.externalPath)\(Self.sizeNote(externalSize))",
@@ -484,7 +718,7 @@ public struct DoctorChecker {
         return DoctorFinding(
             code: .recordTargetMissing,
             status: .needsAttention,
-            category: .record,
+            category: recordCategory,
             name: item.name,
             paths: [item.sourcePath, item.externalPath],
             detail: detail,

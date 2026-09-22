@@ -4,11 +4,11 @@ import MacBayKit
 struct MoveCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "move",
-        abstract: "Move a directory to external storage and symlink it back.",
+        abstract: "Move a directory or file to external storage and symlink it back.",
         aliases: ["mv"]
     )
 
-    @Argument(help: "Directory path to externalize, such as ~/Games or '~/Library/Application Support/Steam'.")
+    @Argument(help: "Directory or file path to externalize, such as ~/Games, ~/Downloads/archive.iso, or '~/Library/Application Support/Steam'.")
     var path: String
 
     @OptionGroup var options: MutatingOptions

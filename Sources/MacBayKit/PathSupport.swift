@@ -293,6 +293,39 @@ public struct OperationJournal {
             return record
         }
     }
+
+    public func recordURL(forMoveID id: String, on volume: URL) -> URL {
+        MacBayPaths.operationsRoot(on: volume).appendingPathComponent("move-\(id).json")
+    }
+
+    public func saveMove(_ record: MoveOperationRecord, on volume: URL) throws {
+        let dir = MacBayPaths.operationsRoot(on: volume)
+        try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = recordURL(forMoveID: record.id, on: volume)
+        let data = try encoder.encode(record)
+        try data.write(to: url, options: .atomic)
+    }
+
+    public func removeMove(id: String, on volume: URL) {
+        let url = recordURL(forMoveID: id, on: volume)
+        try? fileManager.removeItem(at: url)
+    }
+
+    public func listIncompleteMoves(on volume: URL) -> [MoveOperationRecord] {
+        let dir = MacBayPaths.operationsRoot(on: volume)
+        guard fileManager.fileExists(atPath: dir.path),
+              let files = try? fileManager.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else {
+            return []
+        }
+        return files.filter { $0.lastPathComponent.hasPrefix("move-") && $0.pathExtension == "json" }.compactMap { file in
+            guard let data = try? Data(contentsOf: file),
+                  let record = try? decoder.decode(MoveOperationRecord.self, from: data),
+                  record.phase != .completed else {
+                return nil
+            }
+            return record
+        }
+    }
 }
 
 extension FileManager {

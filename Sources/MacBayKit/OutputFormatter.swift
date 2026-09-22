@@ -480,6 +480,65 @@ public struct OutputFormatter {
         ] + result.messages.map { "  \($0)" }).joined(separator: "\n")
     }
 
+    public func explore(_ report: ExplorerScanReport, limit: Int = 30) -> String {
+        var lines = [style("MacBay explore · \(report.rootPath)", color: "36", bold: true)]
+        lines.append("  Total allocated: \(Self.humanBytes(report.totalAllocatedBytes)) · logical: \(Self.humanBytes(report.totalLogicalBytes))")
+        if let previous = report.previousGeneratedAt {
+            lines.append("  Compared with scan at \(previous)")
+        } else {
+            lines.append("  First scan recorded; deltas will appear on the next scan")
+        }
+        if !report.complete {
+            lines.append(style("  Partial scan: \(report.unreadablePaths.count) path(s) unreadable (shown as unreadable, not 0 B)", color: "33", bold: true))
+        }
+        lines.append("  Allocated size is an upper bound; APFS clones, shared blocks, and snapshots can make the actual freed space smaller")
+        lines.append("")
+        let deltas = Dictionary(uniqueKeysWithValues: report.deltas.map { ($0.path, $0) })
+        for entry in report.entries.prefix(max(0, limit)) {
+            let marker: String
+            switch entry.kind {
+            case .directory: marker = "▸"
+            case .application: marker = "◈"
+            case .file: marker = "•"
+            case .symlink: marker = "→"
+            case .other: marker = "?"
+            }
+            let size = entry.unreadable ? "unreadable" : Self.humanBytes(entry.allocatedBytes)
+            let delta = deltas[entry.path].map { Self.explorerDeltaText($0) } ?? ""
+            lines.append("  \(marker) \(entry.name) — \(size)\(delta) [\(entry.action.label)]")
+        }
+        if !report.unreadablePaths.isEmpty {
+            lines.append("")
+            lines.append(bold("Unreadable · \(report.unreadablePaths.count)"))
+            for path in report.unreadablePaths.prefix(10) {
+                lines.append("  • \(path)")
+            }
+        }
+        if !report.warnings.isEmpty {
+            lines.append("")
+            lines.append(bold("Warnings · \(report.warnings.count)"))
+            for warning in report.warnings.prefix(10) {
+                lines.append("  • \(warning)")
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    public static func explorerDeltaText(_ delta: ExplorerDelta) -> String {
+        switch delta.status {
+        case .unchanged: return ""
+        case .added: return " (new)"
+        case .removed: return " (removed)"
+        case .uncomparable: return ""
+        case .grown:
+            guard let amount = delta.deltaAllocatedBytes else { return " (+)" }
+            return " (+\(humanBytes(UInt64(amount))))"
+        case .shrunk:
+            guard let amount = delta.deltaAllocatedBytes else { return " (−)" }
+            return " (−\(humanBytes(amount.magnitude)))"
+        }
+    }
+
     public func xcode(_ report: XcodeDoctorReport) -> String {
         var lines = [style("MacBay Xcode doctor", color: "36", bold: true)]
         if let deviceSupport = report.deviceSupport {
