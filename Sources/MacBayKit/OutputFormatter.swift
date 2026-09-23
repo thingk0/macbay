@@ -480,6 +480,40 @@ public struct OutputFormatter {
         ] + result.messages.map { "  \($0)" }).joined(separator: "\n")
     }
 
+    public func updateWorkflow(_ report: UpdateWorkflowReport) -> String {
+        let prefix = report.dryRun ? "Dry run" : "Update workflow"
+        var lines = [
+            style("\(prefix): \(report.operation) \(report.record.appName)", color: report.dryRun ? "33" : "36", bold: true),
+            "  State: \(report.record.phase.rawValue)",
+            "  Bundle: \(report.record.bundleIdentifier)",
+            "  Volume: \(report.record.volumeName) (\(report.record.volumePath))"
+        ]
+        if let originalVersion = report.record.originalVersion {
+            lines.append("  Original version: \(originalVersion)")
+        }
+        if let currentVersion = report.currentVersion {
+            lines.append("  Current version: \(currentVersion)")
+        }
+        if let migrationResult = report.migration {
+            lines.append(migration(migrationResult))
+        }
+        lines.append(contentsOf: report.messages.map { "  \($0)" })
+        return lines.joined(separator: "\n")
+    }
+
+    public func updateWorkflowStatus(_ records: [UpdateWorkflowRecord]) -> String {
+        guard !records.isEmpty else { return "App updates · none in progress" }
+        var lines = [style("App updates · \(records.count) in progress", color: "36", bold: true)]
+        for record in records {
+            lines.append("  • \(record.appName) — \(record.phase.rawValue)")
+            lines.append("    Volume: \(record.volumeName) (\(record.volumePath))")
+            lines.append("    Started: \(record.startedAt)")
+            lines.append("    Original version: \(record.originalVersion ?? "Unknown")")
+            lines.append("    Next: mb update finish \(record.appName)")
+        }
+        return lines.joined(separator: "\n")
+    }
+
     public func explore(_ report: ExplorerScanReport, limit: Int = 30) -> String {
         var lines = [style("MacBay explore · \(report.rootPath)", color: "36", bold: true)]
         lines.append("  Total allocated: \(Self.humanBytes(report.totalAllocatedBytes)) · logical: \(Self.humanBytes(report.totalLogicalBytes))")

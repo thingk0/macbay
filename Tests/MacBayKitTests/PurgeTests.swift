@@ -25,6 +25,29 @@ final class PurgeTests: XCTestCase {
         try? FileManager.default.removeItem(at: tempDir)
     }
 
+    func testShipItStagedBundleIsPreservedWhenMacBayTargetIsMissing() throws {
+        let shipIt = cachesDir.appendingPathComponent("com.anysphere.sand.ShipIt", isDirectory: true)
+        let staged = tempDir.appendingPathComponent("staged/Grok Bot.app", isDirectory: true)
+        let missingTarget = tempDir.appendingPathComponent("Volumes/KLEVV/MacBay/Applications/Grok Bot.app")
+        try FileManager.default.createDirectory(at: shipIt, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: staged.appendingPathComponent("Contents"), withIntermediateDirectories: true)
+        let info: [String: Any] = ["CFBundleIdentifier": "com.anysphere.sand"]
+        let infoData = try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
+        try infoData.write(to: staged.appendingPathComponent("Contents/Info.plist"))
+        let state: [String: Any] = [
+            "bundleIdentifier": "com.anysphere.sand",
+            "targetBundleURL": missingTarget.absoluteURL.absoluteString,
+            "updateBundleURL": staged.absoluteURL.absoluteString
+        ]
+        let stateData = try PropertyListSerialization.data(fromPropertyList: state, format: .xml, options: 0)
+        try stateData.write(to: shipIt.appendingPathComponent("ShipItState.plist"))
+
+        let items = PurgeEngine(homeDirectory: homeDir).scan()
+
+        XCTAssertFalse(items.contains { $0.path == shipIt.path }, "ShipIt contains the only recoverable staged app")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: staged.path))
+    }
+
     func testWhitelistedCachesAreDiscovered() throws {
         let slackApp = appSupportDir.appendingPathComponent("Slack")
         let codeCache = slackApp.appendingPathComponent("Code Cache")

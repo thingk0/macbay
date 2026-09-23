@@ -151,6 +151,27 @@ final class DoctorCheckerTests: XCTestCase {
         URL(fileURLWithPath: path).standardizedFileURL.path
     }
 
+    func testMissingRecordedAppTargetRecommendsVerifiedLocalRecovery() throws {
+        let externalApp = volumeDir.appendingPathComponent("MacBay/Applications/Grok Bot.app")
+        let link = appsDir.appendingPathComponent("Grok Bot.app")
+        try FileManager.default.createDirectory(at: externalApp.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: externalApp)
+        try saveManifest(items: [makeItem(
+            name: "Grok Bot.app",
+            sourcePath: link.standardizedFileURL.path,
+            externalPath: externalApp.standardizedFileURL.path
+        )])
+
+        let report = try check(makeChecker())
+        let finding = try XCTUnwrap(findings(report, code: .linkTargetUnavailable).first)
+
+        XCTAssertTrue(finding.detail.contains("volume is mounted"))
+        XCTAssertTrue(finding.recommendation.contains("mb recover"))
+        XCTAssertTrue(finding.recommendation.contains("--expected-team-id"))
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: link.path), externalApp.path)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: externalApp.path))
+    }
+
     func testManagedApplicationLinkIsHealthy() throws {
         let externalApp = volumeDir.appendingPathComponent("MacBay/Applications/Managed.app")
         try createDirectory(at: externalApp)

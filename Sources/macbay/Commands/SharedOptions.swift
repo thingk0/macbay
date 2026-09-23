@@ -64,3 +64,14 @@ struct DoctorOptions: ParsableArguments {
     @Flag(name: .long, help: "Output machine-readable JSON.")
     var json = false
 }
+
+struct UpdateWorkflowOptions: ParsableArguments {
+    @Flag(name: [.customShort("y"), .long], help: "Skip confirmation prompts.")
+    var yes = false
+
+    @Flag(name: .long, help: "Preview actions without modifying files.")
+    var dryRun = false
+
+    @Flag(name: .long, help: "Output machine-readable JSON.")
+    var json = false
+}

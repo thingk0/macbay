@@ -6,6 +6,8 @@ public struct MacBayService {
     private let volumeManager: VolumeManager
     private let configStore: ConfigStore
     private let manifestStore: ManifestStore
+    private let updateWorkflowStore: UpdateWorkflowStore
+    private let localAppRecoveryManager: LocalAppRecoveryManager
     private let scanner: AppScanner
     private let bundleMigrator: BundleMigrator
     private let appAdopter: AppAdopter
@@ -20,18 +22,22 @@ public struct MacBayService {
     private let explorerScanner: ExplorerScanner
     private let scanRecordStore: ScanRecordStore
     private let explorerRefresher: ExplorerRefresher
+    private let applicationsDirectory: URL
 
     public init(
         fileManager: FileManager = .default,
         commandRunner: any CommandRunner = SystemCommandRunner(),
         volumeManager: VolumeManager? = nil,
         configStore: ConfigStore? = nil,
+        updateWorkflowStore: UpdateWorkflowStore? = nil,
         adoptAppUseCase: (any AdoptAppUseCaseProtocol)? = nil,
         repairAppUseCase: (any RepairAppUseCaseProtocol)? = nil,
-        historyStore: HistoryStore? = nil
+        historyStore: HistoryStore? = nil,
+        applicationsDirectory: URL = URL(fileURLWithPath: "/Applications")
     ) {
         self.fileManager = fileManager
         self.commandRunner = commandRunner
+        self.applicationsDirectory = applicationsDirectory.standardizedFileURL
         self.historyStore = historyStore ?? HistoryStore(fileManager: fileManager)
         self.volumeManager = volumeManager ?? VolumeManager(
             fileManager: fileManager,
@@ -39,6 +45,13 @@ public struct MacBayService {
         )
         self.configStore = configStore ?? ConfigStore(fileManager: fileManager)
         self.manifestStore = ManifestStore(fileManager: fileManager)
+        self.updateWorkflowStore = updateWorkflowStore ?? UpdateWorkflowStore(fileManager: fileManager)
+        self.localAppRecoveryManager = LocalAppRecoveryManager(
+            fileManager: fileManager,
+            commandRunner: commandRunner,
+            volumeManager: self.volumeManager,
+            applicationsDirectory: self.applicationsDirectory
+        )
         self.scanner = AppScanner(
             fileManager: fileManager,
             commandRunner: commandRunner,
@@ -558,6 +571,508 @@ public struct MacBayService {
             )
             throw error
         }
+    }
+
+    /// Restores a MacBay-managed application to /Applications before its vendor
+    /// updater runs. The original external volume and bundle identity are kept in
+    /// local state so a later finish can safely return the app to that volume.
+    public func beginAppUpdate(
+        appName: String,
+        dryRun: Bool,
+        progress: ProgressHandler? = nil
+    ) throws -> UpdateWorkflowReport {
+        let source = MacBayPaths.applicationURL(named: appName)
+        guard source.pathExtension.lowercased() == "app" else {
+            throw MacBayError.invalidApplication(source.path)
+        }
+
+        let existing = try updateWorkflowStore.record(for: source.lastPathComponent)
+        if let existing, existing.phase == .awaitingUpdate {
+            throw MacBayError.unsupportedOperation(
+                "An update is already awaiting completion for \(existing.appName). Run 'mb update finish \(existing.appName)'."
+            )
+        }
+
+        let targetURL: URL
+        do {
+            let rawTarget = try fileManager.destinationOfSymbolicLink(atPath: source.path)
+            targetURL = URL(
+                fileURLWithPath: rawTarget,
+                relativeTo: source.deletingLastPathComponent()
+            ).standardizedFileURL
+        } catch {
+            if let existing, fileManager.fileExists(atPath: existing.sourcePath) {
+                var recovered = existing
+                recovered.phase = .awaitingUpdate
+                if !dryRun {
+                    try updateWorkflowStore.update(recovered)
+                }
+                let metadata = try appBundleMetadata(at: URL(fileURLWithPath: recovered.sourcePath))
+                return UpdateWorkflowReport(
+                    operation: "begin",
+                    record: recovered,
+                    currentVersion: metadata.version,
+                    currentBuild: metadata.build,
+                    dryRun: dryRun,
+                    messages: [
+                        "The app was already restored before the previous command stopped.",
+                        "Complete the vendor update, then run 'mb update finish \(recovered.appName)'."
+                    ]
+                )
+            }
+            throw MacBayError.unsupportedOperation(
+                "Application is not a MacBay-managed external link: \(source.path)"
+            )
+        }
+
+        let volumePath = try macBayVolumePath(for: targetURL, appName: source.lastPathComponent)
+        let selection = try volumeManager.resolveExternalVolume(path: volumePath)
+        let volumeURL = URL(fileURLWithPath: selection.path)
+        let volumeInfo = try volumeManager.diskInfoProvider.diskInfo(for: selection.path)
+        guard let volumeUUID = volumeInfo.volumeUUID, !volumeUUID.isEmpty else {
+            throw MacBayError.invalidVolume(
+                "Unable to record the original volume UUID for \(selection.path); update workflow stopped safely."
+            )
+        }
+
+        let manifest = try manifestStore.load(on: volumeURL)
+        guard manifest.items.contains(where: {
+            $0.kind == .application &&
+            URL(fileURLWithPath: $0.sourcePath).standardizedFileURL.path == source.path &&
+            URL(fileURLWithPath: $0.externalPath).standardizedFileURL.path == targetURL.path
+        }) else {
+            throw MacBayError.manifestFailed(
+                path: MacBayPaths.manifestURL(on: volumeURL).path,
+                details: "The external app link and MacBay manifest do not match."
+            )
+        }
+
+        let metadata = try appBundleMetadata(at: targetURL)
+        guard let bundleIdentifier = metadata.bundleIdentifier, !bundleIdentifier.isEmpty else {
+            throw MacBayError.invalidApplication(
+                "Application bundle has no CFBundleIdentifier: \(targetURL.path)"
+            )
+        }
+
+        let record = existing ?? UpdateWorkflowRecord(
+            appName: source.lastPathComponent,
+            sourcePath: source.path,
+            externalPath: targetURL.path,
+            bundleIdentifier: bundleIdentifier,
+            originalVersion: metadata.version,
+            originalBuild: metadata.build,
+            volumePath: selection.path,
+            volumeName: volumeInfo.volumeName,
+            volumeUUID: volumeUUID
+        )
+
+        guard record.bundleIdentifier == bundleIdentifier,
+              record.externalPath == targetURL.path,
+              record.volumeUUID.caseInsensitiveCompare(volumeUUID) == .orderedSame else {
+            throw MacBayError.unsupportedOperation(
+                "The recorded update target no longer matches the external app. Inspect 'mb update status' before continuing."
+            )
+        }
+
+        let preview = try undock(
+            appName: source.path,
+            volumePath: selection.path,
+            dryRun: true,
+            progress: progress
+        )
+        if dryRun {
+            return UpdateWorkflowReport(
+                operation: "begin",
+                record: record,
+                currentVersion: metadata.version,
+                currentBuild: metadata.build,
+                migration: preview,
+                dryRun: true,
+                messages: [
+                    "After restoring the app, run its vendor updater, then 'mb update finish \(record.appName)'."
+                ]
+            )
+        }
+
+        if existing == nil {
+            try updateWorkflowStore.insert(record)
+        }
+
+        do {
+            let migration = try undock(
+                appName: source.path,
+                volumePath: selection.path,
+                dryRun: false,
+                progress: progress
+            )
+            var awaiting = record
+            awaiting.phase = .awaitingUpdate
+            try updateWorkflowStore.update(awaiting)
+            return UpdateWorkflowReport(
+                operation: "begin",
+                record: awaiting,
+                currentVersion: metadata.version,
+                currentBuild: metadata.build,
+                migration: migration,
+                dryRun: false,
+                messages: [
+                    "Run the app's vendor updater while it is in /Applications.",
+                    "When the update is complete, run 'mb update finish \(record.appName)'."
+                ]
+            )
+        } catch {
+            if !isSymbolicLink(at: source), fileManager.fileExists(atPath: source.path) {
+                var awaiting = record
+                awaiting.phase = .awaitingUpdate
+                try? updateWorkflowStore.update(awaiting)
+            } else if existing == nil {
+                try? updateWorkflowStore.remove(appName: record.appName)
+            }
+            throw error
+        }
+    }
+
+    /// Re-externalizes a locally updated app to the same physical volume recorded
+    /// by begin. Any validation or copy failure leaves the app local and the
+    /// workflow record available for a later retry.
+    public func finishAppUpdate(
+        appName: String,
+        force: Bool = false,
+        dryRun: Bool,
+        progress: ProgressHandler? = nil
+    ) throws -> UpdateWorkflowReport {
+        guard let record = try updateWorkflowStore.record(for: appName) else {
+            throw MacBayError.unsupportedOperation(
+                "No update workflow is recorded for \(appName). Run 'mb update begin \(appName)' first."
+            )
+        }
+
+        let source = URL(fileURLWithPath: record.sourcePath).standardizedFileURL
+        let volume = try updateWorkflowVolume(for: record)
+        let expectedExternal = MacBayPaths.applicationsRoot(on: URL(fileURLWithPath: volume.path))
+            .appendingPathComponent(record.appName, isDirectory: true)
+            .standardizedFileURL
+
+        if let currentTarget = symlinkDestination(at: source) {
+            let manifestMatches = try manifestStore.load(on: URL(fileURLWithPath: volume.path)).items.contains {
+                $0.kind == .application &&
+                URL(fileURLWithPath: $0.sourcePath).standardizedFileURL.path == source.path &&
+                URL(fileURLWithPath: $0.externalPath).standardizedFileURL.path == currentTarget.path
+            }
+            guard currentTarget.path == expectedExternal.path, manifestMatches else {
+                throw MacBayError.unsupportedOperation(
+                    "The app path is already a symlink, but it does not match the recorded MacBay destination."
+                )
+            }
+            let metadata = try appBundleMetadata(at: currentTarget)
+            guard metadata.bundleIdentifier == record.bundleIdentifier else {
+                throw MacBayError.unsupportedOperation(
+                    "Bundle identifier changed from \(record.bundleIdentifier) to \(metadata.bundleIdentifier ?? "missing"). The update record is preserved."
+                )
+            }
+            if !dryRun {
+                try updateWorkflowStore.remove(appName: record.appName)
+            }
+            return UpdateWorkflowReport(
+                operation: "finish",
+                record: record,
+                currentVersion: metadata.version,
+                currentBuild: metadata.build,
+                dryRun: dryRun,
+                messages: [
+                    dryRun
+                        ? "The app is already re-externalized; this preview will only clear the completed workflow record."
+                        : "The app was already re-externalized; the completed workflow record was cleared."
+                ]
+            )
+        }
+
+        guard fileManager.fileExists(atPath: source.path) else {
+            throw MacBayError.pathMissing(source.path)
+        }
+        let metadata = try appBundleMetadata(at: source)
+        guard metadata.bundleIdentifier == record.bundleIdentifier else {
+            throw MacBayError.unsupportedOperation(
+                "Bundle identifier changed from \(record.bundleIdentifier) to \(metadata.bundleIdentifier ?? "missing"). The app remains in /Applications and the update record is preserved."
+            )
+        }
+
+        let preview = try dock(
+            appName: source.path,
+            volumePath: volume.path,
+            dryRun: true,
+            force: force,
+            progress: progress
+        )
+        if dryRun {
+            return UpdateWorkflowReport(
+                operation: "finish",
+                record: record,
+                currentVersion: metadata.version,
+                currentBuild: metadata.build,
+                migration: preview,
+                dryRun: true,
+                messages: ["The app will be returned to its original MacBay volume."]
+            )
+        }
+
+        _ = try dock(
+            appName: source.path,
+            volumePath: volume.path,
+            dryRun: false,
+            force: force,
+            progress: progress
+        )
+
+        guard let finalTarget = symlinkDestination(at: source),
+              finalTarget.path == expectedExternal.path,
+              try manifestStore.load(on: URL(fileURLWithPath: volume.path)).items.contains(where: {
+                  $0.kind == .application &&
+                  URL(fileURLWithPath: $0.sourcePath).standardizedFileURL.path == source.path &&
+                  URL(fileURLWithPath: $0.externalPath).standardizedFileURL.path == expectedExternal.path
+              }) else {
+            throw MacBayError.manifestFailed(
+                path: MacBayPaths.manifestURL(on: URL(fileURLWithPath: volume.path)).path,
+                details: "The app was copied, but the final symlink or manifest could not be verified. The update record is preserved."
+            )
+        }
+
+        try updateWorkflowStore.remove(appName: record.appName)
+        return UpdateWorkflowReport(
+            operation: "finish",
+            record: record,
+            currentVersion: metadata.version,
+            currentBuild: metadata.build,
+            migration: nil,
+            dryRun: false,
+            messages: [
+                "Re-externalized \(record.appName) to \(volume.path).",
+                "Version: \(record.originalVersion ?? "Unknown") → \(metadata.version ?? "Unknown").",
+                "Future app updates should start with 'mb update begin \(record.appName)'."
+            ]
+        )
+    }
+
+    /// Runs Kiro's supported updater while the MacBay-managed bundle is local.
+    /// Any failure after begin leaves the local bundle and workflow record for retry.
+    public func runKiroUpdate(
+        dryRun: Bool,
+        progress: ProgressHandler? = nil
+    ) throws -> UpdateWorkflowReport {
+        let appName = "Kiro CLI.app"
+        let localApp = applicationsDirectory.appendingPathComponent(appName, isDirectory: true)
+        let preview = try beginAppUpdate(appName: localApp.path, dryRun: true, progress: progress)
+        guard preview.record.bundleIdentifier == "com.amazon.codewhisperer" else {
+            throw MacBayError.unsupportedOperation(
+                "The managed updater only supports Kiro CLI (com.amazon.codewhisperer)."
+            )
+        }
+
+        if dryRun {
+            return UpdateWorkflowReport(
+                operation: "run",
+                record: preview.record,
+                currentVersion: preview.currentVersion,
+                currentBuild: preview.currentBuild,
+                migration: preview.migration,
+                dryRun: true,
+                messages: [
+                    "Will restore Kiro CLI, disable its background updater, run 'kiro-cli update --non-interactive', verify it, then return it to the original volume."
+                ]
+            )
+        }
+
+        _ = try beginAppUpdate(appName: localApp.path, dryRun: false, progress: progress)
+        let cli = localApp.appendingPathComponent("Contents/MacOS/kiro-cli")
+        do {
+            let settings = try commandRunner.run(cli.path, arguments: ["settings", "app.disableAutoupdates", "true"])
+            guard settings.status == 0 else {
+                throw MacBayError.commandFailed(
+                    executable: cli.path,
+                    status: settings.status,
+                    details: settings.standardError.trimmingCharacters(in: .whitespacesAndNewlines)
+                )
+            }
+            let settingsCheck = try commandRunner.run(cli.path, arguments: ["settings", "list", "--format", "json"])
+            guard settingsCheck.status == 0,
+                  let settingsData = settingsCheck.standardOutput.data(using: .utf8),
+                  let settingsJSON = try? JSONSerialization.jsonObject(with: settingsData),
+                  Self.hasDisabledKiroAutoUpdates(settingsJSON) else {
+                throw MacBayError.unsupportedOperation(
+                    "Kiro did not confirm app.disableAutoupdates=true. The app remains in /Applications and its update record is preserved."
+                )
+            }
+
+            let update = try commandRunner.run(cli.path, arguments: ["update", "--non-interactive"], heartbeat: {
+                progress?(.copying)
+            })
+            guard update.status == 0 else {
+                throw MacBayError.commandFailed(
+                    executable: cli.path,
+                    status: update.status,
+                    details: update.standardError.trimmingCharacters(in: .whitespacesAndNewlines)
+                )
+            }
+
+            let versionResult = try commandRunner.run(cli.path, arguments: ["--version"])
+            guard versionResult.status == 0 else {
+                throw MacBayError.commandFailed(
+                    executable: cli.path,
+                    status: versionResult.status,
+                    details: versionResult.standardError.trimmingCharacters(in: .whitespacesAndNewlines)
+                )
+            }
+            let actual = try appBundleMetadata(at: localApp)
+            guard let expectedVersion = actual.version, !expectedVersion.isEmpty,
+                  versionResult.standardOutput.contains(expectedVersion) else {
+                throw MacBayError.unsupportedOperation(
+                    "Kiro CLI reported '\(versionResult.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines))', which does not match the installed bundle version '\(actual.version ?? "unknown")'. The app remains in /Applications."
+                )
+            }
+
+            let finished = try finishAppUpdate(appName: appName, dryRun: false, progress: progress)
+            let result = UpdateWorkflowReport(
+                operation: "run",
+                record: finished.record,
+                currentVersion: finished.currentVersion,
+                currentBuild: finished.currentBuild,
+                migration: finished.migration,
+                dryRun: false,
+                messages: [
+                    "Kiro background updates are disabled.",
+                    "Kiro CLI updated and verified at version \(actual.version!).",
+                    "The app was returned to its original MacBay volume."
+                ]
+            )
+            recordOperation(command: "update run", subject: appName, outcome: .success)
+            return result
+        } catch {
+            recordOperation(
+                command: "update run",
+                subject: appName,
+                outcome: .failure,
+                detail: error.localizedDescription
+            )
+            throw error
+        }
+    }
+
+    private static func hasDisabledKiroAutoUpdates(_ value: Any) -> Bool {
+        if let dictionary = value as? [String: Any] {
+            if dictionary["app.disableAutoupdates"] as? Bool == true { return true }
+            if let app = dictionary["app"] as? [String: Any],
+               app["disableAutoupdates"] as? Bool == true { return true }
+            return dictionary.values.contains(where: hasDisabledKiroAutoUpdates)
+        }
+        if let array = value as? [Any] {
+            return array.contains(where: hasDisabledKiroAutoUpdates)
+        }
+        return false
+    }
+
+    public func recoverLocalApp(
+        appName: String,
+        from candidatePath: String,
+        expectedBundleIdentifier: String,
+        expectedTeamIdentifier: String,
+        dryRun: Bool
+    ) throws -> LocalAppRecoveryReport {
+        do {
+            let report = try localAppRecoveryManager.recover(
+                appName: appName,
+                from: candidatePath,
+                expectedBundleIdentifier: expectedBundleIdentifier,
+                expectedTeamIdentifier: expectedTeamIdentifier,
+                dryRun: dryRun
+            )
+            recordOperation(
+                command: "recover",
+                subject: report.appName,
+                outcome: .success,
+                dryRun: dryRun
+            )
+            return report
+        } catch {
+            recordOperation(
+                command: "recover",
+                subject: appName,
+                outcome: .failure,
+                detail: error.localizedDescription,
+                dryRun: dryRun
+            )
+            throw error
+        }
+    }
+
+    public func updateStatus() throws -> [UpdateWorkflowRecord] {
+        try updateWorkflowStore.records().sorted {
+            $0.appName.localizedCaseInsensitiveCompare($1.appName) == .orderedAscending
+        }
+    }
+
+    private func updateWorkflowVolume(for record: UpdateWorkflowRecord) throws -> StorageVolume {
+        let configured = DefaultVolume(
+            path: record.volumePath,
+            name: record.volumeName,
+            uuid: record.volumeUUID,
+            savedAt: record.startedAt
+        )
+        let volume: StorageVolume
+        switch volumeManager.availability(of: configured) {
+        case let .mounted(mounted, _):
+            volume = mounted
+        case .notMounted:
+            throw MacBayError.invalidVolume(
+                "The original update volume '\(record.volumeName)' is not mounted. Reconnect it and retry 'mb update finish \(record.appName)'."
+            )
+        case let .ineligible(path, reason):
+            throw MacBayError.invalidVolume("The original update volume at \(path) is not eligible: \(reason)")
+        }
+
+        let info = try volumeManager.diskInfoProvider.diskInfo(for: volume.path)
+        guard let uuid = info.volumeUUID,
+              uuid.caseInsensitiveCompare(record.volumeUUID) == .orderedSame else {
+            throw MacBayError.invalidVolume(
+                "The volume at \(volume.path) does not match the original update volume UUID. The local app and workflow record were preserved."
+            )
+        }
+        return volume
+    }
+
+    private func macBayVolumePath(for appURL: URL, appName: String) throws -> String {
+        let components = appURL.standardizedFileURL.pathComponents
+        guard let macBayIndex = components.firstIndex(of: MacBayPaths.externalRootName),
+              macBayIndex > 0,
+              components.count == macBayIndex + 3,
+              components[macBayIndex + 1] == "Applications",
+              components[macBayIndex + 2] == appName else {
+            throw MacBayError.unsupportedOperation(
+                "The app must point directly to <volume>/MacBay/Applications/\(appName)."
+            )
+        }
+        return "/" + components.dropFirst().prefix(macBayIndex - 1).joined(separator: "/")
+    }
+
+    private func appBundleMetadata(at url: URL) throws -> (bundleIdentifier: String?, version: String?, build: String?) {
+        let infoURL = url.appendingPathComponent("Contents/Info.plist")
+        guard let data = try? Data(contentsOf: infoURL),
+              let plist = (try? PropertyListSerialization.propertyList(from: data, options: [], format: nil)) as? [String: Any] else {
+            throw MacBayError.invalidApplication("Missing or unreadable Contents/Info.plist: \(url.path)")
+        }
+        return (
+            plist["CFBundleIdentifier"] as? String,
+            plist["CFBundleShortVersionString"] as? String,
+            plist["CFBundleVersion"] as? String
+        )
+    }
+
+    private func isSymbolicLink(at url: URL) -> Bool {
+        (try? fileManager.destinationOfSymbolicLink(atPath: url.path)) != nil
+    }
+
+    private func symlinkDestination(at url: URL) -> URL? {
+        guard let rawTarget = try? fileManager.destinationOfSymbolicLink(atPath: url.path) else { return nil }
+        return URL(fileURLWithPath: rawTarget, relativeTo: url.deletingLastPathComponent()).standardizedFileURL
     }
 
     public func xcode(

@@ -489,6 +489,64 @@ Dry run: adopt ChatGPT.app
 6. **Manifest Registration**: Records the item in `MacBay/manifest.json` with multi-process file locking (`flock`).
 7. **System Refresh**: Rebuilds LaunchServices registration (`lsregister -f`) and restarts the Dock.
 
+### Choosing What to Externalize
+
+MacBay aims to save internal SSD space without making routine updates or recovery fragile. Decide per app and per data store:
+
+1. **Move large data first.** Prefer an application's supported storage setting for caches, build outputs, models, and other large data. Keep credentials, system components, and files required before the external volume mounts on the internal disk. Confirm the app works with the volume connected and fails safely when it is absent.
+2. **Evaluate app bundles separately.** `scan` compatibility and a successful `dock` verify relocation and the copied bundle; they do not prove that a future vendor update will work through the `/Applications` symlink. Consider the space saved, update frequency, startup requirements, and a tested restore path. Do not label every self-updating app as incompatible without evidence.
+3. **Use controlled updates when available.** If the vendor supports disabling background updates and starting an update on demand, keep the bundle external between updates. Stop the app, restore it to internal storage, run the vendor updater, verify version, bundle identity, signature, launch, volume and space, then return it to the original external volume. MacBay's `mb update run` owns this cycle for Kiro CLI. Other apps can use the guarded `begin`/`finish` steps.
+4. **Keep an exception internal after a proven failure.** An updater that runs on its own can move or replace the bundle before MacBay intervenes. If that update fails on the external volume, restore the app internally until its update timing can be controlled and tested. A small internal exception is preferable to a broken app for a small storage gain.
+5. **Fail with a usable copy.** If the volume is absent, the app is running, identity or signature changes unexpectedly, or space is insufficient, stop the cycle and retain the internal app and update record. Never discard the only verified copy to meet an externalization target. Diagnose missing links before altering records or deleting staged installers.
+
+For example, [Kiro CLI](https://kiro.dev/docs/cli/reference/settings/) exposes a setting to disable background updates and an [explicit update command](https://kiro.dev/docs/cli/reference/cli-commands/), making a managed update cycle possible. A Squirrel/ShipIt updater observed moving an external app before MacBay could intervene is evidence to keep that particular app internal until a controlled path is verified. App-specific observations should be revisited when vendors change their updaters.
+
+### Updating an Externalized Application (update)
+
+Some vendor updaters replace an app bundle atomically. When the app lives on another volume, that replacement can fail with a cross-device link error. `mb update run` handles Kiro CLI end to end: it checks that the app is stopped, restores it to /Applications, disables and verifies Kiro background updates, runs `kiro-cli update --non-interactive`, checks the CLI and bundle versions and signature, then returns the app to its original MacBay volume.
+
+    # Preview and run the managed Kiro update
+    mb update run "Kiro CLI.app" --dry-run
+    mb update run "Kiro CLI.app"
+    mb update status
+
+    # Optional: install a user LaunchAgent for a daily 04:00 check
+    mb update schedule status
+    mb update schedule enable
+    mb update schedule disable
+
+The schedule is off by default. Enable it only after installing the new MacBay build at a stable executable path. A running Kiro app or missing external volume is skipped without changing the app; update failures are recorded and reported through a macOS notification. MacBay does not automatically retry an update that left an unfinished workflow.
+
+For apps without a managed updater, use the manual workflow:
+
+    mb update begin "Other App.app" --dry-run
+    mb update begin "Other App.app"
+    # Run that vendor's updater while the app is in /Applications.
+    mb update status
+    mb update finish "Other App.app" --dry-run
+    mb update finish "Other App.app"
+
+The workflow records the bundle identifier and original volume UUID in local MacBay state. If the updater fails, the app remains in /Applications with its workflow record; retry `mb update finish` after resolving the issue. `dock` and `adopt` results also remind you that an app's own update behavior may differ from its relocation behavior.
+
+If a recorded external target is missing but its volume and manifest are available, `mb doctor` recommends a verified local recovery. Preview the command with the exact source path and expected identity first:
+
+    mb recover "Grok Bot.app" --from "<verified Grok Bot.app>" \
+      --expected-bundle-id com.anysphere.sand --expected-team-id DCNK4UB866 --dry-run
+    mb recover "Grok Bot.app" --from "<verified Grok Bot.app>" \
+      --expected-bundle-id com.anysphere.sand --expected-team-id DCNK4UB866
+
+Recovery copies and verifies the candidate in /Applications before removing the stale MacBay record. It preserves the installer source and the missing external target path; it never uses an unverified app or silently overwrites the manifest.
+
+### Kiro CLI Data
+
+Keep Kiro settings and credentials in the home directory. The large session store can be moved independently:
+
+    mb move ~/.kiro/sessions --volume /Volumes/KLEVV --dry-run
+    mb move ~/.kiro/sessions --volume /Volumes/KLEVV
+    # Restore it if session resume or new session writes fail.
+    mb unmove ~/.kiro/sessions --volume /Volumes/KLEVV --dry-run
+    mb unmove ~/.kiro/sessions --volume /Volumes/KLEVV
+
 ### Repairing Duplicate Applications (`repair`)
 
 When `mb doctor` detects that an application recorded in the manifest has a full duplicate bundle in `/Applications` again (e.g. from an installer or auto-updater) while the external copy still exists (`local_data_detected`), `mb repair` provides safe inspection, comparison, and recovery:

@@ -293,7 +293,8 @@ public struct PurgeEngine {
             }
 
             let shipItURL = subDir.appendingPathComponent("ShipIt")
-            guard PurgeSafety.validate(
+            guard !containsRecoverableStagedUpdate(at: shipItURL),
+                  PurgeSafety.validate(
                 shipItURL,
                 category: .updateArchive,
                 homeDirectory: homeDirectory,
@@ -316,6 +317,38 @@ public struct PurgeEngine {
         }
 
         return items
+    }
+
+    private func containsRecoverableStagedUpdate(at shipItURL: URL) -> Bool {
+        let stateURL = shipItURL.appendingPathComponent("ShipItState.plist")
+        guard let data = try? Data(contentsOf: stateURL),
+              let state = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
+              let targetString = state["targetBundleURL"] as? String,
+              let updateString = state["updateBundleURL"] as? String,
+              let target = URL(string: targetString), target.isFileURL,
+              let staged = URL(string: updateString), staged.isFileURL else {
+            return false
+        }
+        let targetPath = target.standardizedFileURL.path
+        let components = URL(fileURLWithPath: targetPath).pathComponents
+        guard components.count >= 6,
+              components[1] == "Volumes",
+              components.contains("MacBay"),
+              components.contains("Applications"),
+              !fileManager.fileExists(atPath: targetPath),
+              fileManager.fileExists(atPath: staged.path) else {
+            return false
+        }
+
+        if let expectedIdentifier = state["bundleIdentifier"] as? String {
+            let infoURL = staged.appendingPathComponent("Contents/Info.plist")
+            guard let infoData = try? Data(contentsOf: infoURL),
+                  let info = try? PropertyListSerialization.propertyList(from: infoData, options: [], format: nil) as? [String: Any],
+                  info["CFBundleIdentifier"] as? String == expectedIdentifier else {
+                return false
+            }
+        }
+        return true
     }
 
     private func scanHomebrewCache() -> PurgeItem? {

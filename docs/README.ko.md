@@ -481,6 +481,64 @@ Dry run: adopt ChatGPT.app
 6. **매니페스트 등록**: 멀티 프로세스 파일 락(`flock`) 하에서 `MacBay/manifest.json`에 안전하게 등록합니다.
 7. **시스템 갱신**: LaunchServices 등록 정보(`lsregister -f`)를 갱신하고 Dock 프로세스를 재시작합니다.
 
+### 외장화 대상 선정 기준
+
+MacBay의 목표는 내장 SSD 사용량을 줄이면서 평소 업데이트와 장애 복구를 안정적으로 유지하는 것입니다. 앱 번들과 데이터 저장소를 따로 판단합니다.
+
+1. **용량이 큰 데이터부터 옮깁니다.** 캐시·빌드 결과·모델 등은 가능하면 앱이 공식 지원하는 저장 경로 설정을 사용합니다. 인증 정보, 시스템 구성 요소, 외장 볼륨이 마운트되기 전에 필요한 파일은 내장에 둡니다. 볼륨 연결 시 정상 작동과 분리 시 안전한 실패를 확인합니다.
+2. **앱 번들은 별도로 평가합니다.** `scan`의 호환성 등급과 성공한 `dock`은 이전 및 복사본 검증 결과입니다. 이후 앱 자체 업데이트가 `/Applications` 심볼릭 링크를 통해 성공한다는 보장은 아닙니다. 절약할 용량, 업데이트 빈도, 시작 시점의 볼륨 의존성, 복원 경로를 함께 봅니다. 자체 업데이트 앱 전체를 근거 없이 실패 대상으로 분류하지 않습니다.
+3. **제어할 수 있는 업데이트는 외장 상태를 유지합니다.** 앱이 백그라운드 업데이트 중지와 명시적 업데이트 실행을 지원하면 평소에는 외장에 둡니다. 업데이트할 때 앱 종료 → 내장 복원 → 공식 업데이트 → 버전·번들 식별자·서명·실행·볼륨·공간 확인 → 원래 볼륨으로 재외장화합니다. Kiro CLI는 `mb update run`이 이 과정을 관리하며, 다른 앱은 `mb update begin`/`finish`를 사용합니다.
+4. **실패가 확인된 앱은 예외로 내장에 둡니다.** 자체 업데이트가 MacBay보다 먼저 번들을 이동하거나 교체할 수 있습니다. 외장 경로에서 실패했다면 업데이트 시점을 제어하고 재시험할 수 있을 때까지 내장에 둡니다. 작은 용량 절약을 위해 사용 불가능한 앱을 감수하지 않습니다.
+5. **실패 시 사용 가능한 사본을 남깁니다.** 볼륨 분리, 실행 중인 앱, 예상 밖의 식별자·서명 변경, 공간 부족이 있으면 중단하고 내장 앱과 진행 기록을 보존합니다. 외장화 목표 때문에 유일한 검증된 사본을 지우지 않습니다. 끊어진 링크는 기록 변경이나 설치 파일 삭제 전에 원인을 확인합니다.
+
+예를 들어 [Kiro CLI](https://kiro.dev/docs/cli/reference/settings/)에는 백그라운드 자동 업데이트를 끄는 설정과 [명시적인 업데이트 명령](https://kiro.dev/docs/cli/reference/cli-commands/)이 있어 MacBay 관리형 업데이트를 구성할 수 있습니다. Squirrel/ShipIt이 MacBay보다 먼저 외장 앱을 이동하다 실패한 사례는 해당 앱을 내장에 둘 근거입니다. 앱별 판단은 공급업체의 업데이트 방식이 바뀌면 다시 검토합니다.
+
+### 외장 애플리케이션 업데이트 (update)
+
+일부 앱의 자체 업데이트 프로그램은 앱 번들을 원자적으로 교체합니다. 앱이 다른 볼륨에 있으면 볼륨 간 링크 오류로 교체가 실패할 수 있습니다. `mb update run`은 Kiro CLI 종료 확인 → /Applications 복원 → 백그라운드 업데이트 중지 및 설정 확인 → `kiro-cli update --non-interactive` 실행 → CLI·번들 버전과 서명 확인 → 원래 MacBay 볼륨으로 재외장화를 관리합니다.
+
+    # Kiro 관리형 업데이트 미리보기 및 실행
+    mb update run "Kiro CLI.app" --dry-run
+    mb update run "Kiro CLI.app"
+    mb update status
+
+    # 선택 사항: 매일 오전 4시에 확인하는 사용자 LaunchAgent
+    mb update schedule status
+    mb update schedule enable
+    mb update schedule disable
+
+예약은 기본적으로 꺼져 있습니다. 새 MacBay 빌드를 안정된 실행 경로에 설치한 후에만 켭니다. Kiro가 실행 중이거나 외장 볼륨이 없으면 앱을 변경하지 않고 건너뜁니다. 실패 상태는 기록하고 macOS 알림으로 알리며, 미완료 업데이트를 자동 재시도하지 않습니다.
+
+관리형 업데이트가 없는 앱은 다음 수동 절차를 사용합니다:
+
+    mb update begin "Other App.app" --dry-run
+    mb update begin "Other App.app"
+    # 앱이 /Applications에 있는 동안 해당 공급업체 업데이트 실행
+    mb update status
+    mb update finish "Other App.app" --dry-run
+    mb update finish "Other App.app"
+
+MacBay는 번들 식별자와 원래 볼륨 UUID를 내장 상태 파일에 기록합니다. 업데이트가 실패하면 앱과 진행 기록을 /Applications에 남깁니다. 문제를 해결한 뒤 `mb update finish`를 재시도합니다. dock과 adopt 결과도 앱의 자체 업데이트 방식과 재배치 가능성을 구분해 안내합니다.
+
+매니페스트에는 기록이 있지만 외장 앱 대상이 사라진 경우 `mb doctor`는 검증된 로컬 복구를 안내합니다. 공식 설치본이나 보존된 설치본의 경로와 예상 식별자를 지정해 미리보기부터 확인합니다:
+
+    mb recover "Grok Bot.app" --from "<검증된 Grok Bot.app>" \
+      --expected-bundle-id com.anysphere.sand --expected-team-id DCNK4UB866 --dry-run
+    mb recover "Grok Bot.app" --from "<검증된 Grok Bot.app>" \
+      --expected-bundle-id com.anysphere.sand --expected-team-id DCNK4UB866
+
+복구는 후보를 먼저 /Applications에 복사하고 번들 ID와 서명을 검증한 뒤 끊어진 MacBay 기록만 제거합니다. 설치 원본과 외장 대상 경로는 보존합니다.
+
+### Kiro CLI 데이터
+
+설정과 인증 정보는 내장 홈 디렉터리에 둡니다. 용량이 큰 세션 데이터만 별도로 이전합니다:
+
+    mb move ~/.kiro/sessions --volume /Volumes/KLEVV --dry-run
+    mb move ~/.kiro/sessions --volume /Volumes/KLEVV
+    # 기존 세션 재개 또는 새 세션 저장에 문제가 있으면 복원
+    mb unmove ~/.kiro/sessions --volume /Volumes/KLEVV --dry-run
+    mb unmove ~/.kiro/sessions --volume /Volumes/KLEVV
+
 ### 중복 앱 비교 및 복구 (`repair`)
 
 `mb doctor`에서 매니페스트에 등록된 앱의 내장 경로(`/Applications`)에 실제 앱 번들이 다시 감지되고 외장 사본도 존재하는 경우(`local_data_detected`), `mb repair`를 통해 안전하게 비교하고 복구할 수 있습니다:

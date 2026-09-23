@@ -772,14 +772,28 @@ public struct DoctorChecker {
 
         switch symlinkResolver.resolve(at: sourceURL) {
         case let .broken(targetPath, _):
+            let target = URL(fileURLWithPath: targetPath).standardizedFileURL.path
+            let matchingRecord = recordedItems(forSourcePath: sourcePath, in: consulted).first {
+                $0.item.kind == .application &&
+                URL(fileURLWithPath: $0.item.externalPath).standardizedFileURL.path == target
+            }
+            let detail: String
+            let recommendation: String
+            if matchingRecord != nil {
+                detail = "The MacBay volume is mounted and the link is recorded, but its app target is missing: \(targetPath)"
+                recommendation = "Keep the staged or official app installer, verify its signature and identity, then preview recovery with 'mb recover \"\(name)\" --from \"<verified app bundle>\" --expected-bundle-id \"<bundle ID>\" --expected-team-id \"<Team ID>\" --dry-run'. MacBay will not install an unverified copy or change the record automatically."
+            } else {
+                detail = "Target unavailable: \(targetPath)"
+                recommendation = "Reconnect the volume or confirm the path exists, then run 'mb doctor' again."
+            }
             return DoctorFinding(
                 code: .linkTargetUnavailable,
                 status: .needsAttention,
                 category: category,
                 name: name,
                 paths: [sourcePath, targetPath],
-                detail: "Target unavailable: \(targetPath)",
-                recommendation: "Reconnect the volume or confirm the path exists, then run 'mb doctor' again."
+                detail: detail,
+                recommendation: recommendation
             )
 
         case let .circular(targetPath, _):

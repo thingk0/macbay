@@ -18,6 +18,8 @@ struct MacBay: ParsableCommand {
             DockCommand.self,
             AdoptCommand.self,
             UndockCommand.self,
+            UpdateCommand.self,
+            RecoverCommand.self,
             RepairCommand.self,
             MoveCommand.self,
             UnmoveCommand.self,

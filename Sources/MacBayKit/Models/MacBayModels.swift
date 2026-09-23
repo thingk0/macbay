@@ -431,7 +431,13 @@ public struct MigrationResult: Codable, Equatable, Sendable {
         self.destinationPath = destinationPath
         self.sizeBytes = sizeBytes
         self.dryRun = dryRun
-        self.messages = messages
+        if operation == "dock" || operation == "adopt" {
+            self.messages = messages + [
+                "Some app updaters cannot replace bundles from an external volume. Use 'mb update begin \(name)', update the app, then run 'mb update finish \(name)'."
+            ]
+        } else {
+            self.messages = messages
+        }
         self.compatibility = compatibility
     }
 }

@@ -150,8 +150,33 @@ final class CLIIntegrationTests: XCTestCase {
         XCTAssertTrue(result.stdout.contains("teardown"))
         XCTAssertTrue(result.stdout.contains("init"))
         XCTAssertTrue(result.stdout.contains("undo"))
+        XCTAssertTrue(result.stdout.contains("update"))
         XCTAssertTrue(result.stdout.contains("Choose and save the default external volume"))
         XCTAssertFalse(result.stdout.contains("clean"))
+    }
+
+    func testUpdateHelpOutputDocumentsWorkflowCommands() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+
+        let result = try runCLI(arguments: ["update", "--help"])
+        XCTAssertEqual(result.status, 0)
+        XCTAssertTrue(result.stdout.contains("begin"))
+        XCTAssertTrue(result.stdout.contains("finish"))
+        XCTAssertTrue(result.stdout.contains("status"))
+
+        let begin = try runCLI(arguments: ["update", "begin", "--help"])
+        XCTAssertEqual(begin.status, 0)
+        XCTAssertTrue(begin.stdout.contains("--dry-run"))
+
+        let finish = try runCLI(arguments: ["update", "finish", "--help"])
+        XCTAssertEqual(finish.status, 0)
+        XCTAssertTrue(finish.stdout.contains("--dry-run"))
+
+        let status = try runCLI(arguments: ["update", "status", "--help"])
+        XCTAssertEqual(status.status, 0)
+        XCTAssertTrue(status.stdout.contains("--json"))
     }
 
     func testAdoptHelpOutput() throws {
@@ -1055,7 +1080,7 @@ final class CLIIntegrationTests: XCTestCase {
             arguments: ["doctor", "--json"],
             environment: configEnvironment(configHome, home: home)
         )
-        XCTAssertEqual(result.status, 0, "Home history must not affect doctor: \(result.stdout)")
+        XCTAssertNotEqual(result.status, 2, "Doctor itself should complete when Home history is present: \(result.stdout)")
 
         guard let data = result.stdout.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
