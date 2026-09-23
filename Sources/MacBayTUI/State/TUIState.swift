@@ -4,6 +4,7 @@ import MacBayKit
 public enum TUIScreen: Equatable {
     case home
     case appMoveList
+    case appFilter(restoring: Bool)
     case explorer
     case explorerDetail(entry: ExplorerEntry)
     case riskReview(candidate: AppCandidate)
@@ -18,6 +19,99 @@ public enum TUIScreen: Equatable {
     case recovery(RecoveryView)
     case doctorSummary
     case doctorFindingDetail(DoctorFinding)
+}
+
+/// Status choices for the move-application list filter.
+public enum MoveStatusFilter: String, CaseIterable, Equatable, Sendable {
+    case all
+    case safe
+    case review
+    case blocked
+    case unknown
+
+    public var label: String {
+        switch self {
+        case .all: return "All"
+        case .safe: return "Safe"
+        case .review: return "Review"
+        case .blocked: return "Blocked"
+        case .unknown: return "Unknown"
+        }
+    }
+
+    fileprivate func matches(_ candidate: AppCandidate) -> Bool {
+        switch self {
+        case .all: return true
+        case .safe: return candidate.compatibility?.grade == .safe
+        case .review: return candidate.compatibility?.grade == .popupRisk
+        case .blocked: return candidate.compatibility?.grade == .blocked
+        case .unknown: return candidate.compatibility == nil
+        }
+    }
+}
+
+/// Status choices for the restore-application list filter.
+public enum RestoreStatusFilter: String, CaseIterable, Equatable, Sendable {
+    case all
+    case managed
+    case unmanaged
+    case unconfirmed
+    case unresolved
+
+    public var label: String {
+        switch self {
+        case .all: return "All"
+        case .managed: return "Managed"
+        case .unmanaged: return "Unmanaged"
+        case .unconfirmed: return "Unconfirmed"
+        case .unresolved: return "Unresolved"
+        }
+    }
+
+    fileprivate func matches(_ item: RestoreItem) -> Bool {
+        switch self {
+        case .all: return true
+        case .managed: return item.status == .managed
+        case .unmanaged: return item.status == .unmanaged
+        case .unconfirmed: return item.status == .unconfirmed
+        case .unresolved:
+            if case .unresolved = item.status { return true }
+            return false
+        }
+    }
+}
+
+/// Size thresholds use the same 1024-based units as the rest of the TUI.
+public enum TUISizeFilter: String, CaseIterable, Equatable, Sendable {
+    case all
+    case atLeast1GB
+    case atLeast5GB
+    case atLeast10GB
+
+    public var label: String {
+        switch self {
+        case .all: return "All sizes"
+        case .atLeast1GB: return "≥ 1 GB"
+        case .atLeast5GB: return "≥ 5 GB"
+        case .atLeast10GB: return "≥ 10 GB"
+        }
+    }
+
+    public var minimumBytes: UInt64? {
+        let gb = UInt64(1024 * 1024 * 1024)
+        switch self {
+        case .all: return nil
+        case .atLeast1GB: return gb
+        case .atLeast5GB: return gb * 5
+        case .atLeast10GB: return gb * 10
+        }
+    }
+
+    public func matches(_ sizeBytes: UInt64?) -> Bool {
+        guard let minimumBytes else { return true }
+        guard let sizeBytes else { return false }
+        return sizeBytes >= minimumBytes
+    }
 }
 
 public struct TUIState: Equatable {
@@ -61,10 +155,29 @@ public struct TUIState: Equatable {
     public var moveSearch = ""
     public var restoreSearch = ""
     public var isSearching = false
-    public var moveEligibleOnly = false
-    public var restoreManagedOnly = false
+    public var moveStatusFilter: MoveStatusFilter = .all
+    public var moveSizeFilter: TUISizeFilter = .all
+    public var restoreStatusFilter: RestoreStatusFilter = .all
+    public var restoreSizeFilter: TUISizeFilter = .all
+    public var moveFilterStatusDraft: MoveStatusFilter = .all
+    public var moveFilterSizeDraft: TUISizeFilter = .all
+    public var restoreFilterStatusDraft: RestoreStatusFilter = .all
+    public var restoreFilterSizeDraft: TUISizeFilter = .all
+    /// The active row in the filter screen: 0 = status, 1 = size.
+    public var filterFieldIndex = 0
     public var moveSortByName = false
     public var restoreSortBySize = false
+
+    // Compatibility accessors for callers that used the original single-toggle filters.
+    public var moveEligibleOnly: Bool {
+        get { moveStatusFilter == .safe }
+        set { moveStatusFilter = newValue ? .safe : .all }
+    }
+
+    public var restoreManagedOnly: Bool {
+        get { restoreStatusFilter == .managed }
+        set { restoreStatusFilter = newValue ? .managed : .all }
+    }
 
     public var homeMenuIndex = 0
     public var moveListIndex = 0
@@ -92,7 +205,8 @@ public struct TUIState: Equatable {
         return scan.candidates
             .filter { $0.kind == .application }
             .filter { moveSearch.isEmpty || $0.name.localizedCaseInsensitiveContains(moveSearch) }
-            .filter { !moveEligibleOnly || $0.compatibility?.grade == .safe }
+            .filter { moveStatusFilter.matches($0) }
+            .filter { moveSizeFilter.matches($0.sizeBytes) }
             .sorted {
                 if !moveSortByName, $0.sizeBytes != $1.sizeBytes { return $0.sizeBytes > $1.sizeBytes }
                 return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
@@ -149,7 +263,8 @@ public struct TUIState: Equatable {
             }
         }
         return items.filter { restoreSearch.isEmpty || $0.name.localizedCaseInsensitiveContains(restoreSearch) }
-            .filter { !restoreManagedOnly || $0.status == .managed }
+            .filter { restoreStatusFilter.matches($0) }
+            .filter { restoreSizeFilter.matches($0.sizeBytes) }
             .sorted {
                 if restoreSortBySize, $0.sizeBytes != $1.sizeBytes { return ($0.sizeBytes ?? 0) > ($1.sizeBytes ?? 0) }
                 return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending

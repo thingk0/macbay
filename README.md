@@ -143,7 +143,7 @@ mb ui
 | `Esc` | Go back to previous screen |
 | `q` | Quit MacBay TUI |
 | `r` | Refresh current screen data |
-| `←` / `→` or `Tab` | Switch between buttons (Cancel / Confirm) |
+| `←` / `→` or `Tab` | Change filter values or switch between buttons |
 
 #### TUI Scope
 
@@ -151,7 +151,7 @@ mb ui
 - **Move Application (`dock`)**: Browse application candidates sorted by size with `[Safe]`, `[Review]`, and `[Blocked]` status badges. Inspect bundle details, review relocation risks, select session target volume, and preview dry-run space changes before confirming.
 - **Restore Application (`undock`)**: Restore connected MacBay-managed applications back to internal storage. Unmanaged apps can be adopted straight from this screen: review the current location, standard storage path, link change, and whether the bundle actually moves, then confirm. Adoption targets the volume that really holds the app, never the configured default, and the restore preview is prepared only after that confirmation. Unconfirmed or broken links display status and `mb doctor` guidance.
 - **Diagnosis (`doctor`)**: Inspect externalized apps and developer data for broken links, missing targets, record mismatches, and interrupted operations, with actionable recommendations highlighted for each issue.
-- **Search and filters**: In move/restore lists, `/` starts a case-insensitive name search; Enter applies it and Esc clears it. `f` toggles compatibility-check-passed apps (move) or managed apps (restore), `s` toggles name/size sorting, and `c` clears the search and filter. Existing risk reviews still apply.
+- **Search and filters**: In move/restore lists, `/` starts a case-insensitive name search; Enter applies it and Esc clears it. `f` opens a filter screen where ↑/↓ selects Status or Size and ←/→ cycles the value. Move status values are All, Safe, Review, Blocked, and Unknown; restore values are All, Managed, Unmanaged, Unconfirmed, and Unresolved. Both screens offer All sizes, ≥ 1 GB, ≥ 5 GB, and ≥ 10 GB; Enter applies the draft and Esc cancels it. Filters combine with name search, remain independent between move and restore, `s` toggles name/size sorting, and `c` clears the search and filters. Existing risk reviews still apply.
 - **Copy progress**: During app move/restore, MacBay samples destination file lengths and shows estimated copied bytes, percentage, and average growth rate. These are estimates, not verified bytes or guaranteed disk throughput: preallocation can lead the actual transfer. The display stays below 100% until the copy stage ends; signature verification is a separate stage. If sampling is unavailable or too expensive, stage and elapsed time remain visible.
 - **Diagnosis to recovery**: From a duplicate-app finding, `p` compares local/external copies and opens a redock or keep-local preview. From an interrupted repair finding, `b` reviews its matching repair journal before rollback. Every mutation requires a separate confirmation (Cancel by default); risk-required repairs explicitly ask for acceptance. `r` returns to refreshed diagnosis. Interrupted adoption is not treated as a repair rollback.
 - Multi-select and Xcode/cache execution in the TUI remain planned; use their CLI commands today.

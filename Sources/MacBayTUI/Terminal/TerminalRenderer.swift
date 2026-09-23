@@ -143,6 +143,9 @@ public struct TerminalRenderer {
             breadcrumb = "\u{001B}[1mHome\u{001B}[0m"
         case .appMoveList:
             breadcrumb = "\u{001B}[2mHome >\u{001B}[0m \u{001B}[1;32mMove Application\u{001B}[0m"
+        case .appFilter(let restoring):
+            let section = restoring ? "Restore" : "Move"
+            breadcrumb = "\u{001B}[2mHome > \(section) >\u{001B}[0m \u{001B}[1;36mFilter Applications\u{001B}[0m"
         case .explorer:
             breadcrumb = "\u{001B}[2mHome >\u{001B}[0m \u{001B}[1;32mExplore Disk Usage\u{001B}[0m"
         case .explorerDetail(let entry):
@@ -205,6 +208,8 @@ public struct TerminalRenderer {
             text = state.isSearching
                 ? "Type to search · [Enter] Apply · [Esc] Clear · [Backspace] Delete"
                 : "[↑/↓] Move [Enter] Select [/] Search [f] Filter [s] Sort [c] Clear [Esc] Back"
+        case .appFilter:
+            text = "[↑/↓] Condition [←/→] Change value [Enter] Apply [Esc] Cancel"
         case .explorer, .explorerDetail:
             text = state.isSearching
                 ? "Type to search · [Enter] Apply · [Esc] Clear · [Backspace] Delete"
@@ -242,6 +247,8 @@ public struct TerminalRenderer {
             return renderHome(state: state, width: width, height: height)
         case .appMoveList:
             return renderAppMoveList(state: state, width: width, height: height)
+        case .appFilter(let restoring):
+            return renderAppFilter(state: state, restoring: restoring, width: width, height: height)
         case .explorer:
             return renderExplorer(state: state, width: width, height: height)
         case .explorerDetail(let entry):
@@ -357,6 +364,53 @@ public struct TerminalRenderer {
             "",
             "  \(color)Search  [ \(field) ]\u{001B}[0m\(hint)",
             "  \u{001B}[2m[f] Filter: \(filter)   [s] Sort: \(sort)   · \(count) apps\u{001B}[0m",
+            ""
+        ]
+    }
+
+    private func renderAppFilter(state: TUIState, restoring: Bool, width: Int, height: Int) -> [String] {
+        let section = restoring ? "Restore" : "Move"
+        let statusLabel: String
+        let sizeLabel: String
+        if restoring {
+            statusLabel = state.restoreFilterStatusDraft.label
+            sizeLabel = state.restoreFilterSizeDraft.label
+        } else {
+            statusLabel = state.moveFilterStatusDraft.label
+            sizeLabel = state.moveFilterSizeDraft.label
+        }
+
+        func row(_ title: String, _ value: String, selected: Bool) -> String {
+            let marker = selected ? "\u{001B}[1;36m➜\u{001B}[0m" : " "
+            let titleColor = selected ? "\u{001B}[1;36m" : "\u{001B}[1m"
+            return "  \(marker) \(titleColor)\(title):\u{001B}[0m \(value)"
+        }
+
+        let currentStatus: String
+        let currentSize: String
+        if restoring {
+            currentStatus = state.restoreStatusFilter.label
+            currentSize = state.restoreSizeFilter.label
+        } else {
+            currentStatus = state.moveStatusFilter.label
+            currentSize = state.moveSizeFilter.label
+        }
+        let search = restoring
+            ? (state.restoreSearch.isEmpty ? "All names" : state.restoreSearch)
+            : (state.moveSearch.isEmpty ? "All names" : state.moveSearch)
+
+        return [
+            "",
+            "  \u{001B}[1mFilter \(section) Applications\u{001B}[0m",
+            "  \u{001B}[2mChoose a condition, then use ←/→ to change its value.\u{001B}[0m",
+            "",
+            row("Status", statusLabel, selected: state.filterFieldIndex == 0),
+            row("Size", sizeLabel, selected: state.filterFieldIndex == 1),
+            "",
+            "  \u{001B}[2mCurrent filter: \(currentStatus) · \(currentSize)\u{001B}[0m",
+            "  \u{001B}[2mName search: \(search)\u{001B}[0m",
+            "",
+            "  \u{001B}[1m[Enter]\u{001B}[0m Apply filter    \u{001B}[1m[Esc]\u{001B}[0m Cancel",
             ""
         ]
     }
@@ -490,7 +544,7 @@ public struct TerminalRenderer {
         var lines: [String] = []
         let candidates = state.moveCandidates
         lines.append(contentsOf: renderListSearch(query: state.moveSearch, editing: state.isSearching,
-                                                   filter: state.moveEligibleOnly ? "Passed only" : "All",
+                                                   filter: "\(state.moveStatusFilter.label) · \(state.moveSizeFilter.label)",
                                                    sort: state.moveSortByName ? "Name" : "Size", count: candidates.count))
 
         if candidates.isEmpty {
@@ -780,7 +834,7 @@ public struct TerminalRenderer {
         var lines: [String] = []
         let items = state.restoreItems
         lines.append(contentsOf: renderListSearch(query: state.restoreSearch, editing: state.isSearching,
-                                                   filter: state.restoreManagedOnly ? "Managed only" : "All",
+                                                   filter: "\(state.restoreStatusFilter.label) · \(state.restoreSizeFilter.label)",
                                                    sort: state.restoreSortBySize ? "Size" : "Name", count: items.count))
 
         if items.isEmpty {

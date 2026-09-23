@@ -402,6 +402,8 @@ public final class TUIApp: @unchecked Sendable {
             handleHomeKey(key)
         case .appMoveList:
             handleAppMoveListKey(key)
+        case .appFilter(let restoring):
+            handleAppFilterKey(key, restoring: restoring)
         case .explorer, .explorerDetail:
             handleExplorerKey(key)
         case .riskReview(let candidate):
@@ -480,6 +482,124 @@ public final class TUIApp: @unchecked Sendable {
         state.detailScrollOffset = min(max(0, state.detailScrollOffset + delta), maxOffset)
     }
 
+    private func resetListSelection(restoring: Bool) {
+        if restoring {
+            state.restoreListIndex = 0
+            state.restoreListScrollOffset = 0
+        } else {
+            state.moveListIndex = 0
+            state.moveListScrollOffset = 0
+        }
+    }
+
+    private func openAppFilter(restoring: Bool) {
+        state.isSearching = false
+        state.filterFieldIndex = 0
+        if restoring {
+            state.restoreFilterStatusDraft = state.restoreStatusFilter
+            state.restoreFilterSizeDraft = state.restoreSizeFilter
+        } else {
+            state.moveFilterStatusDraft = state.moveStatusFilter
+            state.moveFilterSizeDraft = state.moveSizeFilter
+        }
+        state.pushScreen(.appFilter(restoring: restoring))
+    }
+
+    private func cycleMoveStatus(by delta: Int) {
+        let values = MoveStatusFilter.allCases
+        guard let index = values.firstIndex(of: state.moveFilterStatusDraft) else { return }
+        let next = (index + delta + values.count) % values.count
+        state.moveFilterStatusDraft = values[next]
+    }
+
+    private func cycleRestoreStatus(by delta: Int) {
+        let values = RestoreStatusFilter.allCases
+        guard let index = values.firstIndex(of: state.restoreFilterStatusDraft) else { return }
+        let next = (index + delta + values.count) % values.count
+        state.restoreFilterStatusDraft = values[next]
+    }
+
+    private func cycleSizeFilter(restoring: Bool, by delta: Int) {
+        let values = TUISizeFilter.allCases
+        let current = restoring ? state.restoreFilterSizeDraft : state.moveFilterSizeDraft
+        guard let index = values.firstIndex(of: current) else { return }
+        let next = (index + delta + values.count) % values.count
+        if restoring {
+            state.restoreFilterSizeDraft = values[next]
+        } else {
+            state.moveFilterSizeDraft = values[next]
+        }
+    }
+
+    private func applyAppFilter(restoring: Bool) {
+        if restoring {
+            state.restoreStatusFilter = state.restoreFilterStatusDraft
+            state.restoreSizeFilter = state.restoreFilterSizeDraft
+        } else {
+            state.moveStatusFilter = state.moveFilterStatusDraft
+            state.moveSizeFilter = state.moveFilterSizeDraft
+        }
+        state.popScreen()
+        resetListSelection(restoring: restoring)
+    }
+
+    private func cancelAppFilter(restoring: Bool) {
+        if restoring {
+            state.restoreFilterStatusDraft = state.restoreStatusFilter
+            state.restoreFilterSizeDraft = state.restoreSizeFilter
+        } else {
+            state.moveFilterStatusDraft = state.moveStatusFilter
+            state.moveFilterSizeDraft = state.moveSizeFilter
+        }
+        state.popScreen()
+    }
+
+    private func handleAppFilterKey(_ key: Key, restoring: Bool) {
+        switch key {
+        case .escape:
+            cancelAppFilter(restoring: restoring)
+        // Keep the original single-key shortcuts useful if a user presses them
+        // after opening the filter screen from an older muscle-memory workflow.
+        // The documented interaction remains ←/→ plus Enter/Esc.
+        case .char("s"), .char("S"):
+            guard !restoring else { break }
+            state.moveFilterStatusDraft = .safe
+            state.moveSortByName = true
+            applyAppFilter(restoring: false)
+        case .char("c"), .char("C"):
+            if restoring {
+                state.restoreSearch = ""
+                state.restoreFilterStatusDraft = .all
+                state.restoreFilterSizeDraft = .all
+            } else {
+                state.moveSearch = ""
+                state.moveFilterStatusDraft = .all
+                state.moveFilterSizeDraft = .all
+            }
+            applyAppFilter(restoring: restoring)
+        case .up, .char("k"), .char("K"):
+            state.filterFieldIndex = max(0, state.filterFieldIndex - 1)
+        case .down, .char("j"), .char("J"):
+            state.filterFieldIndex = min(1, state.filterFieldIndex + 1)
+        case .left:
+            if state.filterFieldIndex == 0 {
+                if restoring { cycleRestoreStatus(by: -1) } else { cycleMoveStatus(by: -1) }
+            } else {
+                cycleSizeFilter(restoring: restoring, by: -1)
+            }
+        case .right, .tab:
+            if state.filterFieldIndex == 0 {
+                if restoring { cycleRestoreStatus(by: 1) } else { cycleMoveStatus(by: 1) }
+            } else {
+                cycleSizeFilter(restoring: restoring, by: 1)
+            }
+        case .enter:
+            applyAppFilter(restoring: restoring)
+        default:
+            break
+        }
+    }
+
     private func handleListControls(_ key: Key, restoring: Bool) -> Bool {
         if state.isSearching {
             var query = restoring ? state.restoreSearch : state.moveSearch
@@ -496,17 +616,27 @@ public final class TUIApp: @unchecked Sendable {
             switch key {
             case .char("/"): state.isSearching = true
             case .char("f"), .char("F"):
-                if restoring { state.restoreManagedOnly.toggle() } else { state.moveEligibleOnly.toggle() }
+                openAppFilter(restoring: restoring)
             case .char("s"), .char("S"):
                 if restoring { state.restoreSortBySize.toggle() } else { state.moveSortByName.toggle() }
             case .char("c"), .char("C"):
-                if restoring { state.restoreSearch = ""; state.restoreManagedOnly = false }
-                else { state.moveSearch = ""; state.moveEligibleOnly = false }
+                if restoring {
+                    state.restoreSearch = ""
+                    state.restoreStatusFilter = .all
+                    state.restoreSizeFilter = .all
+                } else {
+                    state.moveSearch = ""
+                    state.moveStatusFilter = .all
+                    state.moveSizeFilter = .all
+                }
             default: return false
             }
         }
-        if restoring { state.restoreListIndex = 0; state.restoreListScrollOffset = 0 }
-        else { state.moveListIndex = 0; state.moveListScrollOffset = 0 }
+        // Opening the filter screen should leave the current selection untouched. All
+        // other list controls operate on the list from its first row.
+        if !(key == .char("f") || key == .char("F")) {
+            resetListSelection(restoring: restoring)
+        }
         return true
     }
 
