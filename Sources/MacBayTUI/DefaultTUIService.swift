@@ -231,6 +231,11 @@ public struct DefaultTUIService: @unchecked Sendable, TUIServiceProtocol {
         return volumeURL.standardizedFileURL.path
     }
 
+    public func availableBytes(atPath path: String) -> UInt64? {
+        guard let info = try? volumeManager.diskInfoProvider.diskInfo(for: path), info.totalBytes > 0 else { return nil }
+        return info.availableBytes
+    }
+
     public func planAdopt(
         appName: String,
         volumePath: String,

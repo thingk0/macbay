@@ -174,6 +174,7 @@ public final class TUIApp: @unchecked Sendable {
                 self.state.cachedStatus = report
                 self.state.eligibleVolumesList = volumes
                 self.state.statusLoaded = true
+                self.state.pruneBatchSelections()
                 self.lock.unlock()
             } catch {
                 self.recordRequestError(error)
@@ -193,6 +194,7 @@ public final class TUIApp: @unchecked Sendable {
                 self.lock.lock()
                 self.state.cachedScan = report
                 self.state.scanLoaded = true
+                self.state.pruneBatchSelections()
                 self.state.moveListIndex = min(self.state.moveListIndex, max(0, self.state.moveCandidates.count - 1))
                 self.state.moveListScrollOffset = min(self.state.moveListScrollOffset, self.state.moveListIndex)
                 self.state.restoreListIndex = min(self.state.restoreListIndex, max(0, self.state.restoreItems.count - 1))
@@ -468,6 +470,14 @@ public final class TUIApp: @unchecked Sendable {
             handleRiskReviewKey(key, candidate: candidate)
         case .volumeSelect(let candidate, let force):
             handleVolumeSelectKey(key, candidate: candidate, force: force)
+        case .batchVolumeSelect:
+            handleBatchVolumeSelectKey(key)
+        case .batchPreview(let preview):
+            handleBatchReviewKey(key, preview: preview, confirming: false)
+        case .batchConfirmation(let preview):
+            handleBatchReviewKey(key, preview: preview, confirming: true)
+        case .batchResult:
+            handleBatchResultKey(key)
         case .dryRunPreview(let plan):
             handleDryRunPreviewKey(key, plan: plan)
         case .mutatingProgress:
@@ -1188,7 +1198,22 @@ public final class TUIApp: @unchecked Sendable {
                     state.moveListScrollOffset = state.moveListIndex - listHeight + 1
                 }
             }
+        case .char(" "):
+            guard candidates.indices.contains(state.moveListIndex) else { return }
+            toggleMoveSelection(candidates[state.moveListIndex])
+        case .char("a"), .char("A"):
+            let selectable = candidates.filter { $0.compatibility?.grade != .blocked }
+            state.selectedMovePaths.formUnion(selectable.map(\.path))
+            let skipped = candidates.count - selectable.count
+            state.errorMessage = skipped > 0 ? "\(skipped) blocked app(s) shown were not selected." : nil
+        case .char("x"), .char("X"):
+            state.selectedMovePaths = []
+            state.errorMessage = nil
         case .enter:
+            if !state.selectedMovePaths.isEmpty {
+                startBatchMoveFlow()
+                return
+            }
             guard candidates.indices.contains(state.moveListIndex) else { return }
             let candidate = candidates[state.moveListIndex]
             if candidate.compatibility?.grade == .blocked {
@@ -1230,19 +1255,21 @@ public final class TUIApp: @unchecked Sendable {
         }
     }
 
-    private func startMoveFlow(candidate: AppCandidate, force: Bool) {
-        // Resolve volume
+    private enum MoveVolumeChoice {
+        case resolved(String)
+        case needsSelection
+        case unavailable
+    }
+
+    private func resolveMoveVolume() -> MoveVolumeChoice {
         if let sessionVol = state.sessionVolumePath {
-            startDryRunDock(candidate: candidate, volumePath: sessionVol, force: force)
-            return
+            return .resolved(sessionVol)
         }
 
         if let def = state.cachedStatus?.defaultVolume, let mounted = def.mountedPath ?? (def.path as String?) {
-            startDryRunDock(candidate: candidate, volumePath: mounted, force: force)
-            return
+            return .resolved(mounted)
         } else if let def = try? service.defaultVolume() {
-            startDryRunDock(candidate: candidate, volumePath: def.path, force: force)
-            return
+            return .resolved(def.path)
         }
 
         var eligible = state.eligibleVolumesList
@@ -1253,11 +1280,19 @@ public final class TUIApp: @unchecked Sendable {
 
         if eligible.count == 1 {
             state.sessionVolumePath = eligible[0].path
-            startDryRunDock(candidate: candidate, volumePath: eligible[0].path, force: force)
-        } else if eligible.count > 1 {
+            return .resolved(eligible[0].path)
+        }
+        return eligible.isEmpty ? .unavailable : .needsSelection
+    }
+
+    private func startMoveFlow(candidate: AppCandidate, force: Bool) {
+        switch resolveMoveVolume() {
+        case .resolved(let volumePath):
+            startDryRunDock(candidate: candidate, volumePath: volumePath, force: force)
+        case .needsSelection:
             state.volumeSelectIndex = 0
             state.pushScreen(.volumeSelect(candidate: candidate, force: force))
-        } else {
+        case .unavailable:
             state.pushScreen(.infoModal(
                 title: "No External Volume",
                 message: "No eligible external APFS volume is available to receive this application.",
@@ -1283,6 +1318,289 @@ public final class TUIApp: @unchecked Sendable {
             startDryRunDock(candidate: candidate, volumePath: chosen.path, force: force)
         default:
             break
+        }
+    }
+
+    // MARK: - Batch Move and Restore
+    //
+    // A batch runs the same per-app dock/undock calls as the single-app flow, one app at a time.
+    // Each app is revalidated with a fresh dry run right before it runs, and the batch stops at
+    // the first failure so a broken volume or changed state never cascades into later apps.
+
+    private func toggleMoveSelection(_ candidate: AppCandidate) {
+        if state.selectedMovePaths.remove(candidate.path) != nil {
+            state.errorMessage = nil
+            return
+        }
+        guard candidate.compatibility?.grade != .blocked else {
+            let reasons = candidate.compatibility?.reasons.joined(separator: "; ") ?? ""
+            state.errorMessage = "\(candidate.name) is blocked and cannot be selected" + (reasons.isEmpty ? "." : ": \(reasons)")
+            return
+        }
+        state.selectedMovePaths.insert(candidate.path)
+        state.errorMessage = nil
+    }
+
+    private func toggleRestoreSelection(_ item: RestoreItem) {
+        if state.selectedRestorePaths.remove(item.sourcePath) != nil {
+            state.errorMessage = nil
+            return
+        }
+        switch item.status {
+        case .managed:
+            state.selectedRestorePaths.insert(item.sourcePath)
+            state.errorMessage = nil
+        case .unmanaged:
+            state.errorMessage = "\(item.name) is not managed by MacBay. Clear the selection and press Enter to review adoption."
+        case .unconfirmed:
+            state.errorMessage = "\(item.name) has an unconfirmed target and cannot be selected. Run 'mb doctor'."
+        case .unresolved(let reason):
+            state.errorMessage = "\(item.name) has an unresolved link (\(reason)) and cannot be selected. Run 'mb doctor'."
+        }
+    }
+
+    private func startBatchMoveFlow() {
+        switch resolveMoveVolume() {
+        case .resolved(let volumePath):
+            prepareBatchPreview(operation: .dock, volumePath: volumePath)
+        case .needsSelection:
+            state.volumeSelectIndex = 0
+            state.pushScreen(.batchVolumeSelect)
+        case .unavailable:
+            state.pushScreen(.infoModal(
+                title: "No External Volume",
+                message: "No eligible external APFS volume is available to receive these applications.",
+                guidance: "Connect an external APFS drive and press 'r' to refresh."
+            ))
+        }
+    }
+
+    private func handleBatchVolumeSelectKey(_ key: Key) {
+        let volumes = state.eligibleVolumesList
+        switch key {
+        case .escape:
+            state.popScreen()
+        case .up, .char("k"), .char("K"):
+            state.volumeSelectIndex = max(0, state.volumeSelectIndex - 1)
+        case .down, .char("j"), .char("J"):
+            state.volumeSelectIndex = min(volumes.count - 1, state.volumeSelectIndex + 1)
+        case .enter:
+            guard volumes.indices.contains(state.volumeSelectIndex) else { return }
+            let chosen = volumes[state.volumeSelectIndex]
+            state.sessionVolumePath = chosen.path
+            state.popScreen()
+            prepareBatchPreview(operation: .dock, volumePath: chosen.path)
+        default:
+            break
+        }
+    }
+
+    private func runBatchOperation(
+        _ operation: BatchOperation,
+        appName: String,
+        volumePath: String?,
+        force: Bool,
+        dryRun: Bool
+    ) throws -> MigrationResult {
+        let progress: ProgressHandler? = dryRun ? nil : { [weak self] step in self?.handleProgress(step) }
+        switch operation {
+        case .dock:
+            return try service.dock(appName: appName, volumePath: volumePath, dryRun: dryRun, force: force, progress: progress)
+        case .undock:
+            return try service.undock(appName: appName, volumePath: volumePath, dryRun: dryRun, progress: progress)
+        }
+    }
+
+    private func prepareBatchPreview(operation: BatchOperation, volumePath: String?) {
+        guard !state.isMutating else { return }
+        let origin = state.currentScreen
+        // Snapshot the selection in list order; later list changes do not alter this preview.
+        let targets: [(name: String, path: String, compatibility: CompatibilityAssessment?)]
+        switch operation {
+        case .dock: targets = state.selectedMoveCandidates.map { ($0.name, $0.path, $0.compatibility) }
+        case .undock: targets = state.selectedRestoreItems.map { ($0.name, $0.sourcePath, nil) }
+        }
+        guard !targets.isEmpty else { return }
+
+        let message = "Preparing dry-run previews for \(targets.count) application(s)…"
+        enqueueRequest(.preview, message: message) { [weak self] in
+            guard let self else { return }
+            let items = targets.map { target -> BatchPreviewItem in
+                do {
+                    let result = try self.runBatchOperation(
+                        operation, appName: target.name, volumePath: volumePath,
+                        force: target.compatibility?.grade == .popupRisk, dryRun: true
+                    )
+                    return BatchPreviewItem(
+                        appName: target.name, listPath: target.path, preview: result,
+                        compatibility: result.compatibility ?? target.compatibility, exclusion: nil
+                    )
+                } catch {
+                    return BatchPreviewItem(
+                        appName: target.name, listPath: target.path, preview: nil,
+                        compatibility: target.compatibility, exclusion: self.describe(error: error)
+                    )
+                }
+            }
+            let preview = BatchPreview(
+                operation: operation,
+                volumePath: volumePath,
+                items: items,
+                availableBytes: self.service.availableBytes(atPath: volumePath ?? "/")
+            )
+            self.lock.lock()
+            // A user can navigate away while the previews are loading.
+            if self.state.currentScreen == origin {
+                self.state.confirmFocusIndex = 0
+                self.state.batchRiskAccepted = false
+                self.state.pushScreen(.batchPreview(preview))
+            }
+            self.lock.unlock()
+        }
+    }
+
+    private func handleBatchReviewKey(_ key: Key, preview: BatchPreview, confirming: Bool) {
+        switch key {
+        case .escape:
+            state.popScreen()
+            state.confirmFocusIndex = 0
+            if !confirming { state.batchRiskAccepted = false }
+        case .char("q"), .char("Q"): shouldExit = true
+        case .up, .char("k"), .char("K"): scrollDetail(by: -1)
+        case .down, .char("j"), .char("J"): scrollDetail(by: 1)
+        case .left: state.confirmFocusIndex = 0
+        case .right: state.confirmFocusIndex = 1
+        case .tab: state.confirmFocusIndex = 1 - state.confirmFocusIndex
+        case .enter:
+            if state.confirmFocusIndex == 0 {
+                state.popScreen()
+                if !confirming { state.batchRiskAccepted = false }
+                return
+            }
+            if confirming {
+                executeBatch(preview: preview)
+                return
+            }
+            switch renderer.batchConfirmAction(preview: preview, riskAccepted: state.batchRiskAccepted) {
+            case .unavailable:
+                state.popScreen()
+                state.batchRiskAccepted = false
+            case .acceptRisk:
+                state.batchRiskAccepted = true
+                state.confirmFocusIndex = 0
+                state.detailScrollOffset = 0
+            case .continueToConfirmation:
+                state.confirmFocusIndex = 0
+                state.pushScreen(.batchConfirmation(preview))
+            }
+        default: break
+        }
+    }
+
+    private func executeBatch(preview: BatchPreview) {
+        let items = preview.included
+        guard !state.isMutating, !state.isLoading, preview.canProceed, let first = items.first,
+              preview.riskItems.isEmpty || state.batchRiskAccepted else { return }
+        let operation = preview.operation
+        state.isMutating = true
+        state.batchTotal = items.count
+        state.batchResults = []
+        state.operationStarted = Date()
+        state.operationElapsed = 0
+        state.completedSteps = []
+        state.copyProgress = nil
+        // Replace the review stack so the result returns straight to the list.
+        state.popScreen()
+        state.popScreen()
+        state.pushScreen(.mutatingProgress(operation: operation.rawValue, appName: first.appName))
+
+        workerQueue.async { [weak self] in
+            guard let self else { return }
+            var results: [BatchItemResult] = []
+            var stopped = false
+            for (index, item) in items.enumerated() {
+                self.lock.lock()
+                // A quit request waits for the running app, then no further app starts.
+                if self.state.quitDeferred { stopped = true }
+                if !stopped {
+                    self.state.currentScreen = .mutatingProgress(
+                        operation: operation.rawValue,
+                        appName: "\(item.appName) · \(index + 1) of \(items.count)"
+                    )
+                    self.state.completedSteps = []
+                    self.state.copyProgress = nil
+                    self.state.currentStepLabel = "Revalidating against the preview"
+                    self.state.currentStepStarted = Date()
+                }
+                self.lock.unlock()
+                self.requestRedraw()
+                guard !stopped else {
+                    results.append(BatchItemResult(appName: item.appName, status: .notStarted))
+                    continue
+                }
+
+                do {
+                    let force = item.compatibility?.grade == .popupRisk
+                    let current = try self.runBatchOperation(
+                        operation, appName: item.appName, volumePath: preview.volumePath, force: force, dryRun: true
+                    )
+                    guard let planned = item.preview,
+                          current.sourcePath == planned.sourcePath,
+                          current.destinationPath == planned.destinationPath,
+                          (current.compatibility?.grade ?? item.compatibility?.grade) == item.compatibility?.grade else {
+                        throw MacBayError.unsupportedOperation(
+                            "\(item.appName) changed since the preview and was not \(operation.pastTense). Review a new preview."
+                        )
+                    }
+                    let result = try self.runBatchOperation(
+                        operation, appName: item.appName, volumePath: preview.volumePath, force: force, dryRun: false
+                    )
+                    results.append(BatchItemResult(appName: item.appName, status: .succeeded(result)))
+                } catch {
+                    let message = self.describe(error: error)
+                    let details = (error as? MacBayError)?.errorDetails
+                    results.append(BatchItemResult(
+                        appName: item.appName,
+                        status: .failed(message: message, details: (details?.isEmpty ?? true) || details == message ? nil : details)
+                    ))
+                    stopped = true
+                }
+                self.lock.lock()
+                self.state.batchResults = results
+                self.lock.unlock()
+            }
+
+            self.lock.lock()
+            self.state.isMutating = false
+            self.state.currentStepLabel = nil
+            self.state.copyProgress = nil
+            self.state.batchTotal = 0
+            self.state.batchResults = []
+            self.state.batchRiskAccepted = false
+            switch operation {
+            case .dock: self.state.selectedMovePaths = []
+            case .undock: self.state.selectedRestorePaths = []
+            }
+            self.state.currentScreen = .batchResult(BatchReport(operation: operation, results: results, excluded: preview.excluded))
+            self.state.detailScrollOffset = 0
+            if self.state.quitDeferred { self.shouldExit = true }
+            self.lock.unlock()
+            self.requestRedraw()
+            if !self.shouldExit {
+                self.loadStatus(force: true)
+                self.loadScan(force: true)
+                self.loadExplorer(force: true)
+            }
+        }
+    }
+
+    private func handleBatchResultKey(_ key: Key) {
+        switch key {
+        case .up, .char("k"), .char("K"): scrollDetail(by: -1)
+        case .down, .char("j"), .char("J"): scrollDetail(by: 1)
+        case .enter, .escape: state.popScreen()
+        case .char("q"), .char("Q"): shouldExit = true
+        default: break
         }
     }
 
@@ -1722,7 +2040,22 @@ public final class TUIApp: @unchecked Sendable {
                     state.restoreListScrollOffset = state.restoreListIndex - listHeight + 1
                 }
             }
+        case .char(" "):
+            guard items.indices.contains(state.restoreListIndex) else { return }
+            toggleRestoreSelection(items[state.restoreListIndex])
+        case .char("a"), .char("A"):
+            let selectable = items.filter(\.isRestorable)
+            state.selectedRestorePaths.formUnion(selectable.map(\.sourcePath))
+            let skipped = items.count - selectable.count
+            state.errorMessage = skipped > 0 ? "\(skipped) app(s) shown are not managed and were not selected." : nil
+        case .char("x"), .char("X"):
+            state.selectedRestorePaths = []
+            state.errorMessage = nil
         case .enter:
+            if !state.selectedRestorePaths.isEmpty {
+                prepareBatchPreview(operation: .undock, volumePath: nil)
+                return
+            }
             guard items.indices.contains(state.restoreListIndex) else { return }
             let item = items[state.restoreListIndex]
             switch item.status {
