@@ -34,6 +34,19 @@ public final class FakeTUIService: @unchecked Sendable, TUIServiceProtocol {
     public var adoptPlanToReturn: AdoptPlan?
     public var adoptResultToReturn: AdoptExecutionResult?
 
+    /// Per-app failures and drift used by batch tests. `*ErrorsByApp` fail dry runs and real runs.
+    var dockErrorsByApp: [String: Error] = [:]
+    var dockMutateErrorsByApp: [String: Error] = [:]
+    var undockErrorsByApp: [String: Error] = [:]
+    var undockMutateErrorsByApp: [String: Error] = [:]
+    var destinationOverrides: [String: String] = [:]
+    var compatibilityByApp: [String: CompatibilityAssessment] = [:]
+    var availableBytesByPath: [String: UInt64] = [:]
+
+    public func availableBytes(atPath path: String) -> UInt64? {
+        availableBytesByPath[path]
+    }
+
     /// Mount points the fake reports for `volumePath(containing:)`; the longest match wins.
     public var mountedVolumePaths: [String] = []
 
@@ -250,6 +263,8 @@ public final class FakeTUIService: @unchecked Sendable, TUIServiceProtocol {
         if !dryRun, let err = shouldThrowDockOnMutate {
             throw err
         }
+        if let err = dockErrorsByApp[appName] { throw err }
+        if !dryRun, let err = dockMutateErrorsByApp[appName] { throw err }
         progress?(.validating)
         progress?(.copying)
         progress?(.updatingLink)
@@ -257,13 +272,14 @@ public final class FakeTUIService: @unchecked Sendable, TUIServiceProtocol {
             operation: "dock",
             name: appName,
             sourcePath: "/Applications/\(appName)",
-            destinationPath: "\(volumePath ?? "/Volumes/External")/MacBay/Applications/\(appName)",
+            destinationPath: destinationOverrides[appName] ?? "\(volumePath ?? "/Volumes/External")/MacBay/Applications/\(appName)",
             sizeBytes: 1_000_000_000,
             dryRun: dryRun,
             messages: [
                 "Destination available: 50 GB",
                 "Estimated internal space freed: 1 GB"
-            ]
+            ],
+            compatibility: compatibilityByApp[appName]
         )
     }
 
@@ -281,6 +297,8 @@ public final class FakeTUIService: @unchecked Sendable, TUIServiceProtocol {
         if !dryRun, let err = shouldThrowUndockOnMutate {
             throw err
         }
+        if let err = undockErrorsByApp[appName] { throw err }
+        if !dryRun, let err = undockMutateErrorsByApp[appName] { throw err }
         progress?(.validating)
         progress?(.copying)
         progress?(.updatingLink)

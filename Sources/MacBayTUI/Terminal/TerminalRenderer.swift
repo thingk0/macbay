@@ -75,6 +75,11 @@ public struct TerminalRenderer {
             return (max(1, contentHeight - 2), purgePreviewBody(preview: preview, confirming: state.currentScreen == .purgeConfirmation(preview), width: width).count)
         case .purgeResult(let report, let error):
             return (max(1, contentHeight - 1), purgeResultBody(report: report, error: error, width: width).count)
+        case .batchPreview(let preview), .batchConfirmation(let preview):
+            let confirming = state.currentScreen == .batchConfirmation(preview)
+            return (max(1, contentHeight - 2), batchPreviewBody(preview: preview, confirming: confirming, riskAccepted: state.batchRiskAccepted, width: width).count)
+        case .batchResult(let report):
+            return (max(1, contentHeight - 1), batchResultBody(report: report, width: width).count)
         case .recovery(let view):
             return (max(1, contentHeight - 2), recoveryBody(view, width: width).count)
         case .doctorFindingDetail(let finding):
@@ -180,6 +185,14 @@ public struct TerminalRenderer {
             breadcrumb = "\u{001B}[2mHome > Move >\u{001B}[0m \u{001B}[1;33mRisk Review (\(cand.name))\u{001B}[0m"
         case .volumeSelect(let cand, _):
             breadcrumb = "\u{001B}[2mHome > Move >\u{001B}[0m \u{001B}[1;36mSelect Volume (\(cand.name))\u{001B}[0m"
+        case .batchVolumeSelect:
+            breadcrumb = "Home > Move > Select Volume (batch)"
+        case .batchPreview(let preview):
+            breadcrumb = "Home > \(preview.operation.verb) > Batch Preview"
+        case .batchConfirmation(let preview):
+            breadcrumb = "Home > \(preview.operation.verb) > Confirm Batch"
+        case .batchResult(let report):
+            breadcrumb = "Home > \(report.operation.verb) > Batch Results"
         case .dryRunPreview(let plan):
             breadcrumb = "\u{001B}[2mHome >\u{001B}[0m \u{001B}[1;36mDry-Run Preview (\(plan.appName))\u{001B}[0m"
         case .mutatingProgress(let op, let app):
@@ -260,8 +273,12 @@ public struct TerminalRenderer {
                 : "[↑/↓] Move [Enter] Open [←] Up [/] Search [s] Sort [c] Clear [m] Move [o] Finder [r] Rescan [Esc] Back"
         case .riskReview:
             text = "\u{001B}[1m[↑/↓]\u{001B}[0m Scroll  \u{001B}[1m[←/→/Tab]\u{001B}[0m Button  \u{001B}[1m[Enter]\u{001B}[0m Select  \u{001B}[1m[Esc]\u{001B}[0m Cancel"
-        case .volumeSelect:
+        case .volumeSelect, .batchVolumeSelect:
             text = "\u{001B}[1m[↑/↓]\u{001B}[0m Move  \u{001B}[1m[Enter]\u{001B}[0m Select  \u{001B}[1m[Esc]\u{001B}[0m Cancel"
+        case .batchPreview, .batchConfirmation:
+            text = "[↑/↓] Scroll [←/→/Tab] Button [Enter] Select [Esc] Cancel"
+        case .batchResult:
+            text = "[↑/↓] Scroll [Enter / Esc] Return to application list"
         case .dryRunPreview:
             text = "\u{001B}[1m[↑/↓]\u{001B}[0m Scroll  \u{001B}[1m[←/→/Tab]\u{001B}[0m Button  \u{001B}[1m[Enter]\u{001B}[0m Select  \u{001B}[1m[Esc]\u{001B}[0m Cancel"
         case .adoptReview:
@@ -341,8 +358,29 @@ public struct TerminalRenderer {
             let viewport = max(1, height - Self.confirmFooterHeight)
             let footer = riskReviewFooter(state: state, bodyCount: body.count, viewport: viewport)
             return composeDetail(body: body, footer: footer, height: height, scrollOffset: state.detailScrollOffset)
-        case .volumeSelect(let candidate, let force):
-            return renderVolumeSelect(state: state, candidate: candidate, force: force, width: width, height: height)
+        case .volumeSelect(let candidate, _):
+            return renderVolumeSelect(state: state, subject: candidate.name, width: width)
+        case .batchVolumeSelect:
+            return renderVolumeSelect(state: state, subject: "\(state.selectedMovePaths.count) applications", width: width)
+        case .batchPreview(let preview), .batchConfirmation(let preview):
+            let confirming = state.currentScreen == .batchConfirmation(preview)
+            let body = batchPreviewBody(preview: preview, confirming: confirming, riskAccepted: state.batchRiskAccepted, width: width)
+            let label: String
+            if confirming {
+                label = "Confirm & \(preview.operation.verb) \(preview.included.count) App(s)"
+            } else {
+                switch batchConfirmAction(preview: preview, riskAccepted: state.batchRiskAccepted) {
+                case .unavailable: label = "Back to List"
+                case .acceptRisk: label = "Accept Risk for \(preview.riskItems.count) App(s)"
+                case .continueToConfirmation: label = "Continue to Confirmation"
+                }
+            }
+            let cancel = state.confirmFocusIndex == 0 ? "\u{001B}[7;1m [ Cancel ] \u{001B}[0m" : " [ Cancel ] "
+            let proceed = state.confirmFocusIndex == 1 ? "\u{001B}[7;1m [ \(label) ] \u{001B}[0m" : " [ \(label) ] "
+            return composeDetail(body: body, footer: [scrollIndicator(bodyCount: body.count, viewport: height - 2, scrollOffset: state.detailScrollOffset), "  \(cancel)   \(proceed)"], height: height, scrollOffset: state.detailScrollOffset)
+        case .batchResult(let report):
+            let body = batchResultBody(report: report, width: width)
+            return composeDetail(body: body, footer: [scrollIndicator(bodyCount: body.count, viewport: height - 1, scrollOffset: state.detailScrollOffset)], height: height, scrollOffset: state.detailScrollOffset)
         case .dryRunPreview(let plan):
             let body = dryRunPreviewBody(plan: plan, width: width)
             let viewport = max(1, height - Self.confirmFooterHeight)
@@ -583,6 +621,130 @@ public struct TerminalRenderer {
            !report.failedActions.contains(where: { $0.action.contains("DerivedData") }) {
             lines.append("DerivedData: not present; no migration needed.")
         }
+        return wrapped(lines, width: width)
+    }
+
+    // MARK: - Batch Views
+
+    public enum BatchConfirmAction: Equatable {
+        case unavailable
+        case acceptRisk
+        case continueToConfirmation
+    }
+
+    /// What the second button on a batch preview does. Input handling and rendering share this.
+    public func batchConfirmAction(preview: BatchPreview, riskAccepted: Bool) -> BatchConfirmAction {
+        guard preview.canProceed else { return .unavailable }
+        if !preview.riskItems.isEmpty && !riskAccepted { return .acceptRisk }
+        return .continueToConfirmation
+    }
+
+    /// The rule above a list's detail pane, carrying the batch selection and its keys.
+    private func batchSelectionRule(count: Int, bytes: UInt64, outsideFilter: Int, width: Int) -> String {
+        let text: String
+        if count == 0 {
+            text = " [Space] Select · [a] Select shown · Enter opens one app "
+        } else {
+            let hidden = outsideFilter > 0 ? " · \(outsideFilter) outside filter" : ""
+            text = " Batch: \(count) apps · \(OutputFormatter.humanBytes(bytes))\(hidden) · [Enter] Preview · [x] Clear "
+        }
+        let ruleWidth = min(width - 4, max(70, displayWidth(text) + 4))
+        return "  ──" + text + String(repeating: "─", count: max(0, ruleWidth - 2 - displayWidth(text)))
+    }
+
+    private func batchPreviewBody(preview: BatchPreview, confirming: Bool, riskAccepted: Bool, width: Int) -> [String] {
+        let operation = preview.operation
+        let included = preview.included
+        var lines = [
+            confirming
+                ? "Confirm batch \(operation.verb.lowercased()) · \(included.count) application(s)"
+                : "Batch \(operation.verb.lowercased()) preview · \(included.count) of \(preview.items.count) application(s) · Preview only",
+            operation == .dock
+                ? "Destination volume: \(preview.volumePath ?? "Auto")"
+                : "Destination: internal /Applications",
+            "Required: \(OutputFormatter.humanBytes(preview.requiredBytes)) · Free: "
+                + (preview.availableBytes.map { OutputFormatter.humanBytes($0) } ?? "unknown; each app is checked before it runs")
+        ]
+        if preview.shortfallBytes > 0 {
+            lines.append("Not enough space: \(OutputFormatter.humanBytes(preview.shortfallBytes)) short. Deselect apps and preview again.")
+        }
+        if included.isEmpty {
+            lines.append("No selected application can run. Review the exclusions below.")
+        }
+        lines.append("Rule: apps run one at a time in this order.")
+        lines.append("MacBay stops at the first failure and does not start the rest.")
+        lines.append(confirming
+            ? "Confirm & \(operation.verb) changes files; each app is rechecked against this preview."
+            : "No files have changed. Continue to a separate confirmation.")
+        let risky = preview.riskItems
+        if !risky.isEmpty {
+            lines.append(riskAccepted
+                ? "Risk accepted (--force) for: \(risky.map(\.appName).joined(separator: ", "))"
+                : "\(risky.count) app(s) need explicit risk acceptance (--force) before continuing.")
+        }
+
+        lines += ["", "Included (\(included.count))"]
+        for (index, item) in included.enumerated() {
+            guard let result = item.preview else { continue }
+            let grade: String
+            switch item.compatibility?.grade {
+            case .safe: grade = "Safe"
+            case .popupRisk: grade = "Review"
+            case .blocked: grade = "Blocked"
+            case .none: grade = operation == .dock ? "Unknown" : "Managed"
+            }
+            lines.append("\(index + 1). \(item.appName) · \(grade) · \(OutputFormatter.humanBytes(result.sizeBytes))")
+            lines.append("   To: \(result.destinationPath)")
+            if item.requiresRiskAcceptance, let reasons = item.compatibility?.reasons, !reasons.isEmpty {
+                lines.append("   Risk: \(reasons.joined(separator: "; "))")
+            }
+        }
+        let excluded = preview.excluded
+        if !excluded.isEmpty {
+            lines += ["", "Excluded (\(excluded.count)) · these apps are not run"]
+            for item in excluded {
+                lines.append("- \(item.appName): \(item.exclusion ?? "Unavailable")")
+            }
+        }
+        return wrapped(lines, width: width)
+    }
+
+    private func batchResultBody(report: BatchReport, width: Int) -> [String] {
+        let operation = report.operation
+        let headline: String
+        if report.allSucceeded {
+            headline = "All \(report.results.count) application(s) \(operation.pastTense)"
+        } else if report.failedCount > 0 {
+            headline = "Batch \(operation.verb.lowercased()) stopped after a failure"
+        } else {
+            headline = "Batch \(operation.verb.lowercased()) stopped before finishing"
+        }
+        var lines = [
+            headline,
+            "Succeeded: \(report.succeededCount) · Failed: \(report.failedCount) · Not started: \(report.notStartedCount)"
+                + (report.excluded.isEmpty ? "" : " · Excluded: \(report.excluded.count)"),
+            ""
+        ]
+        for result in report.results {
+            switch result.status {
+            case .succeeded(let migration):
+                lines.append("OK      \(result.appName) · \(OutputFormatter.humanBytes(migration.sizeBytes))")
+                lines.append("        \(migration.destinationPath)")
+            case .failed(let message, let details):
+                lines.append("FAILED  \(result.appName)")
+                lines.append("        \(message)")
+                if let details { lines.append("        \(details)") }
+            case .notStarted:
+                lines.append("SKIPPED \(result.appName) · not started")
+            }
+        }
+        for item in report.excluded {
+            lines.append("EXCLUDED \(item.appName) · \(item.exclusion ?? "Unavailable")")
+        }
+        if report.failedCount > 0 {
+            lines += ["", "Run mb doctor to check links and records before retrying failed apps."]
+        }
+        lines.append("Each executed app is recorded in mb history.")
         return wrapped(lines, width: width)
     }
 
@@ -947,7 +1109,7 @@ public struct TerminalRenderer {
         let listHeight = listVisibleRows(for: .appMoveList, terminalHeight: height + 5)
         let selectedIndex = min(max(0, state.moveListIndex), candidates.count - 1)
 
-        lines.append("\u{001B}[1m  Status      Application Name                       Size\u{001B}[0m")
+        lines.append("\u{001B}[1m      Status      Application Name                       Size\u{001B}[0m")
         lines.append("  " + String(repeating: "─", count: min(width - 4, 70)))
 
         let startIndex = min(state.moveListScrollOffset, max(0, candidates.count - listHeight))
@@ -971,11 +1133,12 @@ public struct TerminalRenderer {
 
             let nameCol = padRight(item.name, width: 38)
             let sizeCol = padLeft(OutputFormatter.humanBytes(item.sizeBytes), width: 10)
+            let mark = item.compatibility?.grade == .blocked ? "[-]" : (state.selectedMovePaths.contains(item.path) ? "[x]" : "[ ]")
 
             if isSelected {
-                lines.append("\u{001B}[7m ➜ \(badge) \(nameCol) \(sizeCol) \u{001B}[0m")
+                lines.append("\u{001B}[7m ➜ \(mark) \(badge) \(nameCol) \(sizeCol) \u{001B}[0m")
             } else {
-                lines.append("   \(badge) \(nameCol) \(sizeCol)")
+                lines.append("   \(mark) \(badge) \(nameCol) \(sizeCol)")
             }
         }
 
@@ -984,7 +1147,13 @@ public struct TerminalRenderer {
 
         // Detail pane for selected candidate
         lines.append("")
-        lines.append("  " + String(repeating: "─", count: min(width - 4, 70)))
+        let batch = state.selectedMoveCandidates
+        lines.append(batchSelectionRule(
+            count: batch.count,
+            bytes: batch.reduce(0) { $0 + $1.sizeBytes },
+            outsideFilter: state.moveSelectionOutsideFilter,
+            width: width
+        ))
         let sel = candidates[selectedIndex]
         lines.append("  \u{001B}[1mSelected:\u{001B}[0m \(sel.name) (\(OutputFormatter.humanBytes(sel.sizeBytes)))")
         lines.append("  \u{001B}[2mPath:\u{001B}[0m \(shortenPath(sel.path, maxWidth: max(12, width - 10)))")
@@ -1058,10 +1227,10 @@ public struct TerminalRenderer {
 
     // MARK: - Volume Select View
 
-    private func renderVolumeSelect(state: TUIState, candidate: AppCandidate, force: Bool, width: Int, height: Int) -> [String] {
+    private func renderVolumeSelect(state: TUIState, subject: String, width: Int) -> [String] {
         var lines: [String] = []
 
-        lines.append("\u{001B}[1;36mSelect Target External Volume · \(candidate.name)\u{001B}[0m")
+        lines.append("\u{001B}[1;36mSelect Target External Volume · \(subject)\u{001B}[0m")
         lines.append("  \u{001B}[2mMultiple eligible external volumes were found. Choose one for this session:\u{001B}[0m")
         lines.append("")
 
@@ -1144,6 +1313,11 @@ public struct TerminalRenderer {
 
         let elapsedStr = String(format: "%.1fs", state.operationElapsed)
         lines.append("  \u{001B}[2mTotal elapsed time:\u{001B}[0m \(elapsedStr)")
+        if state.batchTotal > 0 {
+            let succeeded = state.batchResults.filter { if case .succeeded = $0.status { return true }; return false }.count
+            let failed = state.batchResults.count - succeeded
+            lines.append("  Batch: \(succeeded) succeeded · \(failed) failed · \(state.batchTotal - state.batchResults.count) remaining · stops at first failure")
+        }
         lines.append("")
 
         lines.append("  \u{001B}[1mCompleted Steps:\u{001B}[0m")
@@ -1237,7 +1411,7 @@ public struct TerminalRenderer {
         let listHeight = listVisibleRows(for: .appRestoreList, terminalHeight: height + 5)
         let selectedIndex = min(max(0, state.restoreListIndex), items.count - 1)
 
-        lines.append("\u{001B}[1m  Status        Application Name                     Size\u{001B}[0m")
+        lines.append("\u{001B}[1m      Status        Application Name                     Size\u{001B}[0m")
         lines.append("  " + String(repeating: "─", count: min(width - 4, 70)))
 
         let startIndex = min(state.restoreListScrollOffset, max(0, items.count - listHeight))
@@ -1261,27 +1435,36 @@ public struct TerminalRenderer {
 
             let nameCol = padRight(item.name, width: 36)
             let sizeCol = padLeft(item.sizeBytes.map { OutputFormatter.humanBytes($0) } ?? "Unknown", width: 10)
+            let mark = !item.isRestorable ? "[-]" : (state.selectedRestorePaths.contains(item.sourcePath) ? "[x]" : "[ ]")
 
             if isSelected {
-                lines.append("\u{001B}[7m ➜ \(badge) \(nameCol) \(sizeCol) \u{001B}[0m")
+                lines.append("\u{001B}[7m ➜ \(mark) \(badge) \(nameCol) \(sizeCol) \u{001B}[0m")
             } else {
-                lines.append("   \(badge) \(nameCol) \(sizeCol)")
+                lines.append("   \(mark) \(badge) \(nameCol) \(sizeCol)")
             }
         }
 
         lines.append("")
-        lines.append("  " + String(repeating: "─", count: min(width - 4, 70)))
+        let batch = state.selectedRestoreItems
+        lines.append(batchSelectionRule(
+            count: batch.count,
+            bytes: batch.reduce(0) { $0 + ($1.sizeBytes ?? 0) },
+            outsideFilter: state.restoreSelectionOutsideFilter,
+            width: width
+        ))
         let sel = items[selectedIndex]
         lines.append("  \u{001B}[1mSelected:\u{001B}[0m \(sel.name)")
         lines.append("  \u{001B}[2mExternal Path:\u{001B}[0m \(shortenPath(sel.externalPath, maxWidth: max(12, width - 19)))")
 
+        // With a batch selection, Enter previews the batch instead of acting on this row.
+        let batchHint = "  Press \u{001B}[1m[Enter]\u{001B}[0m to preview the batch; press [x] to clear it and act on one app."
         switch sel.status {
         case .managed:
             lines.append("  \u{001B}[32mStatus:\u{001B}[0m Managed by MacBay. Ready to restore back to internal /Applications.")
-            lines.append("  Press \u{001B}[1m[Enter]\u{001B}[0m to preview restore operation.")
+            lines.append(batch.isEmpty ? "  Press \u{001B}[1m[Enter]\u{001B}[0m to preview restore operation." : batchHint)
         case .unmanaged:
             lines.append("  \u{001B}[33mStatus:\u{001B}[0m External symlink is not registered with MacBay.")
-            lines.append("  Press \u{001B}[1m[Enter]\u{001B}[0m to review adoption into MacBay standard storage.")
+            lines.append(batch.isEmpty ? "  Press \u{001B}[1m[Enter]\u{001B}[0m to review adoption into MacBay standard storage." : batchHint)
         case .unconfirmed:
             lines.append("  \u{001B}[35mStatus:\u{001B}[0m Unconfirmed target on external volume.")
             lines.append("  \u{001B}[1mCLI Guidance:\u{001B}[0m Run 'mb doctor' to diagnose link integrity.")

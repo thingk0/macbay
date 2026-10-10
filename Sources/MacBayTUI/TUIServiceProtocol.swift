@@ -43,6 +43,8 @@ public protocol TUIServiceProtocol: Sendable {
         progress: ProgressHandler?
     ) throws -> MigrationResult
     func volumePath(containing path: String) -> String?
+    /// Free bytes on the volume holding `path`, or nil when it cannot be read.
+    func availableBytes(atPath path: String) -> UInt64?
     func planAdopt(
         appName: String,
         volumePath: String,
@@ -69,4 +71,5 @@ public extension TUIServiceProtocol {
     func executeRepair(plan: RepairPlan, force: Bool) throws -> RepairExecutionResult { throw MacBayError.unsupportedOperation("Repair is unavailable") }
     func previewRollback(finding: DoctorFinding) throws -> RepairJournalRecord { throw MacBayError.unsupportedOperation("No supported repair journal is available") }
     func executeRollback(record: RepairJournalRecord) throws -> RepairExecutionResult { throw MacBayError.unsupportedOperation("Rollback is unavailable") }
+    func availableBytes(atPath path: String) -> UInt64? { nil }
 }
