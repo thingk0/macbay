@@ -1,6 +1,6 @@
 import Foundation
 
-public struct XcodeDoctorOptions: Sendable {
+public struct XcodeDoctorOptions: Equatable, Sendable {
     public var externalizeDeviceSupport: Bool
     public var externalizeArchives: Bool
     public var externalizeDerivedData: Bool
@@ -62,89 +62,115 @@ public struct XcodeDoctor {
             try assertXcodeNotRunning(force: options.force)
         }
 
-        var totalFreedBytes: UInt64 = 0
-
-        // 1. iOS DeviceSupport Externalization
-        let deviceSupport: MigrationResult?
-        if options.externalizeDeviceSupport {
-            let source = MacBayPaths.defaultXcodeDeviceSupportURL(homeDirectory: homeDirectory)
-            let destination = MacBayPaths.xcodeRoot(on: volume)
-                .appendingPathComponent("iOS DeviceSupport", isDirectory: true)
-            deviceSupport = try externalizeDirectory(
-                source: source,
-                destination: destination,
-                displayName: "Xcode iOS DeviceSupport",
-                on: volume,
-                dryRun: dryRun
-            )
-        } else {
-            deviceSupport = nil
+        // Validate all selected actions before any mutation. Runtime failures still retain
+        // successful action results instead of discarding an already partially completed run.
+        if !dryRun { _ = try run(on: volume, options: options, dryRun: true) }
+        var failures: [XcodeActionFailure] = []
+        func externalize(_ enabled: Bool, source: URL, destination: URL, name: String) throws -> MigrationResult? {
+            guard enabled else { return nil }
+            do {
+                return try externalizeDirectory(source: source, destination: destination,
+                                                displayName: name, on: volume, dryRun: dryRun)
+            } catch {
+                if dryRun { throw error }
+                failures.append(XcodeActionFailure(action: "externalize " + name, reason: error.localizedDescription))
+                return nil
+            }
         }
-
-        // 2. Archives Externalization
-        let archives: MigrationResult?
-        if options.externalizeArchives {
-            let source = MacBayPaths.defaultXcodeArchivesURL(homeDirectory: homeDirectory)
-            let destination = MacBayPaths.xcodeArchivesRoot(on: volume)
-            archives = try externalizeDirectory(
-                source: source,
-                destination: destination,
-                displayName: "Xcode Archives",
-                on: volume,
-                dryRun: dryRun
-            )
-        } else {
-            archives = nil
-        }
-
-        // 3. DerivedData Externalization (Optional)
-        let derivedData: MigrationResult?
-        if options.externalizeDerivedData {
-            let source = MacBayPaths.defaultXcodeDerivedDataURL(homeDirectory: homeDirectory)
-            let destination = MacBayPaths.xcodeDerivedDataRoot(on: volume)
-            derivedData = try externalizeDirectory(
-                source: source,
-                destination: destination,
-                displayName: "Xcode DerivedData",
-                on: volume,
-                dryRun: dryRun
-            )
-        } else {
-            derivedData = nil
-        }
-
-        // 4. DerivedData Cleanup
-        let derivedDataCleanup: CommandResultSummary?
-        if options.cleanDerivedData {
-            let (summary, freed) = try cleanupDerivedData(dryRun: dryRun)
-            derivedDataCleanup = summary
-            totalFreedBytes += freed
-        } else {
-            derivedDataCleanup = nil
-        }
-
-        // 5. Xcode & Simulator Caches Cleanup
-        let cacheCleanup: CommandResultSummary?
-        if options.cleanCaches {
-            let (summary, freed) = try cleanupCaches(dryRun: dryRun)
-            cacheCleanup = summary
-            totalFreedBytes += freed
-        } else {
-            cacheCleanup = nil
-        }
-
-        // 6. Unavailable Simulators Cleanup
+        let deviceSupport = try externalize(options.externalizeDeviceSupport,
+            source: MacBayPaths.defaultXcodeDeviceSupportURL(homeDirectory: homeDirectory),
+            destination: MacBayPaths.xcodeRoot(on: volume).appendingPathComponent("iOS DeviceSupport", isDirectory: true),
+            name: "Xcode iOS DeviceSupport")
+        let archives = try externalize(options.externalizeArchives,
+            source: MacBayPaths.defaultXcodeArchivesURL(homeDirectory: homeDirectory),
+            destination: MacBayPaths.xcodeArchivesRoot(on: volume), name: "Xcode Archives")
+        let derivedData = try externalize(options.externalizeDerivedData,
+            source: MacBayPaths.defaultXcodeDerivedDataURL(homeDirectory: homeDirectory),
+            destination: MacBayPaths.xcodeDerivedDataRoot(on: volume), name: "Xcode DerivedData")
+        let derivedDataCleanup = options.cleanDerivedData ? try cleanupDerivedData(dryRun: dryRun) : nil
+        let cacheCleanup = options.cleanCaches ? try cleanupCaches(dryRun: dryRun) : nil
         let simulatorCleanup = try cleanupUnavailableSimulators(dryRun: dryRun)
-
         return XcodeDoctorReport(
-            deviceSupport: deviceSupport,
-            archives: archives,
-            derivedData: derivedData,
-            simulatorCleanup: simulatorCleanup,
-            derivedDataCleanup: derivedDataCleanup,
-            cacheCleanup: cacheCleanup,
-            freedBytes: totalFreedBytes
+            deviceSupport: deviceSupport, archives: archives, derivedData: derivedData,
+            simulatorCleanup: simulatorCleanup, derivedDataCleanup: derivedDataCleanup?.0,
+            cacheCleanup: cacheCleanup?.0, freedBytes: (derivedDataCleanup?.1 ?? 0) + (cacheCleanup?.1 ?? 0),
+            failedActions: failures
         )
+    }
+
+    public func isXcodeRunning() throws -> Bool {
+        let result = try commandRunner.run("/usr/bin/pgrep", arguments: ["-x", "Xcode"])
+        guard result.status == 0 || result.status == 1 else {
+            throw MacBayError.commandFailed(executable: "/usr/bin/pgrep", status: result.status,
+                                            details: "Could not check whether Xcode is running")
+        }
+        return result.status == 0
+    }
+
+    public func makePlan(on volume: URL, options: XcodeDoctorOptions) throws -> XcodeStoragePlan {
+        let running = try isXcodeRunning()
+        let report = try run(on: volume, options: options, dryRun: true)
+        let info = try volumeManager.diskInfoProvider.diskInfo(for: volume.path)
+        let migrations = [report.deviceSupport, report.archives, report.derivedData].compactMap { $0 }
+        let required = migrations.filter { (try? fileManager.destinationOfSymbolicLink(atPath: $0.sourcePath)) == nil }
+            .reduce(UInt64(0)) { $0 + $1.sizeBytes }
+        if required > 0 {
+            try SpaceEstimator(diskInfoProvider: volumeManager.diskInfoProvider)
+                .requireSufficientSpace(copyBytes: required, destinationVolume: volume)
+        }
+        let fingerprinter = XcodePathFingerprinter(fileManager: fileManager)
+        var fingerprints: [String: String] = [:]
+        func capture(_ url: URL, recursive: Bool = true) throws {
+            if recursive || fingerprints[url.path] == nil {
+                fingerprints[url.path] = try fingerprinter.fingerprint(url, recursive: recursive)
+            }
+            let resolved = url.resolvingSymlinksInPath()
+            if resolved.path != url.path && (recursive || fingerprints[resolved.path] == nil) {
+                fingerprints[resolved.path] = try fingerprinter.fingerprint(resolved, recursive: recursive)
+            }
+        }
+        var sources: [URL] = []
+        if options.externalizeDeviceSupport { sources.append(MacBayPaths.defaultXcodeDeviceSupportURL(homeDirectory: homeDirectory)) }
+        if options.externalizeArchives { sources.append(MacBayPaths.defaultXcodeArchivesURL(homeDirectory: homeDirectory)) }
+        if options.externalizeDerivedData || options.cleanDerivedData { sources.append(MacBayPaths.defaultXcodeDerivedDataURL(homeDirectory: homeDirectory)) }
+        if options.cleanCaches {
+            sources += [MacBayPaths.defaultCoreSimulatorCachesURL(homeDirectory: homeDirectory),
+                        MacBayPaths.defaultXcodeCachesURL(homeDirectory: homeDirectory)]
+        }
+        for source in sources { try capture(source) }
+        try capture(volume, recursive: false)
+        for migration in migrations {
+            var destination = URL(fileURLWithPath: migration.destinationPath)
+            while destination.path.hasPrefix(volume.path + "/") {
+                try capture(destination, recursive: false)
+                destination.deleteLastPathComponent()
+            }
+        }
+        return XcodeStoragePlan(volumePath: volume.path, volumeUUID: info.volumeUUID,
+                                availableBytes: info.availableBytes, requiredBytes: required,
+                                options: options, report: report, xcodeRunning: running,
+                                unavailableSimulatorIDs: try unavailableSimulatorIDs(), fingerprints: fingerprints)
+    }
+
+    private func unavailableSimulatorIDs() throws -> [String] {
+        let result = try commandRunner.run("/usr/bin/xcrun", arguments: ["simctl", "list", "devices", "--json"])
+        guard result.status == 0 else {
+            throw MacBayError.commandFailed(executable: "/usr/bin/xcrun", status: result.status, details: result.standardError)
+        }
+        guard let data = result.standardOutput.data(using: .utf8),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let devices = object["devices"] as? [String: [[String: Any]]] else {
+            throw MacBayError.unsupportedOperation("Could not preview unavailable simulators. Check Xcode command-line tools and retry.")
+        }
+        var ids = Set<String>()
+        for device in devices.values.flatMap({ $0 }) {
+            guard let available = device["isAvailable"] as? Bool,
+                  let id = device["udid"] as? String, !id.isEmpty else {
+                throw MacBayError.unsupportedOperation("Could not identify simulator cleanup targets. Review a fresh preview after checking Xcode command-line tools.")
+            }
+            if !available { ids.insert(id) }
+        }
+        return ids.sorted()
     }
 
     private func externalizeDirectory(
@@ -171,7 +197,8 @@ public struct XcodeDoctor {
 
             // 2. 내부 디스크 링크 검증 (Internal volume check)
             let info = try volumeManager.diskInfoProvider.diskInfo(for: resolvedURL.path)
-            let prefix = volumeManager.volumeMountPrefix.hasSuffix("/") ? volumeManager.volumeMountPrefix : volumeManager.volumeMountPrefix + "/"
+            let mountPrefix = URL(fileURLWithPath: volumeManager.volumeMountPrefix).standardizedFileURL.path
+            let prefix = mountPrefix.hasSuffix("/") ? mountPrefix : mountPrefix + "/"
             if info.isInternal || !resolvedURL.path.hasPrefix(prefix) {
                 throw MacBayError.invalidVolume("\(displayName) links to an internal volume: \(resolvedURL.path)")
             }
@@ -216,109 +243,50 @@ public struct XcodeDoctor {
     }
 
     private func cleanupDerivedData(dryRun: Bool) throws -> (CommandResultSummary, UInt64) {
-        let derivedDataURL = MacBayPaths.defaultXcodeDerivedDataURL(homeDirectory: homeDirectory)
-        guard fileManager.fileExists(atPath: derivedDataURL.path) else {
-            return (
-                CommandResultSummary(
-                    command: "clean DerivedData",
-                    succeeded: true,
-                    output: "DerivedData is empty or does not exist"
-                ),
-                0
-            )
-        }
-
-        let resolvedURL: URL
-        if let linkDestination = try? fileManager.destinationOfSymbolicLink(atPath: derivedDataURL.path) {
-            resolvedURL = linkDestination.hasPrefix("/")
-                ? URL(fileURLWithPath: linkDestination)
-                : derivedDataURL.deletingLastPathComponent().appendingPathComponent(linkDestination)
-        } else {
-            resolvedURL = derivedDataURL
-        }
-
-        let sizeBytes = (try? sizeCalculator.size(of: resolvedURL)) ?? 0
-        let formattedSize = OutputFormatter.humanBytes(sizeBytes)
-
-        if dryRun {
-            return (
-                CommandResultSummary(
-                    command: "clean DerivedData",
-                    succeeded: true,
-                    output: "Dry run: would clean \(formattedSize) from \(derivedDataURL.path)"
-                ),
-                sizeBytes
-            )
-        }
-
-        let items = (try? fileManager.contentsOfDirectory(at: resolvedURL, includingPropertiesForKeys: nil)) ?? []
-        for item in items {
-            try? fileManager.removeItem(at: item)
-        }
-
-        return (
-            CommandResultSummary(
-                command: "clean DerivedData",
-                succeeded: true,
-                output: "Cleaned \(formattedSize) from \(derivedDataURL.path)"
-            ),
-            sizeBytes
-        )
+        try cleanupDirectories(command: "clean DerivedData",
+            targets: [("DerivedData", MacBayPaths.defaultXcodeDerivedDataURL(homeDirectory: homeDirectory))], dryRun: dryRun)
     }
 
     private func cleanupCaches(dryRun: Bool) throws -> (CommandResultSummary, UInt64) {
-        let coreSimCacheURL = MacBayPaths.defaultCoreSimulatorCachesURL(homeDirectory: homeDirectory)
-        let xcodeCacheURL = MacBayPaths.defaultXcodeCachesURL(homeDirectory: homeDirectory)
+        try cleanupDirectories(command: "clean Xcode caches", targets: [
+            ("CoreSimulator Caches", MacBayPaths.defaultCoreSimulatorCachesURL(homeDirectory: homeDirectory)),
+            ("Xcode App Caches", MacBayPaths.defaultXcodeCachesURL(homeDirectory: homeDirectory))
+        ], dryRun: dryRun)
+    }
 
-        var totalBytes: UInt64 = 0
-        var cleanedDetails: [String] = []
-
-        let targets = [
-            ("CoreSimulator Caches", coreSimCacheURL),
-            ("Xcode App Caches", xcodeCacheURL)
-        ]
-
-        for (name, url) in targets {
-            guard fileManager.fileExists(atPath: url.path) else { continue }
-            let sizeBytes = (try? sizeCalculator.size(of: url)) ?? 0
-            if sizeBytes > 0 {
-                totalBytes += sizeBytes
-                cleanedDetails.append("\(name): \(OutputFormatter.humanBytes(sizeBytes))")
-            }
-
-            if !dryRun {
-                let items = (try? fileManager.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)) ?? []
+    private func cleanupDirectories(command: String, targets: [(String, URL)], dryRun: Bool) throws -> (CommandResultSummary, UInt64) {
+        var bytes: UInt64 = 0
+        var details: [String] = []
+        var succeeded = true
+        for (name, source) in targets {
+            guard fileManager.fileExists(atPath: source.path) else { continue }
+            let url = source.resolvingSymlinksInPath()
+            do {
+                let items = try fileManager.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)
                 for item in items {
-                    try? fileManager.removeItem(at: item)
+                    let size = try sizeCalculator.size(of: item)
+                    if dryRun {
+                        bytes += size
+                    } else {
+                        do {
+                            try fileManager.removeItem(at: item)
+                            bytes += size
+                        } catch {
+                            succeeded = false
+                            details.append("Failed: \(item.path): \(error.localizedDescription)")
+                        }
+                    }
                 }
+                details.append("\(name): \(source.path)")
+            } catch {
+                if dryRun { throw error }
+                succeeded = false
+                details.append("Failed: \(source.path): \(error.localizedDescription)")
             }
         }
-
-        let formattedTotal = OutputFormatter.humanBytes(totalBytes)
-        if totalBytes == 0 {
-            return (
-                CommandResultSummary(
-                    command: "clean Xcode caches",
-                    succeeded: true,
-                    output: "No cache files found to clean"
-                ),
-                0
-            )
-        }
-
-        let detailsString = cleanedDetails.joined(separator: ", ")
-        let output = dryRun
-            ? "Dry run: would clean \(formattedTotal) (\(detailsString))"
-            : "Cleaned \(formattedTotal) (\(detailsString))"
-
-        return (
-            CommandResultSummary(
-                command: "clean Xcode caches",
-                succeeded: true,
-                output: output
-            ),
-            totalBytes
-        )
+        let description = dryRun ? "Dry run: would clean" : "Cleaned"
+        let output = "\(description) \(OutputFormatter.humanBytes(bytes))" + (details.isEmpty ? " (no cache files found)" : "\n" + details.joined(separator: "\n"))
+        return (CommandResultSummary(command: command, succeeded: succeeded, output: output), bytes)
     }
 
     private func cleanupUnavailableSimulators(dryRun: Bool) throws -> CommandResultSummary {
@@ -347,8 +315,7 @@ public struct XcodeDoctor {
 
     private func assertXcodeNotRunning(force: Bool) throws {
         guard !force else { return }
-        let result = try? commandRunner.run("/usr/bin/pgrep", arguments: ["-x", "Xcode"])
-        if let result, result.status == 0 {
+        if try isXcodeRunning() {
             throw MacBayError.unsupportedOperation(
                 "Xcode is currently running. Please quit Xcode before modifying its storage or caches, or pass --force to proceed anyway."
             )

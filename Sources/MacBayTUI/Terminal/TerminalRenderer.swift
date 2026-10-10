@@ -63,6 +63,10 @@ public struct TerminalRenderer {
         guard width >= 80, height >= 24 else { return nil }
         let contentHeight = height - 5
         switch state.currentScreen {
+        case .xcodePreview(let plan), .xcodeConfirmation(let plan):
+            return (max(1, contentHeight - 2), xcodePreviewBody(plan: plan, confirming: state.currentScreen == .xcodeConfirmation(plan), width: width).count)
+        case .xcodeResult(let report, let error):
+            return (max(1, contentHeight - 1), xcodeResultBody(report: report, error: error, options: state.executedXcodeOptions, width: width).count)
         case .purgePreview(let preview), .purgeConfirmation(let preview):
             return (max(1, contentHeight - 2), purgePreviewBody(preview: preview, confirming: state.currentScreen == .purgeConfirmation(preview), width: width).count)
         case .purgeResult(let report, let error):
@@ -145,6 +149,10 @@ public struct TerminalRenderer {
     private func renderSubheader(state: TUIState, width: Int) -> String {
         let breadcrumb: String
         switch state.currentScreen {
+        case .xcodeOptions: breadcrumb = "Home > Xcode Storage > Options"
+        case .xcodePreview: breadcrumb = "Home > Xcode Storage > Preview"
+        case .xcodeConfirmation: breadcrumb = "Home > Xcode Storage > Confirm"
+        case .xcodeResult: breadcrumb = "Home > Xcode Storage > Results"
         case .purgeList: breadcrumb = "Home > Cache Cleanup"
         case .purgePreview: breadcrumb = "Home > Cache Cleanup > Preview"
         case .purgeConfirmation: breadcrumb = "Home > Cache Cleanup > Confirm Deletion"
@@ -212,6 +220,12 @@ public struct TerminalRenderer {
     private func renderFooter(state: TUIState, width: Int) -> String {
         let text: String
         switch state.currentScreen {
+        case .xcodeOptions:
+            text = "[↑/↓] Option [←/→/Space] Change [Enter] Preview [r] Refresh [Esc] Back"
+        case .xcodePreview, .xcodeConfirmation:
+            text = "[↑/↓] Scroll [←/→/Tab] Button [Enter] Select [Esc] Cancel"
+        case .xcodeResult:
+            text = "[↑/↓] Scroll [Enter / Esc] Return to options for a fresh preview"
         case .purgeList:
             text = "[↑/↓] Move [Space] Toggle [a] All [c] Clear [Enter] Preview [r] Scan [Esc] Back"
         case .purgePreview, .purgeConfirmation:
@@ -259,6 +273,18 @@ public struct TerminalRenderer {
 
     private func renderContent(state: TUIState, width: Int, height: Int) -> [String] {
         switch state.currentScreen {
+        case .xcodeOptions:
+            return renderXcodeOptions(state: state, width: width)
+        case .xcodePreview(let plan), .xcodeConfirmation(let plan):
+            let confirming = state.currentScreen == .xcodeConfirmation(plan)
+            let body = xcodePreviewBody(plan: plan, confirming: confirming, width: width)
+            let label = confirming ? (plan.options.force ? "Force & Execute" : "Confirm & Execute") : "Continue to Confirmation"
+            let cancel = state.confirmFocusIndex == 0 ? "\u{001B}[7;1m [ Cancel ] \u{001B}[0m" : " [ Cancel ] "
+            let execute = state.confirmFocusIndex == 1 ? "\u{001B}[7;1m [ \(label) ] \u{001B}[0m" : " [ \(label) ] "
+            return composeDetail(body: body, footer: [scrollIndicator(bodyCount: body.count, viewport: height - 2, scrollOffset: state.detailScrollOffset), "  \(cancel)   \(execute)"], height: height, scrollOffset: state.detailScrollOffset)
+        case .xcodeResult(let report, let error):
+            let body = xcodeResultBody(report: report, error: error, options: state.executedXcodeOptions, width: width)
+            return composeDetail(body: body, footer: [scrollIndicator(bodyCount: body.count, viewport: height - 1, scrollOffset: state.detailScrollOffset)], height: height, scrollOffset: state.detailScrollOffset)
         case .purgeList:
             return renderPurgeList(state: state, width: width, height: height)
         case .purgePreview(let preview), .purgeConfirmation(let preview):
@@ -322,6 +348,102 @@ public struct TerminalRenderer {
         case .recovery(let view):
             return renderRecovery(state: state, view: view, width: width, height: height)
         }
+    }
+
+    // MARK: - Xcode Storage Views
+
+    private func renderXcodeOptions(state: TUIState, width: Int) -> [String] {
+        if state.xcodeEnvironmentLoading { return ["Checking Xcode and destination volumes…"] }
+        guard state.xcodeEnvironmentLoaded else { return ["Xcode storage unavailable. Press r to retry."] }
+        let options = state.xcodeOptions
+        let available = state.xcodeVolumes.contains { $0.path == state.xcodeVolumePath }
+        var lines = [
+            "Standard workflow (always included):",
+            "  Externalize iOS DeviceSupport and Archives; delete unavailable simulators.",
+            "",
+            state.xcodeRunning == true ? "Xcode is running: quit Xcode or explicitly enable Force below." : "Xcode is not running.",
+            available ? "Destination is an eligible external APFS volume." : "Destination unavailable: connect a drive, refresh and select its volume.",
+            ""
+        ]
+        let fields = [
+            "Destination: " + (state.xcodeVolumePath ?? "Select a volume with Left/Right"),
+            "[\(options.externalizeDerivedData ? "x" : " ")] Externalize DerivedData (advanced)",
+            "[\(options.cleanDerivedData ? "x" : " ")] Clean DerivedData build caches",
+            "[\(options.cleanCaches ? "x" : " ")] Clean CoreSimulator and Xcode caches",
+            "[\(options.force ? "x" : " ")] Force while Xcode runs (explicit risk acceptance)"
+        ]
+        for (index, field) in fields.enumerated() {
+            lines.append(index == state.xcodeFieldIndex ? "\u{001B}[7;1m> \(field)\u{001B}[0m" : "  " + field)
+        }
+        lines += ["", options.force ? "Force enabled: running builds may lose data. Quit Xcode when possible." : "Force is off. Running Xcode blocks preview and execution.",
+                  "Externalization and cleanup can both be selected for DerivedData.",
+                  "Cleanup deletes generated data and cannot be undone.",
+                  "Enter opens a read-only preview, then a separate confirmation."]
+        return lines
+    }
+
+    private func xcodePreviewBody(plan: XcodeStoragePlan, confirming: Bool, width: Int) -> [String] {
+        var lines = [
+            confirming ? "Confirm selected Xcode storage actions" : "Xcode storage · Read-only preview",
+            "Destination: \(plan.volumePath)",
+            "Copy estimate: \(OutputFormatter.humanBytes(plan.requiredBytes)) · Available: \(OutputFormatter.humanBytes(plan.availableBytes))",
+            "Cache cleanup estimate: \(OutputFormatter.humanBytes(plan.report.freedBytes))",
+            "Force: \(plan.options.force ? "explicitly enabled" : "off") · Xcode: \(plan.xcodeRunning ? "running" : "not running")",
+            confirming ? "Execution rechecks these conditions. Changes require a fresh preview." : "No files or simulator devices have been changed.",
+            "Cleanup deletes generated data and unavailable simulators permanently.",
+            ""
+        ]
+        if plan.options.force { lines += ["Force accepted: running builds may lose data.", ""] }
+        let migrations = [
+            ("DeviceSupport", plan.options.externalizeDeviceSupport, plan.report.deviceSupport),
+            ("Archives", plan.options.externalizeArchives, plan.report.archives),
+            ("DerivedData", plan.options.externalizeDerivedData, plan.report.derivedData)
+        ]
+        for (name, selected, result) in migrations where selected {
+            lines.append("Externalize \(name):")
+            if let result {
+                lines += ["  From: \(result.sourcePath)", "  To: \(result.destinationPath)", "  Size: \(OutputFormatter.humanBytes(result.sizeBytes))"]
+                lines += result.messages.map { "  " + $0 }
+            } else {
+                lines.append("  Not present; no migration needed.")
+            }
+        }
+        lines += ["Unavailable simulators: \(plan.unavailableSimulatorIDs.count) device(s)"]
+        lines += plan.unavailableSimulatorIDs.map { "  " + $0 }
+        for summary in [plan.report.derivedDataCleanup, plan.report.cacheCleanup].compactMap({ $0 }) {
+            lines += [summary.command, "  " + summary.output]
+        }
+        return wrapped(lines, width: width)
+    }
+
+    private func xcodeResultBody(report: XcodeDoctorReport?, error: String?, options: XcodeDoctorOptions?, width: Int) -> [String] {
+        guard let report else {
+            return wrapped(["Xcode storage stopped", error ?? "Unknown error", "", "Return to options and review a fresh preview."], width: width)
+        }
+        var lines = [report.hasFailures ? "Xcode storage finished with failures" : "Xcode storage finished",
+                     "Cache storage reclaimed: \(OutputFormatter.humanBytes(report.freedBytes))", ""]
+        for (name, result) in [("DeviceSupport", report.deviceSupport), ("Archives", report.archives), ("DerivedData", report.derivedData)] {
+            if let result {
+                lines += ["Completed: \(name) · \(OutputFormatter.humanBytes(result.sizeBytes))",
+                          "  \(result.sourcePath)", "  -> \(result.destinationPath)"]
+                lines += result.messages
+            }
+        }
+        for summary in [report.simulatorCleanup, report.derivedDataCleanup, report.cacheCleanup].compactMap({ $0 }) {
+            lines += ["\(summary.succeeded ? "Completed" : "Failed"): \(summary.command)", summary.output]
+        }
+        for failure in report.failedActions { lines += ["Failed: \(failure.action)", failure.reason] }
+        if report.deviceSupport == nil && !report.failedActions.contains(where: { $0.action.contains("DeviceSupport") }) {
+            lines.append("DeviceSupport: not present; no migration needed.")
+        }
+        if report.archives == nil && !report.failedActions.contains(where: { $0.action.contains("Archives") }) {
+            lines.append("Archives: not present; no migration needed.")
+        }
+        if options?.externalizeDerivedData == true, report.derivedData == nil,
+           !report.failedActions.contains(where: { $0.action.contains("DerivedData") }) {
+            lines.append("DerivedData: not present; no migration needed.")
+        }
+        return wrapped(lines, width: width)
     }
 
     // MARK: - Cache Cleanup Views
@@ -463,6 +585,7 @@ public struct TerminalRenderer {
             ("Restore Application", "Restore external apps back to /Applications (undock)"),
             ("Diagnosis", "Run doctor checks on links, records, and volume health"),
             ("Cache Cleanup", "Select and purge disposable caches (purge)"),
+            ("Xcode Storage", "Externalize Xcode data and select cleanup options"),
             ("Quit", "Exit MacBay TUI")
         ]
 
@@ -1338,7 +1461,7 @@ public struct TerminalRenderer {
 
     private func wrapped(_ lines: [String], width: Int) -> [String] {
         let capacity = max(1, width - 2)
-        return lines.flatMap { line -> [String] in
+        return lines.flatMap { $0.components(separatedBy: .newlines) }.flatMap { line -> [String] in
             guard !line.isEmpty else { return [""] }
             let plain = line.replacingOccurrences(of: "\u{001B}\\[[0-9;]*[A-Za-z]", with: "", options: .regularExpression)
             var result: [String] = []

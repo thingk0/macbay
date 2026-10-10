@@ -39,6 +39,39 @@ public final class FakeTUIService: @unchecked Sendable, TUIServiceProtocol {
 
     /// Simulates slow storage/service calls so tests can observe in-flight request handling.
     public var artificialDelay: TimeInterval = 0
+    var xcodeRunning = false
+    var xcodeEnvironmentError: Error?
+    var xcodePlanError: Error?
+    var xcodeExecutionError: Error?
+    var xcodePlans: [(String, XcodeDoctorOptions)] = []
+    var xcodeExecutions: [XcodeStoragePlan] = []
+    var xcodeReport = XcodeDoctorReport(simulatorCleanup: CommandResultSummary(command: "delete unavailable simulators", succeeded: true, output: "Done"))
+    var xcodePlanReport = XcodeDoctorReport(simulatorCleanup: CommandResultSummary(command: "delete unavailable simulators", succeeded: true, output: "Dry run"))
+
+    public func isXcodeRunning() throws -> Bool {
+        simulateWorkload()
+        if let xcodeEnvironmentError { throw xcodeEnvironmentError }
+        return xcodeRunning
+    }
+
+    public func planXcode(volumePath: String, options: XcodeDoctorOptions) throws -> XcodeStoragePlan {
+        xcodePlans.append((volumePath, options))
+        simulateWorkload()
+        if let xcodePlanError { throw xcodePlanError }
+        if xcodeRunning && !options.force {
+            throw MacBayError.unsupportedOperation("Xcode is currently running. Quit Xcode or explicitly enable Force.")
+        }
+        return XcodeStoragePlan(volumePath: volumePath, volumeUUID: "test-volume", availableBytes: 1_000_000_000,
+                                requiredBytes: 0, options: options, report: xcodePlanReport,
+                                xcodeRunning: xcodeRunning, unavailableSimulatorIDs: [], fingerprints: [:])
+    }
+
+    public func executeXcode(plan: XcodeStoragePlan) throws -> XcodeDoctorReport {
+        xcodeExecutions.append(plan)
+        simulateWorkload()
+        if let xcodeExecutionError { throw xcodeExecutionError }
+        return xcodeReport
+    }
     var purgeItemsToReturn: [PurgeItem] = []
     var purgeReportToReturn: PurgeReport?
     var purgeScanError: Error?

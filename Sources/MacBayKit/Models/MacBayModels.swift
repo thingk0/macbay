@@ -450,6 +450,11 @@ public struct XcodeDoctorReport: Codable, Equatable, Sendable {
     public let derivedDataCleanup: CommandResultSummary?
     public let cacheCleanup: CommandResultSummary?
     public let freedBytes: UInt64
+    public let failedActions: [XcodeActionFailure]
+
+    public var hasFailures: Bool {
+        !failedActions.isEmpty || [simulatorCleanup, derivedDataCleanup, cacheCleanup].compactMap { $0 }.contains { !$0.succeeded }
+    }
 
     public init(
         deviceSupport: MigrationResult? = nil,
@@ -458,7 +463,8 @@ public struct XcodeDoctorReport: Codable, Equatable, Sendable {
         simulatorCleanup: CommandResultSummary? = nil,
         derivedDataCleanup: CommandResultSummary? = nil,
         cacheCleanup: CommandResultSummary? = nil,
-        freedBytes: UInt64 = 0
+        freedBytes: UInt64 = 0,
+        failedActions: [XcodeActionFailure] = []
     ) {
         self.deviceSupport = deviceSupport
         self.archives = archives
@@ -467,6 +473,25 @@ public struct XcodeDoctorReport: Codable, Equatable, Sendable {
         self.derivedDataCleanup = derivedDataCleanup
         self.cacheCleanup = cacheCleanup
         self.freedBytes = freedBytes
+        self.failedActions = failedActions
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case deviceSupport, archives, derivedData, simulatorCleanup, derivedDataCleanup, cacheCleanup, freedBytes, failedActions
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            deviceSupport: try c.decodeIfPresent(MigrationResult.self, forKey: .deviceSupport),
+            archives: try c.decodeIfPresent(MigrationResult.self, forKey: .archives),
+            derivedData: try c.decodeIfPresent(MigrationResult.self, forKey: .derivedData),
+            simulatorCleanup: try c.decodeIfPresent(CommandResultSummary.self, forKey: .simulatorCleanup),
+            derivedDataCleanup: try c.decodeIfPresent(CommandResultSummary.self, forKey: .derivedDataCleanup),
+            cacheCleanup: try c.decodeIfPresent(CommandResultSummary.self, forKey: .cacheCleanup),
+            freedBytes: try c.decodeIfPresent(UInt64.self, forKey: .freedBytes) ?? 0,
+            failedActions: try c.decodeIfPresent([XcodeActionFailure].self, forKey: .failedActions) ?? []
+        )
     }
 }
 

@@ -577,7 +577,7 @@ public struct OutputFormatter {
         var lines = [style("MacBay Xcode doctor", color: "36", bold: true)]
         if let deviceSupport = report.deviceSupport {
             lines.append(migration(deviceSupport))
-        } else {
+        } else if !report.failedActions.contains(where: { $0.action.contains("DeviceSupport") }) {
             lines.append("iOS DeviceSupport: not present")
         }
         if let archives = report.archives {
@@ -603,6 +603,9 @@ public struct OutputFormatter {
             if !cacheCleanup.output.isEmpty {
                 lines.append(cacheCleanup.output)
             }
+        }
+        for failure in report.failedActions {
+            lines.append("Failed: \(failure.action): \(failure.reason)")
         }
         if report.freedBytes > 0 {
             lines.append(style("Total cache storage reclaimed: \(OutputFormatter.humanBytes(report.freedBytes))", color: "32", bold: true))

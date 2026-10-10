@@ -18,7 +18,7 @@ public struct DefaultTUIService: @unchecked Sendable, TUIServiceProtocol {
         historyStore: HistoryStore = HistoryStore()
     ) {
         self.fileManager = fileManager
-        self.service = service ?? MacBayService(fileManager: fileManager)
+        self.service = service ?? MacBayService(fileManager: fileManager, historyStore: historyStore)
         self.volumeManager = volumeManager ?? VolumeManager(fileManager: fileManager)
         self.configStore = configStore ?? ConfigStore(fileManager: fileManager)
         self.applicationDirectories = applicationDirectories
@@ -27,6 +27,16 @@ public struct DefaultTUIService: @unchecked Sendable, TUIServiceProtocol {
 
     public func scanPurge() throws -> [PurgeItem] {
         service.scanPurge()
+    }
+
+    public func isXcodeRunning() throws -> Bool { try service.isXcodeRunning() }
+
+    public func planXcode(volumePath: String, options: XcodeDoctorOptions) throws -> XcodeStoragePlan {
+        try service.planXcode(volumePath: volumePath, options: options)
+    }
+
+    public func executeXcode(plan: XcodeStoragePlan) throws -> XcodeDoctorReport {
+        try service.executeXcode(plan: plan)
     }
 
     public func executePurge(items: [PurgeItem]) throws -> PurgeReport {

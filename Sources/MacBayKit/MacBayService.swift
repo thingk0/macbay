@@ -34,6 +34,7 @@ public struct MacBayService {
         repairAppUseCase: (any RepairAppUseCaseProtocol)? = nil,
         historyStore: HistoryStore? = nil,
         purgeEngine: PurgeEngine? = nil,
+        xcodeDoctor: XcodeDoctor? = nil,
         applicationsDirectory: URL = URL(fileURLWithPath: "/Applications")
     ) {
         self.fileManager = fileManager
@@ -86,7 +87,7 @@ public struct MacBayService {
             volumeInspector: DarwinRepairVolumeInspector(fileManager: fileManager),
             systemRefresher: DarwinSystemEnvironmentRefresher(fileManager: fileManager, commandRunner: commandRunner)
         )
-        self.xcodeDoctor = XcodeDoctor(
+        self.xcodeDoctor = xcodeDoctor ?? XcodeDoctor(
             fileManager: fileManager,
             commandRunner: commandRunner,
             volumeManager: self.volumeManager
@@ -1083,6 +1084,38 @@ public struct MacBayService {
     ) throws -> XcodeDoctorReport {
         let selection = try selectVolume(path: volumePath)
         return try xcodeDoctor.run(on: URL(fileURLWithPath: selection.volume.path), options: options, dryRun: dryRun)
+    }
+
+    public func isXcodeRunning() throws -> Bool { try xcodeDoctor.isXcodeRunning() }
+
+    public func planXcode(volumePath: String?, options: XcodeDoctorOptions) throws -> XcodeStoragePlan {
+        let selection = try selectVolume(path: volumePath)
+        return try xcodeDoctor.makePlan(on: URL(fileURLWithPath: selection.volume.path), options: options)
+    }
+
+    public func executeXcode(plan: XcodeStoragePlan) throws -> XcodeDoctorReport {
+        // Re-select the exact mount, never fall back to a different default volume.
+        do {
+            let current = try planXcode(volumePath: plan.volumePath, options: plan.options)
+            guard plan.hasSameConditions(as: current) else {
+                throw XcodePlanError.conditionsChanged("Selected paths, volume identity, Xcode state or simulator targets changed.")
+            }
+        } catch let error as XcodePlanError {
+            throw error
+        } catch {
+            throw XcodePlanError.conditionsChanged(error.localizedDescription)
+        }
+        do {
+            let report = try xcode(volumePath: plan.volumePath, options: plan.options, dryRun: false)
+            historyStore.record(HistoryEntry(command: "xcode", subject: "Xcode data",
+                outcome: report.hasFailures ? .partial : .success,
+                detail: plan.options.actionDescriptions.joined(separator: ", ")))
+            return report
+        } catch {
+            historyStore.record(HistoryEntry(command: "xcode", subject: "Xcode data",
+                outcome: .failure, detail: error.localizedDescription))
+            throw error
+        }
     }
 
     public func move(

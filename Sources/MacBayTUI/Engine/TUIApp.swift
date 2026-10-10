@@ -6,6 +6,8 @@ public final class TUIApp: @unchecked Sendable {
         case status
         case scan
         case purgeScan
+        case xcodeEnvironment
+        case xcodePlan
         case doctor
         case explorer
         case explorerRefresh
@@ -17,6 +19,8 @@ public final class TUIApp: @unchecked Sendable {
             switch self {
             case .status:
                 return "Checking storage status…"
+            case .xcodeEnvironment: return "Checking Xcode and destination volumes…"
+            case .xcodePlan: return "Preparing Xcode storage preview…"
             case .purgeScan: return "Scanning purgeable caches…"
             case .scan:
                 return "Scanning applications under /Applications…"
@@ -400,6 +404,22 @@ public final class TUIApp: @unchecked Sendable {
         }
 
         switch state.currentScreen {
+        case .xcodeOptions:
+            handleXcodeOptionsKey(key)
+        case .xcodePreview(let plan):
+            handleXcodeReviewKey(key, plan: plan, confirming: false)
+        case .xcodeConfirmation(let plan):
+            handleXcodeReviewKey(key, plan: plan, confirming: true)
+        case .xcodeResult:
+            switch key {
+            case .up, .char("k"), .char("K"): scrollDetail(by: -1)
+            case .down, .char("j"), .char("J"): scrollDetail(by: 1)
+            case .enter, .escape:
+                state.popScreen()
+                loadXcodeEnvironment()
+            case .char("q"), .char("Q"): shouldExit = true
+            default: break
+            }
         case .purgeList:
             handlePurgeListKey(key)
         case .purgePreview(let preview):
@@ -456,7 +476,7 @@ public final class TUIApp: @unchecked Sendable {
         case .up, .char("k"), .char("K"):
             state.homeMenuIndex = max(0, state.homeMenuIndex - 1)
         case .down, .char("j"), .char("J"):
-            state.homeMenuIndex = min(5, state.homeMenuIndex + 1)
+            state.homeMenuIndex = min(6, state.homeMenuIndex + 1)
         case .char("q"), .char("Q"):
             shouldExit = true
         case .char("r"), .char("R"):
@@ -480,12 +500,170 @@ public final class TUIApp: @unchecked Sendable {
                 state.pushScreen(.purgeList)
                 loadPurge(force: true)
             case 5:
+                state.pushScreen(.xcodeOptions)
+                loadXcodeEnvironment()
+            case 6:
                 shouldExit = true
             default:
                 break
             }
         default:
             break
+        }
+    }
+
+    // MARK: - Xcode Storage
+
+    public func loadXcodeEnvironment() {
+        lock.lock()
+        defer { lock.unlock() }
+        state.xcodeEnvironmentLoading = true
+        state.xcodeEnvironmentLoaded = false
+        enqueueRequest(.xcodeEnvironment) { [weak self] in
+            guard let self else { return }
+            do {
+                let volumes = try self.service.eligibleVolumes()
+                let defaultVolume = try self.service.defaultVolume()
+                let running = try self.service.isXcodeRunning()
+                self.lock.lock()
+                self.state.xcodeVolumes = volumes
+                self.state.xcodeRunning = running
+                if self.state.xcodeVolumePath == nil {
+                    self.state.xcodeVolumePath = self.state.sessionVolumePath ?? defaultVolume?.path
+                        ?? (volumes.count == 1 ? volumes.first?.path : nil)
+                }
+                self.state.xcodeEnvironmentLoaded = true
+                self.state.xcodeEnvironmentLoading = false
+                self.lock.unlock()
+            } catch {
+                self.lock.lock()
+                self.state.xcodeEnvironmentLoading = false
+                self.state.xcodeRunning = nil
+                self.lock.unlock()
+                self.recordRequestError(error)
+            }
+        }
+    }
+
+    private func handleXcodeOptionsKey(_ key: Key) {
+        switch key {
+        case .escape: state.popScreen()
+        case .char("q"), .char("Q"): shouldExit = true
+        case .char("r"), .char("R"):
+            if !state.xcodeEnvironmentLoading { loadXcodeEnvironment() }
+        default:
+            guard state.xcodeEnvironmentLoaded, !state.isLoading else { return }
+            switch key {
+            case .up, .char("k"), .char("K"):
+                state.xcodeFieldIndex = max(0, state.xcodeFieldIndex - 1)
+            case .down, .char("j"), .char("J"):
+                state.xcodeFieldIndex = min(4, state.xcodeFieldIndex + 1)
+            case .left, .right, .char(" "):
+                switch state.xcodeFieldIndex {
+                case 0:
+                    let paths = state.xcodeVolumes.map(\.path)
+                    guard !paths.isEmpty else { return }
+                    if let index = paths.firstIndex(of: state.xcodeVolumePath ?? "") {
+                        let delta = key == .left ? -1 : 1
+                        state.xcodeVolumePath = paths[(index + delta + paths.count) % paths.count]
+                    } else {
+                        state.xcodeVolumePath = paths.first
+                    }
+                case 1: state.xcodeOptions.externalizeDerivedData.toggle()
+                case 2: state.xcodeOptions.cleanDerivedData.toggle()
+                case 3: state.xcodeOptions.cleanCaches.toggle()
+                case 4: state.xcodeOptions.force.toggle()
+                default: break
+                }
+                state.errorMessage = nil
+            case .enter:
+                guard let path = state.xcodeVolumePath,
+                      state.xcodeVolumes.contains(where: { $0.path == path }) else {
+                    state.errorMessage = "Destination volume unavailable. Connect an external APFS drive, refresh, and select it."
+                    return
+                }
+                prepareXcodePreview(volumePath: path, options: state.xcodeOptions)
+            default: break
+            }
+        }
+    }
+
+    private func prepareXcodePreview(volumePath: String, options: XcodeDoctorOptions) {
+        enqueueRequest(.xcodePlan) { [weak self] in
+            guard let self else { return }
+            do {
+                let plan = try self.service.planXcode(volumePath: volumePath, options: options)
+                self.lock.lock()
+                if self.state.currentScreen == .xcodeOptions {
+                    self.state.confirmFocusIndex = 0
+                    self.state.pushScreen(.xcodePreview(plan))
+                }
+                self.lock.unlock()
+            } catch {
+                self.recordRequestError(error)
+            }
+        }
+    }
+
+    private func handleXcodeReviewKey(_ key: Key, plan: XcodeStoragePlan, confirming: Bool) {
+        switch key {
+        case .escape:
+            state.popScreen()
+            state.confirmFocusIndex = 0
+        case .char("q"), .char("Q"): shouldExit = true
+        case .up, .char("k"), .char("K"): scrollDetail(by: -1)
+        case .down, .char("j"), .char("J"): scrollDetail(by: 1)
+        case .left: state.confirmFocusIndex = 0
+        case .right: state.confirmFocusIndex = 1
+        case .tab: state.confirmFocusIndex = 1 - state.confirmFocusIndex
+        case .enter:
+            if state.confirmFocusIndex == 0 {
+                state.popScreen()
+            } else if confirming {
+                executeXcode(plan: plan)
+            } else {
+                state.confirmFocusIndex = 0
+                state.pushScreen(.xcodeConfirmation(plan))
+            }
+        default: break
+        }
+    }
+
+    private func executeXcode(plan: XcodeStoragePlan) {
+        guard !state.isMutating, !state.isLoading else { return }
+        state.executedXcodeOptions = plan.options
+        state.isMutating = true
+        state.currentStepLabel = "Revalidating the Xcode preview and executing selected actions"
+        state.currentStepStarted = Date()
+        state.operationStarted = Date()
+        state.operationElapsed = 0
+        state.completedSteps = []
+        state.copyProgress = nil
+        state.popScreen()
+        state.popScreen()
+        state.pushScreen(.mutatingProgress(operation: "xcode", appName: "Storage"))
+        workerQueue.async { [weak self] in
+            guard let self else { return }
+            let report: XcodeDoctorReport?
+            let message: String?
+            do {
+                report = try self.service.executeXcode(plan: plan)
+                message = nil
+            } catch {
+                report = nil
+                message = error.localizedDescription
+            }
+            self.lock.lock()
+            self.state.isMutating = false
+            self.state.currentStepLabel = nil
+            self.state.currentScreen = .xcodeResult(report: report, error: message)
+            if self.state.quitDeferred { self.shouldExit = true }
+            self.lock.unlock()
+            self.requestRedraw()
+            if !self.shouldExit {
+                self.loadStatus(force: true)
+                self.loadDoctor(force: true)
+            }
         }
     }
 
