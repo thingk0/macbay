@@ -2,6 +2,9 @@ import Foundation
 import MacBayKit
 
 public protocol TUIServiceProtocol: Sendable {
+    func isXcodeRunning() throws -> Bool
+    func planXcode(volumePath: String, options: XcodeDoctorOptions) throws -> XcodeStoragePlan
+    func executeXcode(plan: XcodeStoragePlan) throws -> XcodeDoctorReport
     func scanPurge() throws -> [PurgeItem]
     func executePurge(items: [PurgeItem]) throws -> PurgeReport
     func compareRepair(finding: DoctorFinding) throws -> RepairComparison
@@ -50,6 +53,9 @@ public protocol TUIServiceProtocol: Sendable {
 }
 
 public extension TUIServiceProtocol {
+    func isXcodeRunning() throws -> Bool { throw MacBayError.unsupportedOperation("Xcode storage is unavailable") }
+    func planXcode(volumePath: String, options: XcodeDoctorOptions) throws -> XcodeStoragePlan { throw MacBayError.unsupportedOperation("Xcode storage is unavailable") }
+    func executeXcode(plan: XcodeStoragePlan) throws -> XcodeDoctorReport { throw MacBayError.unsupportedOperation("Xcode storage is unavailable") }
     func scanPurge() throws -> [PurgeItem] { throw MacBayError.unsupportedOperation("Cache cleanup is unavailable") }
     func executePurge(items: [PurgeItem]) throws -> PurgeReport { throw MacBayError.unsupportedOperation("Cache cleanup is unavailable") }
     func compareRepair(finding: DoctorFinding) throws -> RepairComparison { throw MacBayError.unsupportedOperation("Repair is unavailable") }

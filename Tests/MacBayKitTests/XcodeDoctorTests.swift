@@ -43,6 +43,7 @@ final class XcodeDoctorTests: XCTestCase {
             volumeMountPrefix: tempDir.path
         )
         let doctor = XcodeDoctor(
+            commandRunner: MockXcodeCommandRunner(),
             volumeManager: volumeManager,
             homeDirectory: homeDir
         )
@@ -67,6 +68,7 @@ final class XcodeDoctorTests: XCTestCase {
             volumeMountPrefix: tempDir.path
         )
         let doctor = XcodeDoctor(
+            commandRunner: MockXcodeCommandRunner(),
             volumeManager: volumeManager,
             homeDirectory: homeDir
         )
@@ -96,6 +98,7 @@ final class XcodeDoctorTests: XCTestCase {
             volumeMountPrefix: tempDir.path
         )
         let doctor = XcodeDoctor(
+            commandRunner: MockXcodeCommandRunner(),
             volumeManager: volumeManager,
             homeDirectory: homeDir
         )
@@ -127,6 +130,7 @@ final class XcodeDoctorTests: XCTestCase {
             volumeMountPrefix: tempDir.path
         )
         let doctor = XcodeDoctor(
+            commandRunner: MockXcodeCommandRunner(),
             volumeManager: volumeManager,
             homeDirectory: homeDir
         )
@@ -157,6 +161,7 @@ final class XcodeDoctorTests: XCTestCase {
             volumeMountPrefix: tempDir.path
         )
         let doctor = XcodeDoctor(
+            commandRunner: MockXcodeCommandRunner(),
             volumeManager: volumeManager,
             homeDirectory: homeDir
         )
@@ -188,6 +193,7 @@ final class XcodeDoctorTests: XCTestCase {
             volumeMountPrefix: tempDir.path
         )
         let doctor = XcodeDoctor(
+            commandRunner: MockXcodeCommandRunner(),
             volumeManager: volumeManager,
             homeDirectory: homeDir
         )
@@ -209,7 +215,7 @@ final class XcodeDoctorTests: XCTestCase {
         try FileManager.default.createDirectory(at: projectBuildDir, withIntermediateDirectories: true)
         try Data(repeating: 0x99, count: 256).write(to: projectBuildDir.appendingPathComponent("build.data"))
 
-        let doctor = XcodeDoctor(homeDirectory: homeDir)
+        let doctor = XcodeDoctor(commandRunner: MockXcodeCommandRunner(), homeDirectory: homeDir)
 
         // 1. Dry run
         let dryOptions = XcodeDoctorOptions(
@@ -242,7 +248,7 @@ final class XcodeDoctorTests: XCTestCase {
         try Data(repeating: 0x11, count: 50).write(to: simCacheDir.appendingPathComponent("sim.cache"))
         try Data(repeating: 0x22, count: 70).write(to: xcodeCacheDir.appendingPathComponent("xcode.cache"))
 
-        let doctor = XcodeDoctor(homeDirectory: homeDir)
+        let doctor = XcodeDoctor(commandRunner: MockXcodeCommandRunner(), homeDirectory: homeDir)
 
         let options = XcodeDoctorOptions(
             externalizeDeviceSupport: false,

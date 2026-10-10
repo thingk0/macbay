@@ -3,6 +3,10 @@ import MacBayKit
 
 public enum TUIScreen: Equatable {
     case home
+    case xcodeOptions
+    case xcodePreview(XcodeStoragePlan)
+    case xcodeConfirmation(XcodeStoragePlan)
+    case xcodeResult(report: XcodeDoctorReport?, error: String?)
     case purgeList
     case purgePreview(PurgePreview)
     case purgeConfirmation(PurgePreview)
@@ -128,6 +132,14 @@ public struct TUIState: Equatable {
     public var cachedStatus: StatusReport?
     public var cachedScan: ScanReport?
     public var cachedDoctor: DoctorReport?
+    public var xcodeOptions = XcodeDoctorOptions()
+    public var executedXcodeOptions: XcodeDoctorOptions?
+    public var xcodeVolumes: [StorageVolume] = []
+    public var xcodeVolumePath: String?
+    public var xcodeFieldIndex = 0
+    public var xcodeRunning: Bool?
+    public var xcodeEnvironmentLoaded = false
+    public var xcodeEnvironmentLoading = false
     public var purgeItems: [PurgeItem] = []
     public var purgeLoaded = false
     public var purgeLoading = false
