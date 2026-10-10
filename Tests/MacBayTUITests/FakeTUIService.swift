@@ -39,6 +39,37 @@ public final class FakeTUIService: @unchecked Sendable, TUIServiceProtocol {
 
     /// Simulates slow storage/service calls so tests can observe in-flight request handling.
     public var artificialDelay: TimeInterval = 0
+    var historyEntries: [HistoryEntry] = []
+    var undoDryRunError: Error?
+    var undoExecutionError: Error?
+    var undoCalls: [(plan: UndoPlan, dryRun: Bool)] = []
+    var onUndoExecution: (() -> Void)?
+
+    public func history(limit: Int?) -> [HistoryEntry] {
+        simulateWorkload()
+        return limit.map { Array(historyEntries.prefix($0)) } ?? historyEntries
+    }
+
+    public func planUndo() throws -> UndoPlan {
+        try UndoPlanner.plan(from: historyEntries)
+    }
+
+    public func undo(_ plan: UndoPlan, volumePath: String?, dryRun: Bool, progress: ProgressHandler?) throws -> UndoReport {
+        undoCalls.append((plan, dryRun))
+        simulateWorkload()
+        if dryRun {
+            if let undoDryRunError { throw undoDryRunError }
+        } else {
+            if let undoExecutionError { throw undoExecutionError }
+            onUndoExecution?()
+        }
+        let result = MigrationResult(
+            operation: plan.operation.rawValue, name: URL(fileURLWithPath: plan.target).lastPathComponent,
+            sourcePath: "/Volumes/External/MacBay/" + plan.target, destinationPath: "/Applications/" + plan.target,
+            sizeBytes: 2048, dryRun: dryRun, messages: [])
+        return UndoReport(entry: plan.entry, command: plan.command, result: result, dryRun: dryRun)
+    }
+
     var xcodeRunning = false
     var xcodeEnvironmentError: Error?
     var xcodePlanError: Error?

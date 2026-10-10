@@ -2,6 +2,9 @@ import Foundation
 import MacBayKit
 
 public protocol TUIServiceProtocol: Sendable {
+    func history(limit: Int?) -> [HistoryEntry]
+    func planUndo() throws -> UndoPlan
+    func undo(_ plan: UndoPlan, volumePath: String?, dryRun: Bool, progress: ProgressHandler?) throws -> UndoReport
     func isXcodeRunning() throws -> Bool
     func planXcode(volumePath: String, options: XcodeDoctorOptions) throws -> XcodeStoragePlan
     func executeXcode(plan: XcodeStoragePlan) throws -> XcodeDoctorReport
@@ -53,6 +56,9 @@ public protocol TUIServiceProtocol: Sendable {
 }
 
 public extension TUIServiceProtocol {
+    func history(limit: Int?) -> [HistoryEntry] { [] }
+    func planUndo() throws -> UndoPlan { throw MacBayError.unsupportedOperation("Undo is unavailable") }
+    func undo(_ plan: UndoPlan, volumePath: String?, dryRun: Bool, progress: ProgressHandler?) throws -> UndoReport { throw MacBayError.unsupportedOperation("Undo is unavailable") }
     func isXcodeRunning() throws -> Bool { throw MacBayError.unsupportedOperation("Xcode storage is unavailable") }
     func planXcode(volumePath: String, options: XcodeDoctorOptions) throws -> XcodeStoragePlan { throw MacBayError.unsupportedOperation("Xcode storage is unavailable") }
     func executeXcode(plan: XcodeStoragePlan) throws -> XcodeDoctorReport { throw MacBayError.unsupportedOperation("Xcode storage is unavailable") }

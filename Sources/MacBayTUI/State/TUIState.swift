@@ -3,6 +3,10 @@ import MacBayKit
 
 public enum TUIScreen: Equatable {
     case home
+    case historyList
+    case undoPreview(UndoPlan, UndoReport)
+    case undoConfirmation(UndoPlan, UndoReport)
+    case undoResult(report: UndoReport?, error: String?, attempted: Bool)
     case xcodeOptions
     case xcodePreview(XcodeStoragePlan)
     case xcodeConfirmation(XcodeStoragePlan)
@@ -140,6 +144,13 @@ public struct TUIState: Equatable {
     public var xcodeRunning: Bool?
     public var xcodeEnvironmentLoaded = false
     public var xcodeEnvironmentLoading = false
+    public var historyEntries: [HistoryEntry] = []
+    public var historyLoaded = false
+    public var historyLoading = false
+    public var historyIndex = 0
+    public var historyScrollOffset = 0
+    public var undoPlan: UndoPlan?
+    public var undoRefusal: String?
     public var purgeItems: [PurgeItem] = []
     public var purgeLoaded = false
     public var purgeLoading = false
@@ -221,6 +232,10 @@ public struct TUIState: Equatable {
     public var recoveryFocus = 0
 
     public init() {}
+
+    public var undoEntryIndex: Int? {
+        undoPlan.flatMap { historyEntries.firstIndex(of: $0.entry) }
+    }
 
     public var purgeRows: [PurgeListRow] {
         PurgeAppGroup.group(items: purgeItems).flatMap { group in
