@@ -103,6 +103,8 @@ public struct PurgeEngine {
         var failed: [PurgeFailure] = []
         var truncatedPaths: [String] = []
         var totalReclaimed: UInt64 = 0
+        // A preview can remain open while an application starts. Check again at execution.
+        let runningProcesses = detectRunningProcesses()
 
         for item in items {
             let url = URL(fileURLWithPath: item.path)
@@ -122,8 +124,12 @@ public struct PurgeEngine {
                 continue
             }
 
-            if item.isRunning && !options.includeRunning {
-                skipped.append(item)
+            let isRunning = item.isRunning || isAppRunning(appName: item.appName, runningProcesses: runningProcesses)
+            if isRunning && !options.includeRunning {
+                skipped.append(PurgeItem(
+                    appName: item.appName, path: item.path, category: item.category,
+                    sizeBytes: item.sizeBytes, isRunning: true
+                ))
                 continue
             }
 

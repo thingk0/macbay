@@ -1,6 +1,29 @@
 import Foundation
 import MacBayKit
 
+public enum PurgeListRow: Equatable {
+    case application(PurgeAppGroup)
+    case target(PurgeItem)
+
+    public var eligibleItems: [PurgeItem] {
+        switch self {
+        case .application(let group): return group.items.filter { !$0.isRunning }
+        case .target(let item): return item.isRunning ? [] : [item]
+        }
+    }
+}
+
+public struct PurgePreview: Equatable {
+    public let items: [PurgeItem]
+    public let skippedItems: [PurgeItem]
+    public var sizeBytes: UInt64 { items.reduce(0) { $0 + $1.sizeBytes } }
+
+    public init(items: [PurgeItem], skippedItems: [PurgeItem]) {
+        self.items = items
+        self.skippedItems = skippedItems
+    }
+}
+
 public enum RestoreStatus: Equatable, Sendable {
     case managed
     case unmanaged

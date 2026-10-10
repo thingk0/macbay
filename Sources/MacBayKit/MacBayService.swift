@@ -33,6 +33,7 @@ public struct MacBayService {
         adoptAppUseCase: (any AdoptAppUseCaseProtocol)? = nil,
         repairAppUseCase: (any RepairAppUseCaseProtocol)? = nil,
         historyStore: HistoryStore? = nil,
+        purgeEngine: PurgeEngine? = nil,
         applicationsDirectory: URL = URL(fileURLWithPath: "/Applications")
     ) {
         self.fileManager = fileManager
@@ -94,7 +95,7 @@ public struct MacBayService {
             fileManager: fileManager,
             commandRunner: commandRunner
         )
-        self.purgeEngine = PurgeEngine(
+        self.purgeEngine = purgeEngine ?? PurgeEngine(
             fileManager: fileManager,
             commandRunner: commandRunner
         )

@@ -7,19 +7,48 @@ public struct DefaultTUIService: @unchecked Sendable, TUIServiceProtocol {
     private let volumeManager: VolumeManager
     private let configStore: ConfigStore
     private let applicationDirectories: [URL]?
+    private let historyStore: HistoryStore
 
     public init(
         fileManager: FileManager = .default,
         service: MacBayService? = nil,
         volumeManager: VolumeManager? = nil,
         configStore: ConfigStore? = nil,
-        applicationDirectories: [URL]? = nil
+        applicationDirectories: [URL]? = nil,
+        historyStore: HistoryStore = HistoryStore()
     ) {
         self.fileManager = fileManager
         self.service = service ?? MacBayService(fileManager: fileManager)
         self.volumeManager = volumeManager ?? VolumeManager(fileManager: fileManager)
         self.configStore = configStore ?? ConfigStore(fileManager: fileManager)
         self.applicationDirectories = applicationDirectories
+        self.historyStore = historyStore
+    }
+
+    public func scanPurge() throws -> [PurgeItem] {
+        service.scanPurge()
+    }
+
+    public func executePurge(items: [PurgeItem]) throws -> PurgeReport {
+        guard !items.isEmpty else {
+            return PurgeReport(dryRun: false, purgedItems: [], totalReclaimedBytes: 0)
+        }
+        do {
+            let report = try service.purge(items: items, dryRun: false)
+            historyStore.record(HistoryEntry(
+                command: "purge", subject: "\(report.purgedItems.count) item(s)",
+                outcome: report.failedItems.isEmpty ? .success : .partial,
+                detail: "freed \(OutputFormatter.humanBytes(report.totalReclaimedBytes))"
+                    + (report.failedItems.isEmpty ? "" : ", \(report.failedItems.count) failed")
+            ))
+            return report
+        } catch {
+            historyStore.record(HistoryEntry(
+                command: "purge", subject: "\(items.count) item(s)",
+                outcome: .failure, detail: error.localizedDescription
+            ))
+            throw error
+        }
     }
 
     private func recoveryVolume(finding: DoctorFinding) throws -> String {
