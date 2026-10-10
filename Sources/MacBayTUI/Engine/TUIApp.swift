@@ -52,6 +52,11 @@ public final class TUIApp: @unchecked Sendable {
     private var explorerMonitor: ExplorerChangeMonitor?
     private var explorerMonitorRoot: String?
     private var explorerMonitorSubscription: UUID?
+    private let volumeQueue = DispatchQueue(label: "macbay.tui.volumes", qos: .utility)
+    private var volumeMonitor: VolumeChangeMonitor?
+    private var volumeMonitorSubscription: UUID?
+    // Guarded by `lock`: at most one volume check waits to run, however many events arrive.
+    private var volumeCheckScheduled = false
 
     // Guarded by `lock`: at most one request per kind is in flight, the rest wait their turn.
     private var requestsInFlight: Set<DataRequest> = []
@@ -83,6 +88,8 @@ public final class TUIApp: @unchecked Sendable {
 
         // Initial load
         loadInitialData()
+        startVolumeMonitor()
+        defer { stopVolumeMonitor() }
 
         var lastTimerTick = Date()
 
@@ -132,6 +139,22 @@ public final class TUIApp: @unchecked Sendable {
         guard needsRedraw else { return false }
         needsRedraw = false
         return true
+    }
+
+    private func startVolumeMonitor() {
+        let monitor = VolumeChangeMonitor()
+        volumeMonitor = monitor
+        volumeMonitorSubscription = monitor.subscribe { [weak self] in
+            self?.applyVolumeChangeEvent()
+        }
+    }
+
+    private func stopVolumeMonitor() {
+        if let monitor = volumeMonitor, let subscription = volumeMonitorSubscription {
+            monitor.unsubscribe(subscription)
+        }
+        volumeMonitor = nil
+        volumeMonitorSubscription = nil
     }
 
     public func render() {
@@ -379,6 +402,173 @@ public final class TUIApp: @unchecked Sendable {
         lock.unlock()
     }
 
+    // MARK: - Volume Changes
+    //
+    // Mount, unmount, and rename notifications only re-read volume state. They never start or
+    // resume a storage mutation: at most they refresh read-only data and close previews whose
+    // volume disappeared, so the user must review a new preview before anything changes.
+
+    /// Handles a volume notification. Safe to call from any thread and as often as events arrive.
+    public func applyVolumeChangeEvent() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !volumeCheckScheduled else { return }
+        volumeCheckScheduled = true
+        volumeQueue.async { [weak self] in self?.checkVolumes() }
+    }
+
+    /// Blocks until scheduled volume checks have run. For tests.
+    func waitForVolumeChecks() {
+        volumeQueue.sync {}
+    }
+
+    private func checkVolumes() {
+        lock.lock()
+        // Cleared before reading so an event during the read schedules another check.
+        volumeCheckScheduled = false
+        let ready = state.statusLoaded
+        lock.unlock()
+        // Until the first status load finishes there is no baseline; that load reads volumes itself.
+        guard ready else { return }
+
+        let volumes: [StorageVolume]
+        do {
+            volumes = try service.eligibleVolumes()
+        } catch {
+            recordRequestError(error)
+            requestRedraw()
+            return
+        }
+
+        lock.lock()
+        defer { lock.unlock() }
+        let previous = state.eligibleVolumesList
+        func same(_ a: StorageVolume, _ b: StorageVolume) -> Bool { a.path == b.path && a.name == b.name }
+        let removed = previous.filter { old in !volumes.contains { same($0, old) } }
+        let added = volumes.filter { new in !previous.contains { same($0, new) } }
+        // Duplicate notifications and free-space drift end here without a redraw.
+        guard !removed.isEmpty || !added.isEmpty else { return }
+
+        state.eligibleVolumesList = volumes
+        state.xcodeVolumes = volumes
+        state.volumeSelectIndex = min(state.volumeSelectIndex, max(0, volumes.count - 1))
+        let mounted = Set(volumes.map(\.path))
+        var notice = describeVolumeChange(removed: removed, added: added)
+        if let session = state.sessionVolumePath, !mounted.contains(session) {
+            state.sessionVolumePath = nil
+            notice += " Choose a destination again."
+        }
+        if let xcode = state.xcodeVolumePath, !mounted.contains(xcode) {
+            state.xcodeVolumePath = nil
+        }
+
+        state.deferredVolumeChanges += (removed + added).map(\.path)
+        state.deferredRemovedVolumes += removed.map(\.path)
+        if state.isMutating {
+            if !removed.isEmpty {
+                notice += " The running operation reports its own result; status refreshes after it stops."
+            }
+        } else {
+            applyDeferredVolumeChanges()
+        }
+        state.volumeNotice = notice
+        needsRedraw = true
+    }
+
+    private func describeVolumeChange(removed: [StorageVolume], added: [StorageVolume]) -> String {
+        func names(_ volumes: [StorageVolume]) -> String {
+            volumes.map { "\($0.name) (\($0.path))" }.joined(separator: ", ")
+        }
+        if removed.count == 1, added.count == 1, removed[0].name == added[0].name {
+            return "Volume \(added[0].name) is now mounted at \(added[0].path)."
+        }
+        var parts: [String] = []
+        if !removed.isEmpty { parts.append("Disconnected: \(names(removed)).") }
+        if !added.isEmpty { parts.append("Connected: \(names(added)).") }
+        return parts.joined(separator: " ")
+    }
+
+    /// Applies volume changes recorded while no mutation runs. Callers hold `lock`.
+    private func applyDeferredVolumeChanges() {
+        guard !state.isMutating, !state.deferredVolumeChanges.isEmpty else { return }
+        let changed = state.deferredVolumeChanges
+        let removed = state.deferredRemovedVolumes
+        state.deferredVolumeChanges = []
+        state.deferredRemovedVolumes = []
+
+        invalidateScreens(dependingOn: removed)
+
+        loadStatus(force: true)
+        // Restore entries resolve through links into these volumes; other changes leave the scan valid.
+        let linkedPaths = (state.cachedScan?.externalApplications.map(\.destinationPath) ?? [])
+            + (state.cachedScan?.unresolvedApplicationLinks.map(\.destinationPath) ?? [])
+        if linkedPaths.contains(where: { path in changed.contains { isPath(path, under: $0) } }) {
+            loadScan(force: true)
+        }
+        switch state.currentScreen {
+        case .doctorSummary, .doctorFindingDetail:
+            loadDoctor(force: true)
+        default:
+            state.doctorLoaded = false
+        }
+    }
+
+    /// Closes previews and confirmations that point into a disconnected volume.
+    private func invalidateScreens(dependingOn removedMounts: [String]) {
+        guard !removedMounts.isEmpty else { return }
+        var invalidated = false
+        while screen(state.currentScreen, dependsOnAnyOf: removedMounts) {
+            invalidated = true
+            if !state.popScreen() {
+                state.resetToHome()
+                break
+            }
+        }
+        guard invalidated else { return }
+        state.confirmFocusIndex = 0
+        state.riskFocusIndex = 0
+        state.adoptReviewFocusIndex = 0
+        state.adoptRiskAccepted = false
+        state.batchRiskAccepted = false
+        state.recoveryFocus = 0
+        state.pushScreen(.infoModal(
+            title: "Volume Disconnected",
+            message: "\(removedMounts.joined(separator: ", ")) was disconnected. The open preview used it and is no longer valid; nothing was changed.",
+            guidance: "Reconnect the drive or choose another volume, then review a new preview."
+        ))
+    }
+
+    private func screen(_ screen: TUIScreen, dependsOnAnyOf mounts: [String]) -> Bool {
+        let paths: [String]
+        switch screen {
+        case .dryRunPreview(let plan):
+            paths = [plan.volumePath, plan.sourcePath, plan.destinationPath].compactMap { $0 }
+        case .batchPreview(let preview), .batchConfirmation(let preview):
+            paths = [preview.volumePath].compactMap { $0 }
+                + preview.included.compactMap(\.preview).flatMap { [$0.sourcePath, $0.destinationPath] }
+        case .xcodePreview(let plan), .xcodeConfirmation(let plan):
+            paths = [plan.volumePath]
+        case .undoPreview(_, let report), .undoConfirmation(_, let report):
+            paths = [report.result.sourcePath, report.result.destinationPath]
+        case .adoptReview(let plan):
+            paths = [plan.volumeURL.path, plan.targetURL.path, plan.destinationURL.path]
+        case .recovery(.comparison(let comparison)):
+            paths = [comparison.volumePath]
+        case .recovery(.preview(let plan)):
+            paths = [plan.volumeURL.path, plan.externalURL.path]
+        case .recovery(.rollback(let record)):
+            paths = [record.volumePath, record.externalPath]
+        default:
+            return false
+        }
+        return paths.contains { path in mounts.contains { isPath(path, under: $0) } }
+    }
+
+    private func isPath(_ path: String, under mount: String) -> Bool {
+        let base = mount.hasSuffix("/") ? mount : mount + "/"
+        return path == mount || path.hasPrefix(base)
+    }
+
     // MARK: - Key Handling
 
     public func handleKey(_ key: Key) {
@@ -397,6 +587,10 @@ public final class TUIApp: @unchecked Sendable {
 
         if key == .resize {
             return
+        }
+        if !state.isMutating {
+            state.volumeNotice = nil
+            applyDeferredVolumeChanges()
         }
 
         let isWindowTooSmall = (controller?.getWindowSize().cols ?? 80) < 80 || (controller?.getWindowSize().rows ?? 24) < 24
@@ -2559,6 +2753,10 @@ public final class TUIApp: @unchecked Sendable {
 
         if state.isMutating, let started = state.operationStarted {
             state.operationElapsed = Date().timeIntervalSince(started)
+        }
+        if !state.isMutating, !state.deferredVolumeChanges.isEmpty {
+            applyDeferredVolumeChanges()
+            needsRedraw = true
         }
     }
 }

@@ -136,6 +136,11 @@ public struct TUIState: Equatable {
 
     public var sessionVolumePath: String?
     public var eligibleVolumesList: [StorageVolume] = []
+    /// Latest connect/disconnect message, shown on the status line until the next key press.
+    public var volumeNotice: String?
+    /// Mount paths that changed while a mutation ran; their refresh waits until it stops.
+    public var deferredVolumeChanges: [String] = []
+    public var deferredRemovedVolumes: [String] = []
 
     public var cachedStatus: StatusReport?
     public var cachedScan: ScanReport?

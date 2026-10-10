@@ -232,6 +232,9 @@ public struct TerminalRenderer {
         if let err = state.errorMessage {
             return "\u{001B}[1;31mError: \(err)\u{001B}[0m"
         }
+        if let notice = state.volumeNotice {
+            return "\u{001B}[1;33m⏏ \(notice)\u{001B}[0m"
+        }
         if state.isLoading {
             return "\u{001B}[33m⟳ \(state.loadingMessage ?? "Loading…")\u{001B}[0m"
         }
@@ -909,6 +912,26 @@ public struct TerminalRenderer {
         return lines
     }
 
+    /// Where a move would go right now, so connect/disconnect changes are visible on the list.
+    private func moveDestinationLine(state: TUIState) -> String {
+        guard state.statusLoaded else { return "" }
+        let volumes = state.eligibleVolumesList
+        if let session = state.sessionVolumePath {
+            return "  \u{001B}[2mDestination:\u{001B}[0m \(session) (this session)"
+        }
+        if let def = state.cachedStatus?.defaultVolume {
+            if let mounted = def.mountedPath {
+                return "  \u{001B}[2mDestination:\u{001B}[0m \(def.name) at \(mounted) (default)"
+            }
+            return "  \u{001B}[33m⚠ Default volume \(def.name) is not connected. Connect it or set another default.\u{001B}[0m"
+        }
+        switch volumes.count {
+        case 0: return "  \u{001B}[33m⚠ No external APFS volume connected. Connect one to move apps.\u{001B}[0m"
+        case 1: return "  \u{001B}[2mDestination:\u{001B}[0m \(volumes[0].name) at \(volumes[0].path)"
+        default: return "  \u{001B}[2mDestination:\u{001B}[0m chosen on Enter (\(volumes.count) volumes connected)"
+        }
+    }
+
     private func renderListSearch(query: String, editing: Bool, filter: String, sort: String, count: Int) -> [String] {
         let field = query.isEmpty ? (editing ? "Type an app name" : "Search apps") : query
         let hint = editing ? "▏  [Enter] Apply · [Esc] Clear" : "  [/] Search"
@@ -1099,6 +1122,7 @@ public struct TerminalRenderer {
         lines.append(contentsOf: renderListSearch(query: state.moveSearch, editing: state.isSearching,
                                                    filter: "\(state.moveStatusFilter.label) · \(state.moveSizeFilter.label)",
                                                    sort: state.moveSortByName ? "Name" : "Size", count: candidates.count))
+        lines[0] = moveDestinationLine(state: state)
 
         if candidates.isEmpty {
             lines.append(center("No matching applications. Clear filters with [c] or refresh with [r].", width: width))
@@ -1340,6 +1364,11 @@ public struct TerminalRenderer {
             if let speed = sample.bytesPerSecond {
                 lines.append("  Average growth: \(OutputFormatter.humanBytes(speed))/s · verification follows")
             }
+        }
+
+        if let notice = state.volumeNotice {
+            lines.append("")
+            lines.append(contentsOf: wrapped(["[!] \(notice)"], width: width - 2).map { "  \u{001B}[1;33m\($0)\u{001B}[0m" })
         }
 
         if state.quitDeferred {
