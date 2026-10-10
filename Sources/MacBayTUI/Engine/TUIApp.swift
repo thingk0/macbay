@@ -8,6 +8,8 @@ public final class TUIApp: @unchecked Sendable {
         case purgeScan
         case xcodeEnvironment
         case xcodePlan
+        case history
+        case undoPreview
         case doctor
         case explorer
         case explorerRefresh
@@ -21,6 +23,8 @@ public final class TUIApp: @unchecked Sendable {
                 return "Checking storage status…"
             case .xcodeEnvironment: return "Checking Xcode and destination volumes…"
             case .xcodePlan: return "Preparing Xcode storage preview…"
+            case .history: return "Loading operation history…"
+            case .undoPreview: return "Checking the undo with a dry run…"
             case .purgeScan: return "Scanning purgeable caches…"
             case .scan:
                 return "Scanning applications under /Applications…"
@@ -404,6 +408,22 @@ public final class TUIApp: @unchecked Sendable {
         }
 
         switch state.currentScreen {
+        case .historyList:
+            handleHistoryListKey(key)
+        case .undoPreview(let plan, let report):
+            handleUndoReviewKey(key, plan: plan, report: report, confirming: false)
+        case .undoConfirmation(let plan, let report):
+            handleUndoReviewKey(key, plan: plan, report: report, confirming: true)
+        case .undoResult:
+            switch key {
+            case .up, .char("k"), .char("K"): scrollDetail(by: -1)
+            case .down, .char("j"), .char("J"): scrollDetail(by: 1)
+            case .enter, .escape:
+                state.popScreen()
+                loadHistory(force: true)
+            case .char("q"), .char("Q"): shouldExit = true
+            default: break
+            }
         case .xcodeOptions:
             handleXcodeOptionsKey(key)
         case .xcodePreview(let plan):
@@ -476,7 +496,7 @@ public final class TUIApp: @unchecked Sendable {
         case .up, .char("k"), .char("K"):
             state.homeMenuIndex = max(0, state.homeMenuIndex - 1)
         case .down, .char("j"), .char("J"):
-            state.homeMenuIndex = min(6, state.homeMenuIndex + 1)
+            state.homeMenuIndex = min(7, state.homeMenuIndex + 1)
         case .char("q"), .char("Q"):
             shouldExit = true
         case .char("r"), .char("R"):
@@ -503,12 +523,168 @@ public final class TUIApp: @unchecked Sendable {
                 state.pushScreen(.xcodeOptions)
                 loadXcodeEnvironment()
             case 6:
+                state.historyIndex = 0
+                state.historyScrollOffset = 0
+                state.pushScreen(.historyList)
+                loadHistory(force: true)
+            case 7:
                 shouldExit = true
             default:
                 break
             }
         default:
             break
+        }
+    }
+
+    // MARK: - History and Undo
+
+    public func loadHistory(force: Bool = false) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard force || !state.historyLoaded else { return }
+        state.historyLoading = true
+        enqueueRequest(.history, force: force) { [weak self] in
+            guard let self else { return }
+            let entries = self.service.history(limit: 500)
+            var plan: UndoPlan?
+            var refusal: String?
+            do {
+                plan = try self.service.planUndo()
+            } catch {
+                refusal = error.localizedDescription
+            }
+            self.lock.lock()
+            self.state.historyEntries = entries
+            self.state.undoPlan = plan
+            self.state.undoRefusal = refusal
+            self.state.historyLoaded = true
+            self.state.historyLoading = false
+            self.state.historyIndex = min(self.state.historyIndex, max(0, entries.count - 1))
+            self.state.historyScrollOffset = min(self.state.historyScrollOffset, self.state.historyIndex)
+            self.lock.unlock()
+        }
+    }
+
+    private func handleHistoryListKey(_ key: Key) {
+        switch key {
+        case .escape: state.popScreen()
+        case .char("q"), .char("Q"): shouldExit = true
+        case .char("r"), .char("R"):
+            if !state.historyLoading { loadHistory(force: true) }
+        default:
+            guard state.historyLoaded, !state.historyLoading, !state.isLoading else { return }
+            let capacity = listRowCapacity(for: .historyList)
+            switch key {
+            case .up, .char("k"), .char("K"):
+                state.historyIndex = max(0, state.historyIndex - 1)
+            case .down, .char("j"), .char("J"):
+                state.historyIndex = min(max(0, state.historyEntries.count - 1), state.historyIndex + 1)
+            case .char("u"), .char("U"), .enter:
+                guard let plan = state.undoPlan else {
+                    state.errorMessage = state.undoRefusal ?? "Nothing can be undone."
+                    return
+                }
+                prepareUndoPreview(plan: plan)
+            default: break
+            }
+            state.historyScrollOffset = min(state.historyScrollOffset, state.historyIndex)
+            if state.historyIndex >= state.historyScrollOffset + capacity {
+                state.historyScrollOffset = state.historyIndex - capacity + 1
+            }
+        }
+    }
+
+    private func prepareUndoPreview(plan: UndoPlan) {
+        enqueueRequest(.undoPreview) { [weak self] in
+            guard let self else { return }
+            do {
+                let report = try self.service.undo(plan, volumePath: nil, dryRun: true, progress: nil)
+                self.lock.lock()
+                if self.state.currentScreen == .historyList {
+                    self.state.confirmFocusIndex = 0
+                    self.state.pushScreen(.undoPreview(plan, report))
+                }
+                self.lock.unlock()
+            } catch {
+                self.lock.lock()
+                if self.state.currentScreen == .historyList {
+                    self.state.pushScreen(.undoResult(report: nil, error: error.localizedDescription, attempted: false))
+                }
+                self.lock.unlock()
+            }
+        }
+    }
+
+    private func handleUndoReviewKey(_ key: Key, plan: UndoPlan, report: UndoReport, confirming: Bool) {
+        switch key {
+        case .escape:
+            state.popScreen()
+            state.confirmFocusIndex = 0
+        case .char("q"), .char("Q"): shouldExit = true
+        case .up, .char("k"), .char("K"): scrollDetail(by: -1)
+        case .down, .char("j"), .char("J"): scrollDetail(by: 1)
+        case .left: state.confirmFocusIndex = 0
+        case .right: state.confirmFocusIndex = 1
+        case .tab: state.confirmFocusIndex = 1 - state.confirmFocusIndex
+        case .enter:
+            if state.confirmFocusIndex == 0 {
+                state.popScreen()
+            } else if confirming {
+                executeUndo(plan: plan)
+            } else {
+                state.confirmFocusIndex = 0
+                state.pushScreen(.undoConfirmation(plan, report))
+            }
+        default: break
+        }
+    }
+
+    private func executeUndo(plan: UndoPlan) {
+        guard !state.isMutating, !state.isLoading else { return }
+        state.isMutating = true
+        state.currentStepLabel = "Rechecking history and reversing the operation"
+        state.currentStepStarted = Date()
+        state.operationStarted = Date()
+        state.operationElapsed = 0
+        state.completedSteps = []
+        state.copyProgress = nil
+        state.popScreen()
+        state.popScreen()
+        let target = URL(fileURLWithPath: plan.target).lastPathComponent
+        state.pushScreen(.mutatingProgress(operation: "undo", appName: target.isEmpty ? plan.target : target))
+        workerQueue.async { [weak self] in
+            guard let self else { return }
+            var report: UndoReport?
+            var message: String?
+            var attempted = false
+            do {
+                let current = try self.service.planUndo()
+                guard current == plan else {
+                    throw MacBayError.unsupportedOperation(
+                        "History changed since the preview. Nothing was undone; review the history again."
+                    )
+                }
+                attempted = true
+                report = try self.service.undo(plan, volumePath: nil, dryRun: false) { [weak self] step in
+                    self?.handleProgress(step)
+                }
+            } catch {
+                message = error.localizedDescription
+            }
+            self.lock.lock()
+            self.state.isMutating = false
+            self.state.currentStepLabel = nil
+            self.state.currentScreen = .undoResult(report: report, error: message, attempted: attempted)
+            if self.state.quitDeferred { self.shouldExit = true }
+            self.lock.unlock()
+            self.requestRedraw()
+            if !self.shouldExit {
+                self.loadStatus(force: true)
+                self.loadScan(force: true)
+                self.loadExplorer(force: true)
+                self.loadDoctor(force: true)
+            }
         }
     }
 

@@ -29,6 +29,18 @@ public struct DefaultTUIService: @unchecked Sendable, TUIServiceProtocol {
         service.scanPurge()
     }
 
+    public func history(limit: Int?) -> [HistoryEntry] {
+        service.history(limit: limit)
+    }
+
+    public func planUndo() throws -> UndoPlan {
+        try service.planUndo()
+    }
+
+    public func undo(_ plan: UndoPlan, volumePath: String?, dryRun: Bool, progress: ProgressHandler?) throws -> UndoReport {
+        try service.undo(plan, volumePath: volumePath, dryRun: dryRun, progress: progress)
+    }
+
     public func isXcodeRunning() throws -> Bool { try service.isXcodeRunning() }
 
     public func planXcode(volumePath: String, options: XcodeDoctorOptions) throws -> XcodeStoragePlan {

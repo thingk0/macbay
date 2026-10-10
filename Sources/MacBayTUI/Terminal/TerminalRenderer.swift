@@ -49,7 +49,7 @@ public struct TerminalRenderer {
         switch screen {
         case .appMoveList, .appRestoreList, .explorer:
             return max(4, contentHeight - 13)
-        case .purgeList:
+        case .purgeList, .historyList:
             return max(1, contentHeight - 8)
         case .doctorSummary:
             return max(4, contentHeight - 10)
@@ -63,6 +63,10 @@ public struct TerminalRenderer {
         guard width >= 80, height >= 24 else { return nil }
         let contentHeight = height - 5
         switch state.currentScreen {
+        case .undoPreview(let plan, let report), .undoConfirmation(let plan, let report):
+            return (max(1, contentHeight - 2), undoPreviewBody(plan: plan, report: report, confirming: state.currentScreen == .undoConfirmation(plan, report), width: width).count)
+        case .undoResult(let report, let error, let attempted):
+            return (max(1, contentHeight - 1), undoResultBody(report: report, error: error, attempted: attempted, width: width).count)
         case .xcodePreview(let plan), .xcodeConfirmation(let plan):
             return (max(1, contentHeight - 2), xcodePreviewBody(plan: plan, confirming: state.currentScreen == .xcodeConfirmation(plan), width: width).count)
         case .xcodeResult(let report, let error):
@@ -149,6 +153,10 @@ public struct TerminalRenderer {
     private func renderSubheader(state: TUIState, width: Int) -> String {
         let breadcrumb: String
         switch state.currentScreen {
+        case .historyList: breadcrumb = "Home > History & Undo"
+        case .undoPreview: breadcrumb = "Home > History & Undo > Dry-Run Preview"
+        case .undoConfirmation: breadcrumb = "Home > History & Undo > Confirm Undo"
+        case .undoResult: breadcrumb = "Home > History & Undo > Result"
         case .xcodeOptions: breadcrumb = "Home > Xcode Storage > Options"
         case .xcodePreview: breadcrumb = "Home > Xcode Storage > Preview"
         case .xcodeConfirmation: breadcrumb = "Home > Xcode Storage > Confirm"
@@ -220,6 +228,12 @@ public struct TerminalRenderer {
     private func renderFooter(state: TUIState, width: Int) -> String {
         let text: String
         switch state.currentScreen {
+        case .historyList:
+            text = "[↑/↓] Scroll [Enter/u] Preview undo [r] Refresh [Esc] Back"
+        case .undoPreview, .undoConfirmation:
+            text = "[↑/↓] Scroll [←/→/Tab] Button [Enter] Select [Esc] Cancel"
+        case .undoResult:
+            text = "[↑/↓] Scroll [Enter / Esc] Return to history"
         case .xcodeOptions:
             text = "[↑/↓] Option [←/→/Space] Change [Enter] Preview [r] Refresh [Esc] Back"
         case .xcodePreview, .xcodeConfirmation:
@@ -273,6 +287,18 @@ public struct TerminalRenderer {
 
     private func renderContent(state: TUIState, width: Int, height: Int) -> [String] {
         switch state.currentScreen {
+        case .historyList:
+            return renderHistoryList(state: state, width: width, height: height)
+        case .undoPreview(let plan, let report), .undoConfirmation(let plan, let report):
+            let confirming = state.currentScreen == .undoConfirmation(plan, report)
+            let body = undoPreviewBody(plan: plan, report: report, confirming: confirming, width: width)
+            let label = confirming ? "Confirm & Undo" : "Continue to Confirmation"
+            let cancel = state.confirmFocusIndex == 0 ? "\u{001B}[7;1m [ Cancel ] \u{001B}[0m" : " [ Cancel ] "
+            let execute = state.confirmFocusIndex == 1 ? "\u{001B}[7;1m [ \(label) ] \u{001B}[0m" : " [ \(label) ] "
+            return composeDetail(body: body, footer: [scrollIndicator(bodyCount: body.count, viewport: height - 2, scrollOffset: state.detailScrollOffset), "  \(cancel)   \(execute)"], height: height, scrollOffset: state.detailScrollOffset)
+        case .undoResult(let report, let error, let attempted):
+            let body = undoResultBody(report: report, error: error, attempted: attempted, width: width)
+            return composeDetail(body: body, footer: [scrollIndicator(bodyCount: body.count, viewport: height - 1, scrollOffset: state.detailScrollOffset)], height: height, scrollOffset: state.detailScrollOffset)
         case .xcodeOptions:
             return renderXcodeOptions(state: state, width: width)
         case .xcodePreview(let plan), .xcodeConfirmation(let plan):
@@ -348,6 +374,120 @@ public struct TerminalRenderer {
         case .recovery(let view):
             return renderRecovery(state: state, view: view, width: width, height: height)
         }
+    }
+
+    // MARK: - History and Undo Views
+
+    private func historyTime(_ timestamp: String) -> String {
+        let base = timestamp.replacingOccurrences(of: "T", with: " ")
+        return String(base.prefix(16))
+    }
+
+    private func historyEntryLabel(_ entry: HistoryEntry) -> String {
+        "\(entry.command) \(entry.subject) (\(historyTime(entry.timestamp)))"
+    }
+
+    private func historyUndoExplanation(state: TUIState, selected: HistoryEntry) -> String {
+        if let plan = state.undoPlan {
+            if selected == plan.entry {
+                return "Eligible: this is the latest successful operation. Enter previews the dry run."
+            }
+            if selected.outcome == .failure {
+                return "Not undoable: it failed and changed nothing."
+            }
+            return "Not undoable: only the latest successful operation can be undone."
+        }
+        if selected.outcome == .failure {
+            return "Not undoable: it failed and changed nothing."
+        }
+        if let first = state.historyEntries.first(where: { $0.outcome != .failure }), first == selected {
+            return state.undoRefusal ?? "Not undoable."
+        }
+        return "Not undoable: only the latest successful operation is considered."
+    }
+
+    private func renderHistoryList(state: TUIState, width: Int, height: Int) -> [String] {
+        if state.historyLoading && !state.historyLoaded { return ["Loading operation history…"] }
+        guard state.historyLoaded else { return ["History unavailable. Press r to retry."] }
+        let entries = state.historyEntries
+        var lines = ["Recent operations: \(entries.count) (newest first) · Only the latest dock/move can be undone"]
+        var eligibility: [String]
+        if let plan = state.undoPlan {
+            eligibility = wrapped(["Can undo: \(historyEntryLabel(plan.entry)) by running \(plan.command)"], width: width)
+        } else {
+            eligibility = wrapped(["Cannot undo: \(state.undoRefusal ?? "unknown reason")"], width: width)
+        }
+        if eligibility.count > 3 {
+            eligibility = Array(eligibility.prefix(2)) + [truncate(eligibility[2] + "…", width: width - 2)]
+        }
+        lines += eligibility
+        while lines.count < 4 { lines.append("") }
+        lines.append("")
+        guard !entries.isEmpty else {
+            return lines + ["No recorded operations yet.", "Operations you run with MacBay appear here."]
+        }
+        let capacity = max(1, height - 8)
+        let offset = min(state.historyScrollOffset, max(0, entries.count - capacity))
+        let eligibleIndex = state.undoEntryIndex
+        for index in offset..<min(entries.count, offset + capacity) {
+            let entry = entries[index]
+            let outcome: String
+            switch entry.outcome {
+            case .success: outcome = "✓ success"
+            case .partial: outcome = "~ partial"
+            case .failure: outcome = "✗ failed "
+            }
+            let mark = index == eligibleIndex ? "↩" : " "
+            let label = "\(mark) \(outcome) \(historyTime(entry.timestamp))  \(entry.command)  \(entry.subject)"
+            let clipped = truncate(label, width: width - 4)
+            lines.append(index == state.historyIndex ? "\u{001B}[7;1m> \(clipped)\u{001B}[0m" : "  " + clipped)
+        }
+        while lines.count < 5 + capacity { lines.append("") }
+        lines.append("Entries \(offset + 1)-\(min(entries.count, offset + capacity)) of \(entries.count) · ↩ marks the undoable entry")
+        if entries.indices.contains(state.historyIndex) {
+            let selected = entries[state.historyIndex]
+            lines.append(truncate("Detail: " + (selected.detail ?? "none"), width: width - 2))
+            lines.append(truncate(historyUndoExplanation(state: state, selected: selected), width: width - 2))
+        }
+        return lines
+    }
+
+    private func undoPreviewBody(plan: UndoPlan, report: UndoReport, confirming: Bool, width: Int) -> [String] {
+        var lines = [
+            confirming ? "Confirm undo" : "Undo · Dry-run preview",
+            "Operation: \(historyEntryLabel(plan.entry))",
+            "Reversed with: \(plan.command)",
+            confirming ? "Confirm & Undo changes your files. Execution rechecks history and current state."
+                       : "The dry run changed nothing. Continue to a separate confirmation.",
+            ""
+        ]
+        lines += migrationLines(report.result)
+        return wrapped(lines, width: width)
+    }
+
+    private func migrationLines(_ result: MigrationResult) -> [String] {
+        var lines = ["\(result.operation.capitalized) \(result.name)",
+                     "  From: \(result.sourcePath)", "  To: \(result.destinationPath)",
+                     "  Size: \(OutputFormatter.humanBytes(result.sizeBytes))"]
+        lines += result.messages.map { "  " + $0 }
+        return lines
+    }
+
+    private func undoResultBody(report: UndoReport?, error: String?, attempted: Bool, width: Int) -> [String] {
+        guard let report else {
+            return wrapped([
+                attempted ? "Undo failed" : "Nothing was undone",
+                error ?? "Unknown error",
+                "",
+                attempted ? "Review the history; the operation may be partly applied." : "No files were changed. Return to history and review the current state."
+            ], width: width)
+        }
+        var lines = ["Undo finished",
+                     "Reversed: \(report.entry.command) \(report.entry.subject) (\(historyTime(report.entry.timestamp)))",
+                     "Ran: \(report.command)", ""]
+        lines += migrationLines(report.result)
+        lines += ["", "The undo was recorded in history and cannot itself be undone."]
+        return wrapped(lines, width: width)
     }
 
     // MARK: - Xcode Storage Views
@@ -586,6 +726,7 @@ public struct TerminalRenderer {
             ("Diagnosis", "Run doctor checks on links, records, and volume health"),
             ("Cache Cleanup", "Select and purge disposable caches (purge)"),
             ("Xcode Storage", "Externalize Xcode data and select cleanup options"),
+            ("History & Undo", "Review recent operations and undo the latest dock or move"),
             ("Quit", "Exit MacBay TUI")
         ]
 
