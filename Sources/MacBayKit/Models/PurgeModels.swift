@@ -147,7 +147,10 @@ public struct PurgeAppGroup: Identifiable, Equatable, Sendable {
             dict[item.appName, default: []].append(item)
         }
         return dict.map { PurgeAppGroup(appName: $0.key, items: $0.value) }
-            .sorted { $0.totalSizeBytes > $1.totalSizeBytes }
+            .sorted {
+                if $0.totalSizeBytes != $1.totalSizeBytes { return $0.totalSizeBytes > $1.totalSizeBytes }
+                return $0.appName < $1.appName
+            }
     }
 
     public static func parseSelection(input: String, groupCount: Int) -> Set<Int>? {

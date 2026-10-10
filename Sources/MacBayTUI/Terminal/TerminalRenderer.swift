@@ -49,6 +49,8 @@ public struct TerminalRenderer {
         switch screen {
         case .appMoveList, .appRestoreList, .explorer:
             return max(4, contentHeight - 13)
+        case .purgeList:
+            return max(1, contentHeight - 8)
         case .doctorSummary:
             return max(4, contentHeight - 10)
         default:
@@ -61,6 +63,10 @@ public struct TerminalRenderer {
         guard width >= 80, height >= 24 else { return nil }
         let contentHeight = height - 5
         switch state.currentScreen {
+        case .purgePreview(let preview), .purgeConfirmation(let preview):
+            return (max(1, contentHeight - 2), purgePreviewBody(preview: preview, confirming: state.currentScreen == .purgeConfirmation(preview), width: width).count)
+        case .purgeResult(let report, let error):
+            return (max(1, contentHeight - 1), purgeResultBody(report: report, error: error, width: width).count)
         case .recovery(let view):
             return (max(1, contentHeight - 2), recoveryBody(view, width: width).count)
         case .doctorFindingDetail(let finding):
@@ -139,6 +145,10 @@ public struct TerminalRenderer {
     private func renderSubheader(state: TUIState, width: Int) -> String {
         let breadcrumb: String
         switch state.currentScreen {
+        case .purgeList: breadcrumb = "Home > Cache Cleanup"
+        case .purgePreview: breadcrumb = "Home > Cache Cleanup > Preview"
+        case .purgeConfirmation: breadcrumb = "Home > Cache Cleanup > Confirm Deletion"
+        case .purgeResult: breadcrumb = "Home > Cache Cleanup > Results"
         case .home:
             breadcrumb = "\u{001B}[1mHome\u{001B}[0m"
         case .appMoveList:
@@ -202,6 +212,12 @@ public struct TerminalRenderer {
     private func renderFooter(state: TUIState, width: Int) -> String {
         let text: String
         switch state.currentScreen {
+        case .purgeList:
+            text = "[↑/↓] Move [Space] Toggle [a] All [c] Clear [Enter] Preview [r] Scan [Esc] Back"
+        case .purgePreview, .purgeConfirmation:
+            text = "[↑/↓] Scroll [←/→/Tab] Button [Enter] Select [Esc] Cancel"
+        case .purgeResult:
+            text = "[↑/↓] Scroll [Enter / Esc] Return to cache list"
         case .home:
             text = "\u{001B}[1m[↑/↓/j/k]\u{001B}[0m Navigate  \u{001B}[1m[Enter]\u{001B}[0m Select  \u{001B}[1m[r]\u{001B}[0m Refresh  \u{001B}[1m[q]\u{001B}[0m Quit"
         case .appMoveList, .appRestoreList:
@@ -243,6 +259,18 @@ public struct TerminalRenderer {
 
     private func renderContent(state: TUIState, width: Int, height: Int) -> [String] {
         switch state.currentScreen {
+        case .purgeList:
+            return renderPurgeList(state: state, width: width, height: height)
+        case .purgePreview(let preview), .purgeConfirmation(let preview):
+            let confirming = state.currentScreen == .purgeConfirmation(preview)
+            let body = purgePreviewBody(preview: preview, confirming: confirming, width: width)
+            let cancel = state.confirmFocusIndex == 0 ? "\u{001B}[7;1m [ Cancel ] \u{001B}[0m" : " [ Cancel ] "
+            let label = confirming ? "Confirm & Purge" : "Continue to Confirmation"
+            let proceed = state.confirmFocusIndex == 1 ? "\u{001B}[7;1m [ \(label) ] \u{001B}[0m" : " [ \(label) ] "
+            return composeDetail(body: body, footer: [scrollIndicator(bodyCount: body.count, viewport: height - 2, scrollOffset: state.detailScrollOffset), "  \(cancel)   \(proceed)"], height: height, scrollOffset: state.detailScrollOffset)
+        case .purgeResult(let report, let error):
+            let body = purgeResultBody(report: report, error: error, width: width)
+            return composeDetail(body: body, footer: [scrollIndicator(bodyCount: body.count, viewport: height - 1, scrollOffset: state.detailScrollOffset)], height: height, scrollOffset: state.detailScrollOffset)
         case .home:
             return renderHome(state: state, width: width, height: height)
         case .appMoveList:
@@ -296,6 +324,98 @@ public struct TerminalRenderer {
         }
     }
 
+    // MARK: - Cache Cleanup Views
+
+    private func renderPurgeList(state: TUIState, width: Int, height: Int) -> [String] {
+        let eligible = state.purgeItems.filter { !$0.isRunning }
+        let skipped = state.purgeItems.filter(\.isRunning)
+        let selected = state.selectedPurgeItems
+        var lines = [
+            "Reclaimable: \(OutputFormatter.humanBytes(eligible.reduce(0) { $0 + $1.sizeBytes })) · \(eligible.count) target(s)",
+            "Selected: \(selected.count) · \(OutputFormatter.humanBytes(selected.reduce(0) { $0 + $1.sizeBytes })) (estimated)",
+            "Skipped: \(skipped.count) · running applications; close them and rescan.",
+            ""
+        ]
+        if state.purgeLoading { return lines + ["Scanning purgeable caches…"] }
+        if !state.purgeLoaded { return lines + ["Cache scan unavailable. Press r to retry."] }
+        guard !state.purgeItems.isEmpty else {
+            return lines + ["No purgeable caches found.", "Browsing and cancellation make no changes."]
+        }
+        let rows = state.purgeRows
+        let capacity = max(1, height - 8)
+        let offset = min(state.purgeListScrollOffset, max(0, rows.count - capacity))
+        for index in offset..<min(rows.count, offset + capacity) {
+            let row = rows[index]
+            let ids = Set(row.eligibleItems.map(\.id))
+            let mark = ids.isEmpty ? "-" : (ids.isSubset(of: state.selectedPurgeIDs) ? "x" : (ids.isDisjoint(with: state.selectedPurgeIDs) ? " " : "~"))
+            let label: String
+            switch row {
+            case .application(let group):
+                let bytes = row.eligibleItems.reduce(UInt64(0)) { $0 + $1.sizeBytes }
+                label = "[\(mark)] \(group.appName) · \(OutputFormatter.humanBytes(bytes)) · \(group.items.count) target(s)"
+            case .target(let item):
+                label = "  [\(mark)] \(URL(fileURLWithPath: item.path).lastPathComponent) · \(OutputFormatter.humanBytes(item.sizeBytes))"
+                    + (item.isRunning ? " [Skipped: running]" : "")
+            }
+            lines.append(index == state.purgeListIndex ? "\u{001B}[7;1m> \(label)\u{001B}[0m" : "  " + label)
+        }
+        while lines.count < 4 + capacity { lines.append("") }
+        lines.append("Rows \(offset + 1)-\(min(rows.count, offset + capacity)) of \(rows.count) · Space toggles an app or target")
+        if rows.indices.contains(state.purgeListIndex) {
+            switch rows[state.purgeListIndex] {
+            case .application(let group):
+                lines += ["App: \(group.appName)", "Space selects this app's eligible caches."]
+            case .target(let item):
+                lines += ["Path: \(shortenPath(item.path, maxWidth: width - 6))", "Type: \(item.category.displayName)"]
+            }
+        }
+        lines.append("No files are removed until the separate confirmation.")
+        return lines
+    }
+
+    private func purgePreviewBody(preview: PurgePreview, confirming: Bool, width: Int) -> [String] {
+        var lines = [
+            confirming ? "Confirm cache deletion" : "Selected cache targets · Preview only",
+            "Selected: \(preview.items.count) · Estimated reclaimable: \(OutputFormatter.humanBytes(preview.sizeBytes))",
+            confirming ? "Confirm & Purge removes cache contents. This cannot be undone." : "No files have been removed. Continue to a separate confirmation.",
+            "Running applications are skipped; execution checks their status again.",
+            ""
+        ]
+        for group in PurgeAppGroup.group(items: preview.items) {
+            lines.append("App: \(group.appName) · \(OutputFormatter.humanBytes(group.totalSizeBytes))")
+            for item in group.items {
+                lines.append("  \(item.category.displayName) · \(OutputFormatter.humanBytes(item.sizeBytes))")
+                lines.append("  \(item.path)")
+            }
+        }
+        if !preview.skippedItems.isEmpty {
+            lines += ["", "Skipped: \(preview.skippedItems.count) target(s) belonging to running applications"]
+            for item in preview.skippedItems { lines += ["  \(item.appName): \(item.path)"] }
+        }
+        return wrapped(lines, width: width)
+    }
+
+    private func purgeResultBody(report: PurgeReport?, error: String?, width: Int) -> [String] {
+        guard let report else { return wrapped(["Cache cleanup failed", error ?? "Unknown error"], width: width) }
+        var lines = [
+            report.failedItems.isEmpty ? "Cache cleanup finished" : "Cache cleanup finished with failures",
+            "Reclaimed: \(OutputFormatter.humanBytes(report.totalReclaimedBytes))",
+            "Purged: \(report.purgedItems.count) · Skipped: \(report.skippedItems.count) · Failures: \(report.failedItems.count)",
+            ""
+        ]
+        for item in report.purgedItems {
+            lines += ["Purged: \(item.appName) · \(OutputFormatter.humanBytes(item.sizeBytes))", "  \(item.path)"]
+        }
+        for item in report.skippedItems {
+            lines += ["Skipped: \(item.appName) · application is running", "  \(item.path)"]
+        }
+        for failure in report.failedItems {
+            lines += ["Failed: \(failure.appName)", "  \(failure.path)", "  \(failure.reason)"]
+        }
+        lines += report.messages
+        return wrapped(lines, width: width)
+    }
+
     // MARK: - Home View
 
     private func renderHome(state: TUIState, width: Int, height: Int) -> [String] {
@@ -342,9 +462,16 @@ public struct TerminalRenderer {
             ("Explore Disk Usage", "Browse folders by disk usage and move large items out"),
             ("Restore Application", "Restore external apps back to /Applications (undock)"),
             ("Diagnosis", "Run doctor checks on links, records, and volume health"),
+            ("Cache Cleanup", "Select and purge disposable caches (purge)"),
             ("Quit", "Exit MacBay TUI")
         ]
 
+        // Keep every action visible even with multiple external volumes at 80×24.
+        if lines.count + menuOptions.count > height {
+            lines = Array(lines.prefix(max(0, height - menuOptions.count - 2)))
+            lines.append("")
+            lines.append("\u{001B}[1mActions\u{001B}[0m")
+        }
         for (idx, item) in menuOptions.enumerated() {
             let isSelected = idx == state.homeMenuIndex
             let prefix = isSelected ? "\u{001B}[1;36m ➜ " : "   "
@@ -748,7 +875,7 @@ public struct TerminalRenderer {
     private func renderMutatingProgress(state: TUIState, op: String, app: String, width: Int, height: Int) -> [String] {
         var lines: [String] = []
 
-        lines.append("\u{001B}[1;33mMigration in Progress · \(op.capitalized) \(app)\u{001B}[0m")
+        lines.append("\u{001B}[1;33mOperation in Progress · \(op.capitalized) \(app)\u{001B}[0m")
         lines.append("")
 
         let elapsedStr = String(format: "%.1fs", state.operationElapsed)
@@ -757,7 +884,7 @@ public struct TerminalRenderer {
 
         lines.append("  \u{001B}[1mCompleted Steps:\u{001B}[0m")
         if state.completedSteps.isEmpty {
-            lines.append("    Starting migration…")
+            lines.append("    Starting operation…")
         } else {
             for step in state.completedSteps.suffix(max(1, height - 13)) {
                 let durationStr = String(format: "%.1fs", step.duration)
@@ -779,7 +906,7 @@ public struct TerminalRenderer {
 
         if state.quitDeferred {
             lines.append("")
-            lines.append("  \u{001B}[1;33m[!] Quit requested. MacBay will safely finish the migration before exiting.\u{001B}[0m")
+            lines.append("  \u{001B}[1;33m[!] Quit requested. MacBay will safely finish the operation before exiting.\u{001B}[0m")
         }
 
         return lines

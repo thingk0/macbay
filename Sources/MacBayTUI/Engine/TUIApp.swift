@@ -5,6 +5,7 @@ public final class TUIApp: @unchecked Sendable {
     private enum DataRequest: Hashable {
         case status
         case scan
+        case purgeScan
         case doctor
         case explorer
         case explorerRefresh
@@ -16,6 +17,7 @@ public final class TUIApp: @unchecked Sendable {
             switch self {
             case .status:
                 return "Checking storage status…"
+            case .purgeScan: return "Scanning purgeable caches…"
             case .scan:
                 return "Scanning applications under /Applications…"
             case .explorer:
@@ -398,6 +400,22 @@ public final class TUIApp: @unchecked Sendable {
         }
 
         switch state.currentScreen {
+        case .purgeList:
+            handlePurgeListKey(key)
+        case .purgePreview(let preview):
+            handlePurgeReviewKey(key, preview: preview, confirming: false)
+        case .purgeConfirmation(let preview):
+            handlePurgeReviewKey(key, preview: preview, confirming: true)
+        case .purgeResult:
+            switch key {
+            case .up, .char("k"): scrollDetail(by: -1)
+            case .down, .char("j"): scrollDetail(by: 1)
+            case .enter, .escape:
+                state.popScreen()
+                loadPurge(force: true)
+            case .char("q"), .char("Q"): shouldExit = true
+            default: break
+            }
         case .home:
             handleHomeKey(key)
         case .appMoveList:
@@ -438,7 +456,7 @@ public final class TUIApp: @unchecked Sendable {
         case .up, .char("k"), .char("K"):
             state.homeMenuIndex = max(0, state.homeMenuIndex - 1)
         case .down, .char("j"), .char("J"):
-            state.homeMenuIndex = min(4, state.homeMenuIndex + 1)
+            state.homeMenuIndex = min(5, state.homeMenuIndex + 1)
         case .char("q"), .char("Q"):
             shouldExit = true
         case .char("r"), .char("R"):
@@ -459,12 +477,162 @@ public final class TUIApp: @unchecked Sendable {
                 state.pushScreen(.doctorSummary)
                 if !state.doctorLoaded { loadDoctor() }
             case 4:
+                state.pushScreen(.purgeList)
+                loadPurge(force: true)
+            case 5:
                 shouldExit = true
             default:
                 break
             }
         default:
             break
+        }
+    }
+
+    // MARK: - Cache Cleanup
+
+    public func loadPurge(force: Bool = false) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard force || !state.purgeLoaded else { return }
+        state.purgeLoading = true
+        enqueueRequest(.purgeScan, force: force) { [weak self] in
+            guard let self else { return }
+            defer {
+                self.lock.lock()
+                self.state.purgeLoading = false
+                self.lock.unlock()
+            }
+            do {
+                let items = try self.service.scanPurge()
+                self.lock.lock()
+                self.state.purgeItems = items
+                self.state.purgeLoaded = true
+                self.state.selectedPurgeIDs.formIntersection(Set(items.filter { !$0.isRunning }.map(\.id)))
+                self.state.purgeListIndex = min(self.state.purgeListIndex, max(0, self.state.purgeRows.count - 1))
+                self.state.purgeListScrollOffset = min(self.state.purgeListScrollOffset, self.state.purgeListIndex)
+                self.lock.unlock()
+            } catch {
+                self.lock.lock()
+                self.state.purgeLoaded = false
+                self.state.purgeItems = []
+                self.state.selectedPurgeIDs = []
+                self.lock.unlock()
+                self.recordRequestError(error)
+            }
+        }
+    }
+
+    private func handlePurgeListKey(_ key: Key) {
+        switch key {
+        case .escape: state.popScreen()
+        case .char("q"), .char("Q"): shouldExit = true
+        case .char("r"), .char("R"):
+            if !state.purgeLoading { loadPurge(force: true) }
+        default:
+            guard state.purgeLoaded, !state.purgeLoading else { return }
+            let rows = state.purgeRows
+            let capacity = listRowCapacity(for: .purgeList)
+            switch key {
+            case .up, .char("k"), .char("K"):
+                state.purgeListIndex = max(0, state.purgeListIndex - 1)
+            case .down, .char("j"), .char("J"):
+                state.purgeListIndex = min(max(0, rows.count - 1), state.purgeListIndex + 1)
+            case .char(" "):
+                guard rows.indices.contains(state.purgeListIndex) else { return }
+                let ids = Set(rows[state.purgeListIndex].eligibleItems.map(\.id))
+                if ids.isSubset(of: state.selectedPurgeIDs) {
+                    state.selectedPurgeIDs.subtract(ids)
+                } else {
+                    state.selectedPurgeIDs.formUnion(ids)
+                }
+            case .char("a"), .char("A"):
+                state.selectedPurgeIDs = Set(state.purgeItems.filter { !$0.isRunning }.map(\.id))
+            case .char("c"), .char("C"):
+                state.selectedPurgeIDs = []
+            case .enter:
+                let items = state.selectedPurgeItems
+                guard !items.isEmpty else { return }
+                state.confirmFocusIndex = 0
+                state.pushScreen(.purgePreview(PurgePreview(items: items, skippedItems: state.purgeItems.filter(\.isRunning))))
+            default: break
+            }
+            state.purgeListScrollOffset = min(state.purgeListScrollOffset, state.purgeListIndex)
+            if state.purgeListIndex >= state.purgeListScrollOffset + capacity {
+                state.purgeListScrollOffset = state.purgeListIndex - capacity + 1
+            }
+        }
+    }
+
+    private func handlePurgeReviewKey(_ key: Key, preview: PurgePreview, confirming: Bool) {
+        switch key {
+        case .escape:
+            state.popScreen()
+            state.confirmFocusIndex = 0
+        case .char("q"), .char("Q"): shouldExit = true
+        case .up, .char("k"), .char("K"): scrollDetail(by: -1)
+        case .down, .char("j"), .char("J"): scrollDetail(by: 1)
+        case .left: state.confirmFocusIndex = 0
+        case .right: state.confirmFocusIndex = 1
+        case .tab: state.confirmFocusIndex = 1 - state.confirmFocusIndex
+        case .enter:
+            if state.confirmFocusIndex == 0 {
+                state.popScreen()
+            } else if confirming {
+                executePurge(preview: preview)
+            } else {
+                state.confirmFocusIndex = 0
+                state.pushScreen(.purgeConfirmation(preview))
+            }
+        default: break
+        }
+    }
+
+    private func executePurge(preview: PurgePreview) {
+        guard !state.isMutating, !preview.items.isEmpty else { return }
+        state.isMutating = true
+        state.currentStepLabel = "Removing selected cache contents"
+        state.currentStepStarted = Date()
+        state.operationStarted = Date()
+        state.operationElapsed = 0
+        state.completedSteps = []
+        state.copyProgress = nil
+        state.detailScrollOffset = 0
+        // Replace the review stack with the result's destination before dispatching mutation.
+        state.popScreen()
+        state.popScreen()
+        state.pushScreen(.mutatingProgress(operation: "purge", appName: "Caches"))
+        workerQueue.async { [weak self] in
+            guard let self else { return }
+            let report: PurgeReport?
+            let errorMessage: String?
+            do {
+                let result = try self.service.executePurge(items: preview.items)
+                let skippedIDs = Set(result.skippedItems.map(\.id))
+                report = PurgeReport(
+                    generatedAt: result.generatedAt, dryRun: result.dryRun,
+                    purgedItems: result.purgedItems,
+                    skippedItems: result.skippedItems + preview.skippedItems.filter { !skippedIDs.contains($0.id) },
+                    failedItems: result.failedItems, totalReclaimedBytes: result.totalReclaimedBytes,
+                    messages: result.messages
+                )
+                errorMessage = nil
+            } catch {
+                report = nil
+                errorMessage = error.localizedDescription
+            }
+            self.lock.lock()
+            self.state.isMutating = false
+            self.state.purgeLoaded = false
+            self.state.selectedPurgeIDs = []
+            self.state.currentStepLabel = nil
+            self.state.currentScreen = .purgeResult(report: report, error: errorMessage)
+            if self.state.quitDeferred { self.shouldExit = true }
+            self.lock.unlock()
+            self.requestRedraw()
+            if !self.shouldExit {
+                self.loadStatus(force: true)
+            }
         }
     }
 

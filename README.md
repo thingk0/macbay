@@ -144,6 +144,7 @@ mb ui
 | `q` | Quit MacBay TUI |
 | `r` | Refresh current screen data |
 | `←` / `→` or `Tab` | Change filter values or switch between buttons |
+| `Space` / `a` / `c` | In Cache Cleanup: toggle an app or cache, select all eligible targets, or clear selection |
 
 #### TUI Scope
 
@@ -154,7 +155,8 @@ mb ui
 - **Search and filters**: In move/restore lists, `/` starts a case-insensitive name search; Enter applies it and Esc clears it. `f` opens a filter screen where ↑/↓ selects Status or Size and ←/→ cycles the value. Move status values are All, Safe, Review, Blocked, and Unknown; restore values are All, Managed, Unmanaged, Unconfirmed, and Unresolved. Both screens offer All sizes, ≥ 1 GB, ≥ 5 GB, and ≥ 10 GB; Enter applies the draft and Esc cancels it. Filters combine with name search, remain independent between move and restore, `s` toggles name/size sorting, and `c` clears the search and filters. Existing risk reviews still apply.
 - **Copy progress**: During app move/restore, MacBay samples destination file lengths and shows estimated copied bytes, percentage, and average growth rate. These are estimates, not verified bytes or guaranteed disk throughput: preallocation can lead the actual transfer. The display stays below 100% until the copy stage ends; signature verification is a separate stage. If sampling is unavailable or too expensive, stage and elapsed time remain visible.
 - **Diagnosis to recovery**: From a duplicate-app finding, `p` compares local/external copies and opens a redock or keep-local preview. From an interrupted repair finding, `b` reviews its matching repair journal before rollback. Every mutation requires a separate confirmation (Cancel by default); risk-required repairs explicitly ask for acceptance. `r` returns to refreshed diagnosis. Interrupted adoption is not treated as a repair rollback.
-- Multi-select and Xcode/cache execution in the TUI remain planned; use their CLI commands today.
+- **Cache Cleanup (`purge`)**: Browse disposable caches grouped by application with estimated reclaimable sizes. `Space` toggles an app or individual cache; `a` selects all eligible targets and `c` clears selection. Enter opens a read-only preview, followed by a separate deletion confirmation with Cancel selected by default. Running applications are excluded and checked again at execution. Results show reclaimed bytes, skipped targets, and per-target failures; executed cleanup is recorded in `mb history` using the CLI purge format. The default scope matches `mb purge` (Chromium/Electron caches, update archives, and Homebrew downloads; diagnostic logs excluded). Use the CLI for scope overrides.
+- Xcode and cache externalization execution in the TUI remain planned; use their CLI commands today.
 
 ### 1. Check Storage Health
 

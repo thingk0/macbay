@@ -2,6 +2,8 @@ import Foundation
 import MacBayKit
 
 public protocol TUIServiceProtocol: Sendable {
+    func scanPurge() throws -> [PurgeItem]
+    func executePurge(items: [PurgeItem]) throws -> PurgeReport
     func compareRepair(finding: DoctorFinding) throws -> RepairComparison
     func planRepair(comparison: RepairComparison, action: RepairAction) throws -> RepairPlan
     func executeRepair(plan: RepairPlan, force: Bool) throws -> RepairExecutionResult
@@ -48,6 +50,8 @@ public protocol TUIServiceProtocol: Sendable {
 }
 
 public extension TUIServiceProtocol {
+    func scanPurge() throws -> [PurgeItem] { throw MacBayError.unsupportedOperation("Cache cleanup is unavailable") }
+    func executePurge(items: [PurgeItem]) throws -> PurgeReport { throw MacBayError.unsupportedOperation("Cache cleanup is unavailable") }
     func compareRepair(finding: DoctorFinding) throws -> RepairComparison { throw MacBayError.unsupportedOperation("Repair is unavailable") }
     func planRepair(comparison: RepairComparison, action: RepairAction) throws -> RepairPlan { throw MacBayError.unsupportedOperation("Repair is unavailable") }
     func executeRepair(plan: RepairPlan, force: Bool) throws -> RepairExecutionResult { throw MacBayError.unsupportedOperation("Repair is unavailable") }

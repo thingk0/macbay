@@ -39,6 +39,27 @@ public final class FakeTUIService: @unchecked Sendable, TUIServiceProtocol {
 
     /// Simulates slow storage/service calls so tests can observe in-flight request handling.
     public var artificialDelay: TimeInterval = 0
+    var purgeItemsToReturn: [PurgeItem] = []
+    var purgeReportToReturn: PurgeReport?
+    var purgeScanError: Error?
+    var purgeExecutionError: Error?
+    var purgeScanCalls = 0
+    var purgeExecutions: [[PurgeItem]] = []
+
+    public func scanPurge() throws -> [PurgeItem] {
+        purgeScanCalls += 1
+        simulateWorkload()
+        if let purgeScanError { throw purgeScanError }
+        return purgeItemsToReturn
+    }
+
+    public func executePurge(items: [PurgeItem]) throws -> PurgeReport {
+        purgeExecutions.append(items)
+        simulateWorkload()
+        if let purgeExecutionError { throw purgeExecutionError }
+        return purgeReportToReturn ?? PurgeReport(dryRun: false, purgedItems: items,
+                                                totalReclaimedBytes: items.reduce(0) { $0 + $1.sizeBytes })
+    }
 
     public init(
         status: StatusReport? = nil,

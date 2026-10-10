@@ -3,6 +3,10 @@ import MacBayKit
 
 public enum TUIScreen: Equatable {
     case home
+    case purgeList
+    case purgePreview(PurgePreview)
+    case purgeConfirmation(PurgePreview)
+    case purgeResult(report: PurgeReport?, error: String?)
     case appMoveList
     case appFilter(restoring: Bool)
     case explorer
@@ -124,6 +128,12 @@ public struct TUIState: Equatable {
     public var cachedStatus: StatusReport?
     public var cachedScan: ScanReport?
     public var cachedDoctor: DoctorReport?
+    public var purgeItems: [PurgeItem] = []
+    public var purgeLoaded = false
+    public var purgeLoading = false
+    public var purgeListIndex = 0
+    public var purgeListScrollOffset = 0
+    public var selectedPurgeIDs: Set<String> = []
     public var cachedExplorer: ExplorerScanReport?
     public var explorerLoaded = false
     public var explorerLoading = false
@@ -199,6 +209,16 @@ public struct TUIState: Equatable {
     public var recoveryFocus = 0
 
     public init() {}
+
+    public var purgeRows: [PurgeListRow] {
+        PurgeAppGroup.group(items: purgeItems).flatMap { group in
+            [PurgeListRow.application(group)] + group.items.sorted { $0.path < $1.path }.map(PurgeListRow.target)
+        }
+    }
+
+    public var selectedPurgeItems: [PurgeItem] {
+        purgeItems.filter { !$0.isRunning && selectedPurgeIDs.contains($0.id) }
+    }
 
     public var moveCandidates: [AppCandidate] {
         guard let scan = cachedScan else { return [] }
