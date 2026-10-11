@@ -7,19 +7,70 @@ public struct DefaultTUIService: @unchecked Sendable, TUIServiceProtocol {
     private let volumeManager: VolumeManager
     private let configStore: ConfigStore
     private let applicationDirectories: [URL]?
+    private let historyStore: HistoryStore
 
     public init(
         fileManager: FileManager = .default,
         service: MacBayService? = nil,
         volumeManager: VolumeManager? = nil,
         configStore: ConfigStore? = nil,
-        applicationDirectories: [URL]? = nil
+        applicationDirectories: [URL]? = nil,
+        historyStore: HistoryStore = HistoryStore()
     ) {
         self.fileManager = fileManager
-        self.service = service ?? MacBayService(fileManager: fileManager)
+        self.service = service ?? MacBayService(fileManager: fileManager, historyStore: historyStore)
         self.volumeManager = volumeManager ?? VolumeManager(fileManager: fileManager)
         self.configStore = configStore ?? ConfigStore(fileManager: fileManager)
         self.applicationDirectories = applicationDirectories
+        self.historyStore = historyStore
+    }
+
+    public func scanPurge() throws -> [PurgeItem] {
+        service.scanPurge()
+    }
+
+    public func history(limit: Int?) -> [HistoryEntry] {
+        service.history(limit: limit)
+    }
+
+    public func planUndo() throws -> UndoPlan {
+        try service.planUndo()
+    }
+
+    public func undo(_ plan: UndoPlan, volumePath: String?, dryRun: Bool, progress: ProgressHandler?) throws -> UndoReport {
+        try service.undo(plan, volumePath: volumePath, dryRun: dryRun, progress: progress)
+    }
+
+    public func isXcodeRunning() throws -> Bool { try service.isXcodeRunning() }
+
+    public func planXcode(volumePath: String, options: XcodeDoctorOptions) throws -> XcodeStoragePlan {
+        try service.planXcode(volumePath: volumePath, options: options)
+    }
+
+    public func executeXcode(plan: XcodeStoragePlan) throws -> XcodeDoctorReport {
+        try service.executeXcode(plan: plan)
+    }
+
+    public func executePurge(items: [PurgeItem]) throws -> PurgeReport {
+        guard !items.isEmpty else {
+            return PurgeReport(dryRun: false, purgedItems: [], totalReclaimedBytes: 0)
+        }
+        do {
+            let report = try service.purge(items: items, dryRun: false)
+            historyStore.record(HistoryEntry(
+                command: "purge", subject: "\(report.purgedItems.count) item(s)",
+                outcome: report.failedItems.isEmpty ? .success : .partial,
+                detail: "freed \(OutputFormatter.humanBytes(report.totalReclaimedBytes))"
+                    + (report.failedItems.isEmpty ? "" : ", \(report.failedItems.count) failed")
+            ))
+            return report
+        } catch {
+            historyStore.record(HistoryEntry(
+                command: "purge", subject: "\(items.count) item(s)",
+                outcome: .failure, detail: error.localizedDescription
+            ))
+            throw error
+        }
     }
 
     private func recoveryVolume(finding: DoctorFinding) throws -> String {
@@ -178,6 +229,11 @@ public struct DefaultTUIService: @unchecked Sendable, TUIServiceProtocol {
             return nil
         }
         return volumeURL.standardizedFileURL.path
+    }
+
+    public func availableBytes(atPath path: String) -> UInt64? {
+        guard let info = try? volumeManager.diskInfoProvider.diskInfo(for: path), info.totalBytes > 0 else { return nil }
+        return info.availableBytes
     }
 
     public func planAdopt(

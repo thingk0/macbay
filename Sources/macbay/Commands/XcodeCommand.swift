@@ -26,24 +26,6 @@ struct XcodeCommand: ParsableCommand {
     var force: Bool = false
 
     func run() throws {
-        var actions: [String] = ["externalize Xcode DeviceSupport and Archives", "delete unavailable simulators"]
-        if externalizeDerivedData {
-            actions.append("externalize DerivedData")
-        }
-        if cleanDerivedData || all {
-            actions.append("clean DerivedData")
-        }
-        if cleanCaches || all {
-            actions.append("clean simulator and Xcode caches")
-        }
-
-        let confirmMessage = "MacBay will \(actions.joined(separator: ", "))."
-        try CommandSupport.confirm(
-            confirmMessage,
-            yes: options.yes,
-            dryRun: options.dryRun
-        )
-
         let doctorOptions = XcodeDoctorOptions(
             externalizeDeviceSupport: true,
             externalizeArchives: true,
@@ -51,6 +33,12 @@ struct XcodeCommand: ParsableCommand {
             cleanDerivedData: cleanDerivedData || all,
             cleanCaches: cleanCaches || all,
             force: force
+        )
+        let actions = doctorOptions.actionDescriptions
+        try CommandSupport.confirm(
+            "MacBay will \(actions.joined(separator: ", ")).",
+            yes: options.yes,
+            dryRun: options.dryRun
         )
 
         do {
@@ -62,7 +50,7 @@ struct XcodeCommand: ParsableCommand {
             try CommandSupport.printValue(report, json: options.json) { $0.xcode(report) }
             CommandSupport.recordHistory(
                 command: "xcode", subject: "Xcode data",
-                outcome: .success, detail: actions.joined(separator: ", "),
+                outcome: report.hasFailures ? .partial : .success, detail: actions.joined(separator: ", "),
                 dryRun: options.dryRun
             )
         } catch {

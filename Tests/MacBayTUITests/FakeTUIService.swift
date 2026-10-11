@@ -34,11 +34,109 @@ public final class FakeTUIService: @unchecked Sendable, TUIServiceProtocol {
     public var adoptPlanToReturn: AdoptPlan?
     public var adoptResultToReturn: AdoptExecutionResult?
 
+    /// Per-app failures and drift used by batch tests. `*ErrorsByApp` fail dry runs and real runs.
+    var dockErrorsByApp: [String: Error] = [:]
+    var dockMutateErrorsByApp: [String: Error] = [:]
+    var undockErrorsByApp: [String: Error] = [:]
+    var undockMutateErrorsByApp: [String: Error] = [:]
+    var destinationOverrides: [String: String] = [:]
+    var compatibilityByApp: [String: CompatibilityAssessment] = [:]
+    var availableBytesByPath: [String: UInt64] = [:]
+
+    public func availableBytes(atPath path: String) -> UInt64? {
+        availableBytesByPath[path]
+    }
+
     /// Mount points the fake reports for `volumePath(containing:)`; the longest match wins.
     public var mountedVolumePaths: [String] = []
 
     /// Simulates slow storage/service calls so tests can observe in-flight request handling.
     public var artificialDelay: TimeInterval = 0
+    var historyEntries: [HistoryEntry] = []
+    var undoDryRunError: Error?
+    var undoExecutionError: Error?
+    var undoCalls: [(plan: UndoPlan, dryRun: Bool)] = []
+    var onUndoExecution: (() -> Void)?
+
+    public func history(limit: Int?) -> [HistoryEntry] {
+        simulateWorkload()
+        return limit.map { Array(historyEntries.prefix($0)) } ?? historyEntries
+    }
+
+    public func planUndo() throws -> UndoPlan {
+        try UndoPlanner.plan(from: historyEntries)
+    }
+
+    public func undo(_ plan: UndoPlan, volumePath: String?, dryRun: Bool, progress: ProgressHandler?) throws -> UndoReport {
+        undoCalls.append((plan, dryRun))
+        simulateWorkload()
+        if dryRun {
+            if let undoDryRunError { throw undoDryRunError }
+        } else {
+            if let undoExecutionError { throw undoExecutionError }
+            onUndoExecution?()
+        }
+        let result = MigrationResult(
+            operation: plan.operation.rawValue, name: URL(fileURLWithPath: plan.target).lastPathComponent,
+            sourcePath: "/Volumes/External/MacBay/" + plan.target, destinationPath: "/Applications/" + plan.target,
+            sizeBytes: 2048, dryRun: dryRun, messages: [])
+        return UndoReport(entry: plan.entry, command: plan.command, result: result, dryRun: dryRun)
+    }
+
+    var xcodeRunning = false
+    var xcodeEnvironmentError: Error?
+    var xcodePlanError: Error?
+    var xcodeExecutionError: Error?
+    var xcodePlans: [(String, XcodeDoctorOptions)] = []
+    var xcodeExecutions: [XcodeStoragePlan] = []
+    var xcodeReport = XcodeDoctorReport(simulatorCleanup: CommandResultSummary(command: "delete unavailable simulators", succeeded: true, output: "Done"))
+    var xcodePlanReport = XcodeDoctorReport(simulatorCleanup: CommandResultSummary(command: "delete unavailable simulators", succeeded: true, output: "Dry run"))
+
+    public func isXcodeRunning() throws -> Bool {
+        simulateWorkload()
+        if let xcodeEnvironmentError { throw xcodeEnvironmentError }
+        return xcodeRunning
+    }
+
+    public func planXcode(volumePath: String, options: XcodeDoctorOptions) throws -> XcodeStoragePlan {
+        xcodePlans.append((volumePath, options))
+        simulateWorkload()
+        if let xcodePlanError { throw xcodePlanError }
+        if xcodeRunning && !options.force {
+            throw MacBayError.unsupportedOperation("Xcode is currently running. Quit Xcode or explicitly enable Force.")
+        }
+        return XcodeStoragePlan(volumePath: volumePath, volumeUUID: "test-volume", availableBytes: 1_000_000_000,
+                                requiredBytes: 0, options: options, report: xcodePlanReport,
+                                xcodeRunning: xcodeRunning, unavailableSimulatorIDs: [], fingerprints: [:])
+    }
+
+    public func executeXcode(plan: XcodeStoragePlan) throws -> XcodeDoctorReport {
+        xcodeExecutions.append(plan)
+        simulateWorkload()
+        if let xcodeExecutionError { throw xcodeExecutionError }
+        return xcodeReport
+    }
+    var purgeItemsToReturn: [PurgeItem] = []
+    var purgeReportToReturn: PurgeReport?
+    var purgeScanError: Error?
+    var purgeExecutionError: Error?
+    var purgeScanCalls = 0
+    var purgeExecutions: [[PurgeItem]] = []
+
+    public func scanPurge() throws -> [PurgeItem] {
+        purgeScanCalls += 1
+        simulateWorkload()
+        if let purgeScanError { throw purgeScanError }
+        return purgeItemsToReturn
+    }
+
+    public func executePurge(items: [PurgeItem]) throws -> PurgeReport {
+        purgeExecutions.append(items)
+        simulateWorkload()
+        if let purgeExecutionError { throw purgeExecutionError }
+        return purgeReportToReturn ?? PurgeReport(dryRun: false, purgedItems: items,
+                                                totalReclaimedBytes: items.reduce(0) { $0 + $1.sizeBytes })
+    }
 
     public init(
         status: StatusReport? = nil,
@@ -165,6 +263,8 @@ public final class FakeTUIService: @unchecked Sendable, TUIServiceProtocol {
         if !dryRun, let err = shouldThrowDockOnMutate {
             throw err
         }
+        if let err = dockErrorsByApp[appName] { throw err }
+        if !dryRun, let err = dockMutateErrorsByApp[appName] { throw err }
         progress?(.validating)
         progress?(.copying)
         progress?(.updatingLink)
@@ -172,13 +272,14 @@ public final class FakeTUIService: @unchecked Sendable, TUIServiceProtocol {
             operation: "dock",
             name: appName,
             sourcePath: "/Applications/\(appName)",
-            destinationPath: "\(volumePath ?? "/Volumes/External")/MacBay/Applications/\(appName)",
+            destinationPath: destinationOverrides[appName] ?? "\(volumePath ?? "/Volumes/External")/MacBay/Applications/\(appName)",
             sizeBytes: 1_000_000_000,
             dryRun: dryRun,
             messages: [
                 "Destination available: 50 GB",
                 "Estimated internal space freed: 1 GB"
-            ]
+            ],
+            compatibility: compatibilityByApp[appName]
         )
     }
 
@@ -196,6 +297,8 @@ public final class FakeTUIService: @unchecked Sendable, TUIServiceProtocol {
         if !dryRun, let err = shouldThrowUndockOnMutate {
             throw err
         }
+        if let err = undockErrorsByApp[appName] { throw err }
+        if !dryRun, let err = undockMutateErrorsByApp[appName] { throw err }
         progress?(.validating)
         progress?(.copying)
         progress?(.updatingLink)

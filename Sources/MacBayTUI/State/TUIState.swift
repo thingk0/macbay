@@ -3,12 +3,28 @@ import MacBayKit
 
 public enum TUIScreen: Equatable {
     case home
+    case historyList
+    case undoPreview(UndoPlan, UndoReport)
+    case undoConfirmation(UndoPlan, UndoReport)
+    case undoResult(report: UndoReport?, error: String?, attempted: Bool)
+    case xcodeOptions
+    case xcodePreview(XcodeStoragePlan)
+    case xcodeConfirmation(XcodeStoragePlan)
+    case xcodeResult(report: XcodeDoctorReport?, error: String?)
+    case purgeList
+    case purgePreview(PurgePreview)
+    case purgeConfirmation(PurgePreview)
+    case purgeResult(report: PurgeReport?, error: String?)
     case appMoveList
     case appFilter(restoring: Bool)
     case explorer
     case explorerDetail(entry: ExplorerEntry)
     case riskReview(candidate: AppCandidate)
     case volumeSelect(candidate: AppCandidate, force: Bool)
+    case batchVolumeSelect
+    case batchPreview(BatchPreview)
+    case batchConfirmation(BatchPreview)
+    case batchResult(BatchReport)
     case dryRunPreview(MigrationPlanPreview)
     case mutatingProgress(operation: String, appName: String)
     case operationResult(result: MigrationResult?, error: String?, errorDetails: String?)
@@ -120,10 +136,36 @@ public struct TUIState: Equatable {
 
     public var sessionVolumePath: String?
     public var eligibleVolumesList: [StorageVolume] = []
+    /// Latest connect/disconnect message, shown on the status line until the next key press.
+    public var volumeNotice: String?
+    /// Mount paths that changed while a mutation ran; their refresh waits until it stops.
+    public var deferredVolumeChanges: [String] = []
+    public var deferredRemovedVolumes: [String] = []
 
     public var cachedStatus: StatusReport?
     public var cachedScan: ScanReport?
     public var cachedDoctor: DoctorReport?
+    public var xcodeOptions = XcodeDoctorOptions()
+    public var executedXcodeOptions: XcodeDoctorOptions?
+    public var xcodeVolumes: [StorageVolume] = []
+    public var xcodeVolumePath: String?
+    public var xcodeFieldIndex = 0
+    public var xcodeRunning: Bool?
+    public var xcodeEnvironmentLoaded = false
+    public var xcodeEnvironmentLoading = false
+    public var historyEntries: [HistoryEntry] = []
+    public var historyLoaded = false
+    public var historyLoading = false
+    public var historyIndex = 0
+    public var historyScrollOffset = 0
+    public var undoPlan: UndoPlan?
+    public var undoRefusal: String?
+    public var purgeItems: [PurgeItem] = []
+    public var purgeLoaded = false
+    public var purgeLoading = false
+    public var purgeListIndex = 0
+    public var purgeListScrollOffset = 0
+    public var selectedPurgeIDs: Set<String> = []
     public var cachedExplorer: ExplorerScanReport?
     public var explorerLoaded = false
     public var explorerLoading = false
@@ -168,6 +210,13 @@ public struct TUIState: Equatable {
     public var moveSortByName = false
     public var restoreSortBySize = false
 
+    // Multi-select. Keyed by path so a rescan cannot shift a selection onto another app.
+    public var selectedMovePaths: Set<String> = []
+    public var selectedRestorePaths: Set<String> = []
+    public var batchRiskAccepted = false
+    public var batchTotal = 0
+    public var batchResults: [BatchItemResult] = []
+
     // Compatibility accessors for callers that used the original single-toggle filters.
     public var moveEligibleOnly: Bool {
         get { moveStatusFilter == .safe }
@@ -200,20 +249,80 @@ public struct TUIState: Equatable {
 
     public init() {}
 
+    public var undoEntryIndex: Int? {
+        undoPlan.flatMap { historyEntries.firstIndex(of: $0.entry) }
+    }
+
+    public var purgeRows: [PurgeListRow] {
+        PurgeAppGroup.group(items: purgeItems).flatMap { group in
+            [PurgeListRow.application(group)] + group.items.sorted { $0.path < $1.path }.map(PurgeListRow.target)
+        }
+    }
+
+    public var selectedPurgeItems: [PurgeItem] {
+        purgeItems.filter { !$0.isRunning && selectedPurgeIDs.contains($0.id) }
+    }
+
+    public var allMoveCandidates: [AppCandidate] {
+        cachedScan?.candidates.filter { $0.kind == .application } ?? []
+    }
+
+    private func matchesMoveFilters(_ candidate: AppCandidate) -> Bool {
+        (moveSearch.isEmpty || candidate.name.localizedCaseInsensitiveContains(moveSearch))
+            && moveStatusFilter.matches(candidate)
+            && moveSizeFilter.matches(candidate.sizeBytes)
+    }
+
+    /// Selected applications stay listed even when search or filters would hide them,
+    /// so a batch can never include an entry the user cannot see.
     public var moveCandidates: [AppCandidate] {
-        guard let scan = cachedScan else { return [] }
-        return scan.candidates
-            .filter { $0.kind == .application }
-            .filter { moveSearch.isEmpty || $0.name.localizedCaseInsensitiveContains(moveSearch) }
-            .filter { moveStatusFilter.matches($0) }
-            .filter { moveSizeFilter.matches($0.sizeBytes) }
+        allMoveCandidates
+            .filter { selectedMovePaths.contains($0.path) || matchesMoveFilters($0) }
             .sorted {
                 if !moveSortByName, $0.sizeBytes != $1.sizeBytes { return $0.sizeBytes > $1.sizeBytes }
                 return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
             }
     }
 
+    public var selectedMoveCandidates: [AppCandidate] {
+        moveCandidates.filter { selectedMovePaths.contains($0.path) }
+    }
+
+    /// Selected applications that are listed only because they are selected.
+    public var moveSelectionOutsideFilter: Int {
+        selectedMoveCandidates.filter { !matchesMoveFilters($0) }.count
+    }
+
+    private func matchesRestoreFilters(_ item: RestoreItem) -> Bool {
+        (restoreSearch.isEmpty || item.name.localizedCaseInsensitiveContains(restoreSearch))
+            && restoreStatusFilter.matches(item)
+            && restoreSizeFilter.matches(item.sizeBytes)
+    }
+
     public var restoreItems: [RestoreItem] {
+        allRestoreItems
+            .filter { selectedRestorePaths.contains($0.sourcePath) || matchesRestoreFilters($0) }
+            .sorted {
+                if restoreSortBySize, $0.sizeBytes != $1.sizeBytes { return ($0.sizeBytes ?? 0) > ($1.sizeBytes ?? 0) }
+                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+    }
+
+    public var selectedRestoreItems: [RestoreItem] {
+        restoreItems.filter { selectedRestorePaths.contains($0.sourcePath) }
+    }
+
+    public var restoreSelectionOutsideFilter: Int {
+        selectedRestoreItems.filter { !matchesRestoreFilters($0) }.count
+    }
+
+    /// Drops selections whose application disappeared or can no longer be part of a batch.
+    public mutating func pruneBatchSelections() {
+        selectedMovePaths.formIntersection(allMoveCandidates.filter { $0.compatibility?.grade != .blocked }.map(\.path))
+        selectedRestorePaths.formIntersection(allRestoreItems.filter(\.isRestorable).map(\.sourcePath))
+    }
+
+    public var allRestoreItems: [RestoreItem] {
         var items: [RestoreItem] = []
         var seenSourcePaths = Set<String>()
 
@@ -262,13 +371,7 @@ public struct TUIState: Equatable {
                 }
             }
         }
-        return items.filter { restoreSearch.isEmpty || $0.name.localizedCaseInsensitiveContains(restoreSearch) }
-            .filter { restoreStatusFilter.matches($0) }
-            .filter { restoreSizeFilter.matches($0.sizeBytes) }
-            .sorted {
-                if restoreSortBySize, $0.sizeBytes != $1.sizeBytes { return ($0.sizeBytes ?? 0) > ($1.sizeBytes ?? 0) }
-                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-            }
+        return items
     }
 
     public var doctorFindings: [DoctorFinding] {

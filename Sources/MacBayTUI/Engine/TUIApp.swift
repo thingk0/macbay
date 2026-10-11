@@ -5,6 +5,11 @@ public final class TUIApp: @unchecked Sendable {
     private enum DataRequest: Hashable {
         case status
         case scan
+        case purgeScan
+        case xcodeEnvironment
+        case xcodePlan
+        case history
+        case undoPreview
         case doctor
         case explorer
         case explorerRefresh
@@ -16,6 +21,11 @@ public final class TUIApp: @unchecked Sendable {
             switch self {
             case .status:
                 return "Checking storage status…"
+            case .xcodeEnvironment: return "Checking Xcode and destination volumes…"
+            case .xcodePlan: return "Preparing Xcode storage preview…"
+            case .history: return "Loading operation history…"
+            case .undoPreview: return "Checking the undo with a dry run…"
+            case .purgeScan: return "Scanning purgeable caches…"
             case .scan:
                 return "Scanning applications under /Applications…"
             case .explorer:
@@ -42,6 +52,11 @@ public final class TUIApp: @unchecked Sendable {
     private var explorerMonitor: ExplorerChangeMonitor?
     private var explorerMonitorRoot: String?
     private var explorerMonitorSubscription: UUID?
+    private let volumeQueue = DispatchQueue(label: "macbay.tui.volumes", qos: .utility)
+    private var volumeMonitor: VolumeChangeMonitor?
+    private var volumeMonitorSubscription: UUID?
+    // Guarded by `lock`: at most one volume check waits to run, however many events arrive.
+    private var volumeCheckScheduled = false
 
     // Guarded by `lock`: at most one request per kind is in flight, the rest wait their turn.
     private var requestsInFlight: Set<DataRequest> = []
@@ -73,6 +88,8 @@ public final class TUIApp: @unchecked Sendable {
 
         // Initial load
         loadInitialData()
+        startVolumeMonitor()
+        defer { stopVolumeMonitor() }
 
         var lastTimerTick = Date()
 
@@ -124,6 +141,22 @@ public final class TUIApp: @unchecked Sendable {
         return true
     }
 
+    private func startVolumeMonitor() {
+        let monitor = VolumeChangeMonitor()
+        volumeMonitor = monitor
+        volumeMonitorSubscription = monitor.subscribe { [weak self] in
+            self?.applyVolumeChangeEvent()
+        }
+    }
+
+    private func stopVolumeMonitor() {
+        if let monitor = volumeMonitor, let subscription = volumeMonitorSubscription {
+            monitor.unsubscribe(subscription)
+        }
+        volumeMonitor = nil
+        volumeMonitorSubscription = nil
+    }
+
     public func render() {
         guard let controller else { return }
         let size = controller.getWindowSize()
@@ -164,6 +197,7 @@ public final class TUIApp: @unchecked Sendable {
                 self.state.cachedStatus = report
                 self.state.eligibleVolumesList = volumes
                 self.state.statusLoaded = true
+                self.state.pruneBatchSelections()
                 self.lock.unlock()
             } catch {
                 self.recordRequestError(error)
@@ -183,6 +217,7 @@ public final class TUIApp: @unchecked Sendable {
                 self.lock.lock()
                 self.state.cachedScan = report
                 self.state.scanLoaded = true
+                self.state.pruneBatchSelections()
                 self.state.moveListIndex = min(self.state.moveListIndex, max(0, self.state.moveCandidates.count - 1))
                 self.state.moveListScrollOffset = min(self.state.moveListScrollOffset, self.state.moveListIndex)
                 self.state.restoreListIndex = min(self.state.restoreListIndex, max(0, self.state.restoreItems.count - 1))
@@ -367,6 +402,173 @@ public final class TUIApp: @unchecked Sendable {
         lock.unlock()
     }
 
+    // MARK: - Volume Changes
+    //
+    // Mount, unmount, and rename notifications only re-read volume state. They never start or
+    // resume a storage mutation: at most they refresh read-only data and close previews whose
+    // volume disappeared, so the user must review a new preview before anything changes.
+
+    /// Handles a volume notification. Safe to call from any thread and as often as events arrive.
+    public func applyVolumeChangeEvent() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !volumeCheckScheduled else { return }
+        volumeCheckScheduled = true
+        volumeQueue.async { [weak self] in self?.checkVolumes() }
+    }
+
+    /// Blocks until scheduled volume checks have run. For tests.
+    func waitForVolumeChecks() {
+        volumeQueue.sync {}
+    }
+
+    private func checkVolumes() {
+        lock.lock()
+        // Cleared before reading so an event during the read schedules another check.
+        volumeCheckScheduled = false
+        let ready = state.statusLoaded
+        lock.unlock()
+        // Until the first status load finishes there is no baseline; that load reads volumes itself.
+        guard ready else { return }
+
+        let volumes: [StorageVolume]
+        do {
+            volumes = try service.eligibleVolumes()
+        } catch {
+            recordRequestError(error)
+            requestRedraw()
+            return
+        }
+
+        lock.lock()
+        defer { lock.unlock() }
+        let previous = state.eligibleVolumesList
+        func same(_ a: StorageVolume, _ b: StorageVolume) -> Bool { a.path == b.path && a.name == b.name }
+        let removed = previous.filter { old in !volumes.contains { same($0, old) } }
+        let added = volumes.filter { new in !previous.contains { same($0, new) } }
+        // Duplicate notifications and free-space drift end here without a redraw.
+        guard !removed.isEmpty || !added.isEmpty else { return }
+
+        state.eligibleVolumesList = volumes
+        state.xcodeVolumes = volumes
+        state.volumeSelectIndex = min(state.volumeSelectIndex, max(0, volumes.count - 1))
+        let mounted = Set(volumes.map(\.path))
+        var notice = describeVolumeChange(removed: removed, added: added)
+        if let session = state.sessionVolumePath, !mounted.contains(session) {
+            state.sessionVolumePath = nil
+            notice += " Choose a destination again."
+        }
+        if let xcode = state.xcodeVolumePath, !mounted.contains(xcode) {
+            state.xcodeVolumePath = nil
+        }
+
+        state.deferredVolumeChanges += (removed + added).map(\.path)
+        state.deferredRemovedVolumes += removed.map(\.path)
+        if state.isMutating {
+            if !removed.isEmpty {
+                notice += " The running operation reports its own result; status refreshes after it stops."
+            }
+        } else {
+            applyDeferredVolumeChanges()
+        }
+        state.volumeNotice = notice
+        needsRedraw = true
+    }
+
+    private func describeVolumeChange(removed: [StorageVolume], added: [StorageVolume]) -> String {
+        func names(_ volumes: [StorageVolume]) -> String {
+            volumes.map { "\($0.name) (\($0.path))" }.joined(separator: ", ")
+        }
+        if removed.count == 1, added.count == 1, removed[0].name == added[0].name {
+            return "Volume \(added[0].name) is now mounted at \(added[0].path)."
+        }
+        var parts: [String] = []
+        if !removed.isEmpty { parts.append("Disconnected: \(names(removed)).") }
+        if !added.isEmpty { parts.append("Connected: \(names(added)).") }
+        return parts.joined(separator: " ")
+    }
+
+    /// Applies volume changes recorded while no mutation runs. Callers hold `lock`.
+    private func applyDeferredVolumeChanges() {
+        guard !state.isMutating, !state.deferredVolumeChanges.isEmpty else { return }
+        let changed = state.deferredVolumeChanges
+        let removed = state.deferredRemovedVolumes
+        state.deferredVolumeChanges = []
+        state.deferredRemovedVolumes = []
+
+        invalidateScreens(dependingOn: removed)
+
+        loadStatus(force: true)
+        // Restore entries resolve through links into these volumes; other changes leave the scan valid.
+        let linkedPaths = (state.cachedScan?.externalApplications.map(\.destinationPath) ?? [])
+            + (state.cachedScan?.unresolvedApplicationLinks.map(\.destinationPath) ?? [])
+        if linkedPaths.contains(where: { path in changed.contains { isPath(path, under: $0) } }) {
+            loadScan(force: true)
+        }
+        switch state.currentScreen {
+        case .doctorSummary, .doctorFindingDetail:
+            loadDoctor(force: true)
+        default:
+            state.doctorLoaded = false
+        }
+    }
+
+    /// Closes previews and confirmations that point into a disconnected volume.
+    private func invalidateScreens(dependingOn removedMounts: [String]) {
+        guard !removedMounts.isEmpty else { return }
+        var invalidated = false
+        while screen(state.currentScreen, dependsOnAnyOf: removedMounts) {
+            invalidated = true
+            if !state.popScreen() {
+                state.resetToHome()
+                break
+            }
+        }
+        guard invalidated else { return }
+        state.confirmFocusIndex = 0
+        state.riskFocusIndex = 0
+        state.adoptReviewFocusIndex = 0
+        state.adoptRiskAccepted = false
+        state.batchRiskAccepted = false
+        state.recoveryFocus = 0
+        state.pushScreen(.infoModal(
+            title: "Volume Disconnected",
+            message: "\(removedMounts.joined(separator: ", ")) was disconnected. The open preview used it and is no longer valid; nothing was changed.",
+            guidance: "Reconnect the drive or choose another volume, then review a new preview."
+        ))
+    }
+
+    private func screen(_ screen: TUIScreen, dependsOnAnyOf mounts: [String]) -> Bool {
+        let paths: [String]
+        switch screen {
+        case .dryRunPreview(let plan):
+            paths = [plan.volumePath, plan.sourcePath, plan.destinationPath].compactMap { $0 }
+        case .batchPreview(let preview), .batchConfirmation(let preview):
+            paths = [preview.volumePath].compactMap { $0 }
+                + preview.included.compactMap(\.preview).flatMap { [$0.sourcePath, $0.destinationPath] }
+        case .xcodePreview(let plan), .xcodeConfirmation(let plan):
+            paths = [plan.volumePath]
+        case .undoPreview(_, let report), .undoConfirmation(_, let report):
+            paths = [report.result.sourcePath, report.result.destinationPath]
+        case .adoptReview(let plan):
+            paths = [plan.volumeURL.path, plan.targetURL.path, plan.destinationURL.path]
+        case .recovery(.comparison(let comparison)):
+            paths = [comparison.volumePath]
+        case .recovery(.preview(let plan)):
+            paths = [plan.volumeURL.path, plan.externalURL.path]
+        case .recovery(.rollback(let record)):
+            paths = [record.volumePath, record.externalPath]
+        default:
+            return false
+        }
+        return paths.contains { path in mounts.contains { isPath(path, under: $0) } }
+    }
+
+    private func isPath(_ path: String, under mount: String) -> Bool {
+        let base = mount.hasSuffix("/") ? mount : mount + "/"
+        return path == mount || path.hasPrefix(base)
+    }
+
     // MARK: - Key Handling
 
     public func handleKey(_ key: Key) {
@@ -386,6 +588,10 @@ public final class TUIApp: @unchecked Sendable {
         if key == .resize {
             return
         }
+        if !state.isMutating {
+            state.volumeNotice = nil
+            applyDeferredVolumeChanges()
+        }
 
         let isWindowTooSmall = (controller?.getWindowSize().cols ?? 80) < 80 || (controller?.getWindowSize().rows ?? 24) < 24
         if isWindowTooSmall && !state.isSearching && (key == .char("q") || key == .char("Q")) {
@@ -398,6 +604,54 @@ public final class TUIApp: @unchecked Sendable {
         }
 
         switch state.currentScreen {
+        case .historyList:
+            handleHistoryListKey(key)
+        case .undoPreview(let plan, let report):
+            handleUndoReviewKey(key, plan: plan, report: report, confirming: false)
+        case .undoConfirmation(let plan, let report):
+            handleUndoReviewKey(key, plan: plan, report: report, confirming: true)
+        case .undoResult:
+            switch key {
+            case .up, .char("k"), .char("K"): scrollDetail(by: -1)
+            case .down, .char("j"), .char("J"): scrollDetail(by: 1)
+            case .enter, .escape:
+                state.popScreen()
+                loadHistory(force: true)
+            case .char("q"), .char("Q"): shouldExit = true
+            default: break
+            }
+        case .xcodeOptions:
+            handleXcodeOptionsKey(key)
+        case .xcodePreview(let plan):
+            handleXcodeReviewKey(key, plan: plan, confirming: false)
+        case .xcodeConfirmation(let plan):
+            handleXcodeReviewKey(key, plan: plan, confirming: true)
+        case .xcodeResult:
+            switch key {
+            case .up, .char("k"), .char("K"): scrollDetail(by: -1)
+            case .down, .char("j"), .char("J"): scrollDetail(by: 1)
+            case .enter, .escape:
+                state.popScreen()
+                loadXcodeEnvironment()
+            case .char("q"), .char("Q"): shouldExit = true
+            default: break
+            }
+        case .purgeList:
+            handlePurgeListKey(key)
+        case .purgePreview(let preview):
+            handlePurgeReviewKey(key, preview: preview, confirming: false)
+        case .purgeConfirmation(let preview):
+            handlePurgeReviewKey(key, preview: preview, confirming: true)
+        case .purgeResult:
+            switch key {
+            case .up, .char("k"): scrollDetail(by: -1)
+            case .down, .char("j"): scrollDetail(by: 1)
+            case .enter, .escape:
+                state.popScreen()
+                loadPurge(force: true)
+            case .char("q"), .char("Q"): shouldExit = true
+            default: break
+            }
         case .home:
             handleHomeKey(key)
         case .appMoveList:
@@ -410,6 +664,14 @@ public final class TUIApp: @unchecked Sendable {
             handleRiskReviewKey(key, candidate: candidate)
         case .volumeSelect(let candidate, let force):
             handleVolumeSelectKey(key, candidate: candidate, force: force)
+        case .batchVolumeSelect:
+            handleBatchVolumeSelectKey(key)
+        case .batchPreview(let preview):
+            handleBatchReviewKey(key, preview: preview, confirming: false)
+        case .batchConfirmation(let preview):
+            handleBatchReviewKey(key, preview: preview, confirming: true)
+        case .batchResult:
+            handleBatchResultKey(key)
         case .dryRunPreview(let plan):
             handleDryRunPreviewKey(key, plan: plan)
         case .mutatingProgress:
@@ -438,7 +700,7 @@ public final class TUIApp: @unchecked Sendable {
         case .up, .char("k"), .char("K"):
             state.homeMenuIndex = max(0, state.homeMenuIndex - 1)
         case .down, .char("j"), .char("J"):
-            state.homeMenuIndex = min(4, state.homeMenuIndex + 1)
+            state.homeMenuIndex = min(7, state.homeMenuIndex + 1)
         case .char("q"), .char("Q"):
             shouldExit = true
         case .char("r"), .char("R"):
@@ -459,12 +721,476 @@ public final class TUIApp: @unchecked Sendable {
                 state.pushScreen(.doctorSummary)
                 if !state.doctorLoaded { loadDoctor() }
             case 4:
+                state.pushScreen(.purgeList)
+                loadPurge(force: true)
+            case 5:
+                state.pushScreen(.xcodeOptions)
+                loadXcodeEnvironment()
+            case 6:
+                state.historyIndex = 0
+                state.historyScrollOffset = 0
+                state.pushScreen(.historyList)
+                loadHistory(force: true)
+            case 7:
                 shouldExit = true
             default:
                 break
             }
         default:
             break
+        }
+    }
+
+    // MARK: - History and Undo
+
+    public func loadHistory(force: Bool = false) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard force || !state.historyLoaded else { return }
+        state.historyLoading = true
+        enqueueRequest(.history, force: force) { [weak self] in
+            guard let self else { return }
+            let entries = self.service.history(limit: 500)
+            var plan: UndoPlan?
+            var refusal: String?
+            do {
+                plan = try self.service.planUndo()
+            } catch {
+                refusal = error.localizedDescription
+            }
+            self.lock.lock()
+            self.state.historyEntries = entries
+            self.state.undoPlan = plan
+            self.state.undoRefusal = refusal
+            self.state.historyLoaded = true
+            self.state.historyLoading = false
+            self.state.historyIndex = min(self.state.historyIndex, max(0, entries.count - 1))
+            self.state.historyScrollOffset = min(self.state.historyScrollOffset, self.state.historyIndex)
+            self.lock.unlock()
+        }
+    }
+
+    private func handleHistoryListKey(_ key: Key) {
+        switch key {
+        case .escape: state.popScreen()
+        case .char("q"), .char("Q"): shouldExit = true
+        case .char("r"), .char("R"):
+            if !state.historyLoading { loadHistory(force: true) }
+        default:
+            guard state.historyLoaded, !state.historyLoading, !state.isLoading else { return }
+            let capacity = listRowCapacity(for: .historyList)
+            switch key {
+            case .up, .char("k"), .char("K"):
+                state.historyIndex = max(0, state.historyIndex - 1)
+            case .down, .char("j"), .char("J"):
+                state.historyIndex = min(max(0, state.historyEntries.count - 1), state.historyIndex + 1)
+            case .char("u"), .char("U"), .enter:
+                guard let plan = state.undoPlan else {
+                    state.errorMessage = state.undoRefusal ?? "Nothing can be undone."
+                    return
+                }
+                prepareUndoPreview(plan: plan)
+            default: break
+            }
+            state.historyScrollOffset = min(state.historyScrollOffset, state.historyIndex)
+            if state.historyIndex >= state.historyScrollOffset + capacity {
+                state.historyScrollOffset = state.historyIndex - capacity + 1
+            }
+        }
+    }
+
+    private func prepareUndoPreview(plan: UndoPlan) {
+        enqueueRequest(.undoPreview) { [weak self] in
+            guard let self else { return }
+            do {
+                let report = try self.service.undo(plan, volumePath: nil, dryRun: true, progress: nil)
+                self.lock.lock()
+                if self.state.currentScreen == .historyList {
+                    self.state.confirmFocusIndex = 0
+                    self.state.pushScreen(.undoPreview(plan, report))
+                }
+                self.lock.unlock()
+            } catch {
+                self.lock.lock()
+                if self.state.currentScreen == .historyList {
+                    self.state.pushScreen(.undoResult(report: nil, error: error.localizedDescription, attempted: false))
+                }
+                self.lock.unlock()
+            }
+        }
+    }
+
+    private func handleUndoReviewKey(_ key: Key, plan: UndoPlan, report: UndoReport, confirming: Bool) {
+        switch key {
+        case .escape:
+            state.popScreen()
+            state.confirmFocusIndex = 0
+        case .char("q"), .char("Q"): shouldExit = true
+        case .up, .char("k"), .char("K"): scrollDetail(by: -1)
+        case .down, .char("j"), .char("J"): scrollDetail(by: 1)
+        case .left: state.confirmFocusIndex = 0
+        case .right: state.confirmFocusIndex = 1
+        case .tab: state.confirmFocusIndex = 1 - state.confirmFocusIndex
+        case .enter:
+            if state.confirmFocusIndex == 0 {
+                state.popScreen()
+            } else if confirming {
+                executeUndo(plan: plan)
+            } else {
+                state.confirmFocusIndex = 0
+                state.pushScreen(.undoConfirmation(plan, report))
+            }
+        default: break
+        }
+    }
+
+    private func executeUndo(plan: UndoPlan) {
+        guard !state.isMutating, !state.isLoading else { return }
+        state.isMutating = true
+        state.currentStepLabel = "Rechecking history and reversing the operation"
+        state.currentStepStarted = Date()
+        state.operationStarted = Date()
+        state.operationElapsed = 0
+        state.completedSteps = []
+        state.copyProgress = nil
+        state.popScreen()
+        state.popScreen()
+        let target = URL(fileURLWithPath: plan.target).lastPathComponent
+        state.pushScreen(.mutatingProgress(operation: "undo", appName: target.isEmpty ? plan.target : target))
+        workerQueue.async { [weak self] in
+            guard let self else { return }
+            var report: UndoReport?
+            var message: String?
+            var attempted = false
+            do {
+                let current = try self.service.planUndo()
+                guard current == plan else {
+                    throw MacBayError.unsupportedOperation(
+                        "History changed since the preview. Nothing was undone; review the history again."
+                    )
+                }
+                attempted = true
+                report = try self.service.undo(plan, volumePath: nil, dryRun: false) { [weak self] step in
+                    self?.handleProgress(step)
+                }
+            } catch {
+                message = error.localizedDescription
+            }
+            self.lock.lock()
+            self.state.isMutating = false
+            self.state.currentStepLabel = nil
+            self.state.currentScreen = .undoResult(report: report, error: message, attempted: attempted)
+            if self.state.quitDeferred { self.shouldExit = true }
+            self.lock.unlock()
+            self.requestRedraw()
+            if !self.shouldExit {
+                self.loadStatus(force: true)
+                self.loadScan(force: true)
+                self.loadExplorer(force: true)
+                self.loadDoctor(force: true)
+            }
+        }
+    }
+
+    // MARK: - Xcode Storage
+
+    public func loadXcodeEnvironment() {
+        lock.lock()
+        defer { lock.unlock() }
+        state.xcodeEnvironmentLoading = true
+        state.xcodeEnvironmentLoaded = false
+        enqueueRequest(.xcodeEnvironment) { [weak self] in
+            guard let self else { return }
+            do {
+                let volumes = try self.service.eligibleVolumes()
+                let defaultVolume = try self.service.defaultVolume()
+                let running = try self.service.isXcodeRunning()
+                self.lock.lock()
+                self.state.xcodeVolumes = volumes
+                self.state.xcodeRunning = running
+                if self.state.xcodeVolumePath == nil {
+                    self.state.xcodeVolumePath = self.state.sessionVolumePath ?? defaultVolume?.path
+                        ?? (volumes.count == 1 ? volumes.first?.path : nil)
+                }
+                self.state.xcodeEnvironmentLoaded = true
+                self.state.xcodeEnvironmentLoading = false
+                self.lock.unlock()
+            } catch {
+                self.lock.lock()
+                self.state.xcodeEnvironmentLoading = false
+                self.state.xcodeRunning = nil
+                self.lock.unlock()
+                self.recordRequestError(error)
+            }
+        }
+    }
+
+    private func handleXcodeOptionsKey(_ key: Key) {
+        switch key {
+        case .escape: state.popScreen()
+        case .char("q"), .char("Q"): shouldExit = true
+        case .char("r"), .char("R"):
+            if !state.xcodeEnvironmentLoading { loadXcodeEnvironment() }
+        default:
+            guard state.xcodeEnvironmentLoaded, !state.isLoading else { return }
+            switch key {
+            case .up, .char("k"), .char("K"):
+                state.xcodeFieldIndex = max(0, state.xcodeFieldIndex - 1)
+            case .down, .char("j"), .char("J"):
+                state.xcodeFieldIndex = min(4, state.xcodeFieldIndex + 1)
+            case .left, .right, .char(" "):
+                switch state.xcodeFieldIndex {
+                case 0:
+                    let paths = state.xcodeVolumes.map(\.path)
+                    guard !paths.isEmpty else { return }
+                    if let index = paths.firstIndex(of: state.xcodeVolumePath ?? "") {
+                        let delta = key == .left ? -1 : 1
+                        state.xcodeVolumePath = paths[(index + delta + paths.count) % paths.count]
+                    } else {
+                        state.xcodeVolumePath = paths.first
+                    }
+                case 1: state.xcodeOptions.externalizeDerivedData.toggle()
+                case 2: state.xcodeOptions.cleanDerivedData.toggle()
+                case 3: state.xcodeOptions.cleanCaches.toggle()
+                case 4: state.xcodeOptions.force.toggle()
+                default: break
+                }
+                state.errorMessage = nil
+            case .enter:
+                guard let path = state.xcodeVolumePath,
+                      state.xcodeVolumes.contains(where: { $0.path == path }) else {
+                    state.errorMessage = "Destination volume unavailable. Connect an external APFS drive, refresh, and select it."
+                    return
+                }
+                prepareXcodePreview(volumePath: path, options: state.xcodeOptions)
+            default: break
+            }
+        }
+    }
+
+    private func prepareXcodePreview(volumePath: String, options: XcodeDoctorOptions) {
+        enqueueRequest(.xcodePlan) { [weak self] in
+            guard let self else { return }
+            do {
+                let plan = try self.service.planXcode(volumePath: volumePath, options: options)
+                self.lock.lock()
+                if self.state.currentScreen == .xcodeOptions {
+                    self.state.confirmFocusIndex = 0
+                    self.state.pushScreen(.xcodePreview(plan))
+                }
+                self.lock.unlock()
+            } catch {
+                self.recordRequestError(error)
+            }
+        }
+    }
+
+    private func handleXcodeReviewKey(_ key: Key, plan: XcodeStoragePlan, confirming: Bool) {
+        switch key {
+        case .escape:
+            state.popScreen()
+            state.confirmFocusIndex = 0
+        case .char("q"), .char("Q"): shouldExit = true
+        case .up, .char("k"), .char("K"): scrollDetail(by: -1)
+        case .down, .char("j"), .char("J"): scrollDetail(by: 1)
+        case .left: state.confirmFocusIndex = 0
+        case .right: state.confirmFocusIndex = 1
+        case .tab: state.confirmFocusIndex = 1 - state.confirmFocusIndex
+        case .enter:
+            if state.confirmFocusIndex == 0 {
+                state.popScreen()
+            } else if confirming {
+                executeXcode(plan: plan)
+            } else {
+                state.confirmFocusIndex = 0
+                state.pushScreen(.xcodeConfirmation(plan))
+            }
+        default: break
+        }
+    }
+
+    private func executeXcode(plan: XcodeStoragePlan) {
+        guard !state.isMutating, !state.isLoading else { return }
+        state.executedXcodeOptions = plan.options
+        state.isMutating = true
+        state.currentStepLabel = "Revalidating the Xcode preview and executing selected actions"
+        state.currentStepStarted = Date()
+        state.operationStarted = Date()
+        state.operationElapsed = 0
+        state.completedSteps = []
+        state.copyProgress = nil
+        state.popScreen()
+        state.popScreen()
+        state.pushScreen(.mutatingProgress(operation: "xcode", appName: "Storage"))
+        workerQueue.async { [weak self] in
+            guard let self else { return }
+            let report: XcodeDoctorReport?
+            let message: String?
+            do {
+                report = try self.service.executeXcode(plan: plan)
+                message = nil
+            } catch {
+                report = nil
+                message = error.localizedDescription
+            }
+            self.lock.lock()
+            self.state.isMutating = false
+            self.state.currentStepLabel = nil
+            self.state.currentScreen = .xcodeResult(report: report, error: message)
+            if self.state.quitDeferred { self.shouldExit = true }
+            self.lock.unlock()
+            self.requestRedraw()
+            if !self.shouldExit {
+                self.loadStatus(force: true)
+                self.loadDoctor(force: true)
+            }
+        }
+    }
+
+    // MARK: - Cache Cleanup
+
+    public func loadPurge(force: Bool = false) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard force || !state.purgeLoaded else { return }
+        state.purgeLoading = true
+        enqueueRequest(.purgeScan, force: force) { [weak self] in
+            guard let self else { return }
+            defer {
+                self.lock.lock()
+                self.state.purgeLoading = false
+                self.lock.unlock()
+            }
+            do {
+                let items = try self.service.scanPurge()
+                self.lock.lock()
+                self.state.purgeItems = items
+                self.state.purgeLoaded = true
+                self.state.selectedPurgeIDs.formIntersection(Set(items.filter { !$0.isRunning }.map(\.id)))
+                self.state.purgeListIndex = min(self.state.purgeListIndex, max(0, self.state.purgeRows.count - 1))
+                self.state.purgeListScrollOffset = min(self.state.purgeListScrollOffset, self.state.purgeListIndex)
+                self.lock.unlock()
+            } catch {
+                self.lock.lock()
+                self.state.purgeLoaded = false
+                self.state.purgeItems = []
+                self.state.selectedPurgeIDs = []
+                self.lock.unlock()
+                self.recordRequestError(error)
+            }
+        }
+    }
+
+    private func handlePurgeListKey(_ key: Key) {
+        switch key {
+        case .escape: state.popScreen()
+        case .char("q"), .char("Q"): shouldExit = true
+        case .char("r"), .char("R"):
+            if !state.purgeLoading { loadPurge(force: true) }
+        default:
+            guard state.purgeLoaded, !state.purgeLoading else { return }
+            let rows = state.purgeRows
+            let capacity = listRowCapacity(for: .purgeList)
+            switch key {
+            case .up, .char("k"), .char("K"):
+                state.purgeListIndex = max(0, state.purgeListIndex - 1)
+            case .down, .char("j"), .char("J"):
+                state.purgeListIndex = min(max(0, rows.count - 1), state.purgeListIndex + 1)
+            case .char(" "):
+                guard rows.indices.contains(state.purgeListIndex) else { return }
+                let ids = Set(rows[state.purgeListIndex].eligibleItems.map(\.id))
+                if ids.isSubset(of: state.selectedPurgeIDs) {
+                    state.selectedPurgeIDs.subtract(ids)
+                } else {
+                    state.selectedPurgeIDs.formUnion(ids)
+                }
+            case .char("a"), .char("A"):
+                state.selectedPurgeIDs = Set(state.purgeItems.filter { !$0.isRunning }.map(\.id))
+            case .char("c"), .char("C"):
+                state.selectedPurgeIDs = []
+            case .enter:
+                let items = state.selectedPurgeItems
+                guard !items.isEmpty else { return }
+                state.confirmFocusIndex = 0
+                state.pushScreen(.purgePreview(PurgePreview(items: items, skippedItems: state.purgeItems.filter(\.isRunning))))
+            default: break
+            }
+            state.purgeListScrollOffset = min(state.purgeListScrollOffset, state.purgeListIndex)
+            if state.purgeListIndex >= state.purgeListScrollOffset + capacity {
+                state.purgeListScrollOffset = state.purgeListIndex - capacity + 1
+            }
+        }
+    }
+
+    private func handlePurgeReviewKey(_ key: Key, preview: PurgePreview, confirming: Bool) {
+        switch key {
+        case .escape:
+            state.popScreen()
+            state.confirmFocusIndex = 0
+        case .char("q"), .char("Q"): shouldExit = true
+        case .up, .char("k"), .char("K"): scrollDetail(by: -1)
+        case .down, .char("j"), .char("J"): scrollDetail(by: 1)
+        case .left: state.confirmFocusIndex = 0
+        case .right: state.confirmFocusIndex = 1
+        case .tab: state.confirmFocusIndex = 1 - state.confirmFocusIndex
+        case .enter:
+            if state.confirmFocusIndex == 0 {
+                state.popScreen()
+            } else if confirming {
+                executePurge(preview: preview)
+            } else {
+                state.confirmFocusIndex = 0
+                state.pushScreen(.purgeConfirmation(preview))
+            }
+        default: break
+        }
+    }
+
+    private func executePurge(preview: PurgePreview) {
+        guard !state.isMutating, !preview.items.isEmpty else { return }
+        state.isMutating = true
+        state.currentStepLabel = "Removing selected cache contents"
+        state.currentStepStarted = Date()
+        state.operationStarted = Date()
+        state.operationElapsed = 0
+        state.completedSteps = []
+        state.copyProgress = nil
+        state.detailScrollOffset = 0
+        // Replace the review stack with the result's destination before dispatching mutation.
+        state.popScreen()
+        state.popScreen()
+        state.pushScreen(.mutatingProgress(operation: "purge", appName: "Caches"))
+        workerQueue.async { [weak self] in
+            guard let self else { return }
+            let report: PurgeReport?
+            let errorMessage: String?
+            do {
+                let result = try self.service.executePurge(items: preview.items)
+                let skippedIDs = Set(result.skippedItems.map(\.id))
+                report = PurgeReport(
+                    generatedAt: result.generatedAt, dryRun: result.dryRun,
+                    purgedItems: result.purgedItems,
+                    skippedItems: result.skippedItems + preview.skippedItems.filter { !skippedIDs.contains($0.id) },
+                    failedItems: result.failedItems, totalReclaimedBytes: result.totalReclaimedBytes,
+                    messages: result.messages
+                )
+                errorMessage = nil
+            } catch {
+                report = nil
+                errorMessage = error.localizedDescription
+            }
+            self.lock.lock()
+            self.state.isMutating = false
+            self.state.purgeLoaded = false
+            self.state.selectedPurgeIDs = []
+            self.state.currentStepLabel = nil
+            self.state.currentScreen = .purgeResult(report: report, error: errorMessage)
+            if self.state.quitDeferred { self.shouldExit = true }
+            self.lock.unlock()
+            self.requestRedraw()
+            if !self.shouldExit {
+                self.loadStatus(force: true)
+            }
         }
     }
 
@@ -666,7 +1392,22 @@ public final class TUIApp: @unchecked Sendable {
                     state.moveListScrollOffset = state.moveListIndex - listHeight + 1
                 }
             }
+        case .char(" "):
+            guard candidates.indices.contains(state.moveListIndex) else { return }
+            toggleMoveSelection(candidates[state.moveListIndex])
+        case .char("a"), .char("A"):
+            let selectable = candidates.filter { $0.compatibility?.grade != .blocked }
+            state.selectedMovePaths.formUnion(selectable.map(\.path))
+            let skipped = candidates.count - selectable.count
+            state.errorMessage = skipped > 0 ? "\(skipped) blocked app(s) shown were not selected." : nil
+        case .char("x"), .char("X"):
+            state.selectedMovePaths = []
+            state.errorMessage = nil
         case .enter:
+            if !state.selectedMovePaths.isEmpty {
+                startBatchMoveFlow()
+                return
+            }
             guard candidates.indices.contains(state.moveListIndex) else { return }
             let candidate = candidates[state.moveListIndex]
             if candidate.compatibility?.grade == .blocked {
@@ -708,19 +1449,21 @@ public final class TUIApp: @unchecked Sendable {
         }
     }
 
-    private func startMoveFlow(candidate: AppCandidate, force: Bool) {
-        // Resolve volume
+    private enum MoveVolumeChoice {
+        case resolved(String)
+        case needsSelection
+        case unavailable
+    }
+
+    private func resolveMoveVolume() -> MoveVolumeChoice {
         if let sessionVol = state.sessionVolumePath {
-            startDryRunDock(candidate: candidate, volumePath: sessionVol, force: force)
-            return
+            return .resolved(sessionVol)
         }
 
         if let def = state.cachedStatus?.defaultVolume, let mounted = def.mountedPath ?? (def.path as String?) {
-            startDryRunDock(candidate: candidate, volumePath: mounted, force: force)
-            return
+            return .resolved(mounted)
         } else if let def = try? service.defaultVolume() {
-            startDryRunDock(candidate: candidate, volumePath: def.path, force: force)
-            return
+            return .resolved(def.path)
         }
 
         var eligible = state.eligibleVolumesList
@@ -731,11 +1474,19 @@ public final class TUIApp: @unchecked Sendable {
 
         if eligible.count == 1 {
             state.sessionVolumePath = eligible[0].path
-            startDryRunDock(candidate: candidate, volumePath: eligible[0].path, force: force)
-        } else if eligible.count > 1 {
+            return .resolved(eligible[0].path)
+        }
+        return eligible.isEmpty ? .unavailable : .needsSelection
+    }
+
+    private func startMoveFlow(candidate: AppCandidate, force: Bool) {
+        switch resolveMoveVolume() {
+        case .resolved(let volumePath):
+            startDryRunDock(candidate: candidate, volumePath: volumePath, force: force)
+        case .needsSelection:
             state.volumeSelectIndex = 0
             state.pushScreen(.volumeSelect(candidate: candidate, force: force))
-        } else {
+        case .unavailable:
             state.pushScreen(.infoModal(
                 title: "No External Volume",
                 message: "No eligible external APFS volume is available to receive this application.",
@@ -761,6 +1512,289 @@ public final class TUIApp: @unchecked Sendable {
             startDryRunDock(candidate: candidate, volumePath: chosen.path, force: force)
         default:
             break
+        }
+    }
+
+    // MARK: - Batch Move and Restore
+    //
+    // A batch runs the same per-app dock/undock calls as the single-app flow, one app at a time.
+    // Each app is revalidated with a fresh dry run right before it runs, and the batch stops at
+    // the first failure so a broken volume or changed state never cascades into later apps.
+
+    private func toggleMoveSelection(_ candidate: AppCandidate) {
+        if state.selectedMovePaths.remove(candidate.path) != nil {
+            state.errorMessage = nil
+            return
+        }
+        guard candidate.compatibility?.grade != .blocked else {
+            let reasons = candidate.compatibility?.reasons.joined(separator: "; ") ?? ""
+            state.errorMessage = "\(candidate.name) is blocked and cannot be selected" + (reasons.isEmpty ? "." : ": \(reasons)")
+            return
+        }
+        state.selectedMovePaths.insert(candidate.path)
+        state.errorMessage = nil
+    }
+
+    private func toggleRestoreSelection(_ item: RestoreItem) {
+        if state.selectedRestorePaths.remove(item.sourcePath) != nil {
+            state.errorMessage = nil
+            return
+        }
+        switch item.status {
+        case .managed:
+            state.selectedRestorePaths.insert(item.sourcePath)
+            state.errorMessage = nil
+        case .unmanaged:
+            state.errorMessage = "\(item.name) is not managed by MacBay. Clear the selection and press Enter to review adoption."
+        case .unconfirmed:
+            state.errorMessage = "\(item.name) has an unconfirmed target and cannot be selected. Run 'mb doctor'."
+        case .unresolved(let reason):
+            state.errorMessage = "\(item.name) has an unresolved link (\(reason)) and cannot be selected. Run 'mb doctor'."
+        }
+    }
+
+    private func startBatchMoveFlow() {
+        switch resolveMoveVolume() {
+        case .resolved(let volumePath):
+            prepareBatchPreview(operation: .dock, volumePath: volumePath)
+        case .needsSelection:
+            state.volumeSelectIndex = 0
+            state.pushScreen(.batchVolumeSelect)
+        case .unavailable:
+            state.pushScreen(.infoModal(
+                title: "No External Volume",
+                message: "No eligible external APFS volume is available to receive these applications.",
+                guidance: "Connect an external APFS drive and press 'r' to refresh."
+            ))
+        }
+    }
+
+    private func handleBatchVolumeSelectKey(_ key: Key) {
+        let volumes = state.eligibleVolumesList
+        switch key {
+        case .escape:
+            state.popScreen()
+        case .up, .char("k"), .char("K"):
+            state.volumeSelectIndex = max(0, state.volumeSelectIndex - 1)
+        case .down, .char("j"), .char("J"):
+            state.volumeSelectIndex = min(volumes.count - 1, state.volumeSelectIndex + 1)
+        case .enter:
+            guard volumes.indices.contains(state.volumeSelectIndex) else { return }
+            let chosen = volumes[state.volumeSelectIndex]
+            state.sessionVolumePath = chosen.path
+            state.popScreen()
+            prepareBatchPreview(operation: .dock, volumePath: chosen.path)
+        default:
+            break
+        }
+    }
+
+    private func runBatchOperation(
+        _ operation: BatchOperation,
+        appName: String,
+        volumePath: String?,
+        force: Bool,
+        dryRun: Bool
+    ) throws -> MigrationResult {
+        let progress: ProgressHandler? = dryRun ? nil : { [weak self] step in self?.handleProgress(step) }
+        switch operation {
+        case .dock:
+            return try service.dock(appName: appName, volumePath: volumePath, dryRun: dryRun, force: force, progress: progress)
+        case .undock:
+            return try service.undock(appName: appName, volumePath: volumePath, dryRun: dryRun, progress: progress)
+        }
+    }
+
+    private func prepareBatchPreview(operation: BatchOperation, volumePath: String?) {
+        guard !state.isMutating else { return }
+        let origin = state.currentScreen
+        // Snapshot the selection in list order; later list changes do not alter this preview.
+        let targets: [(name: String, path: String, compatibility: CompatibilityAssessment?)]
+        switch operation {
+        case .dock: targets = state.selectedMoveCandidates.map { ($0.name, $0.path, $0.compatibility) }
+        case .undock: targets = state.selectedRestoreItems.map { ($0.name, $0.sourcePath, nil) }
+        }
+        guard !targets.isEmpty else { return }
+
+        let message = "Preparing dry-run previews for \(targets.count) application(s)…"
+        enqueueRequest(.preview, message: message) { [weak self] in
+            guard let self else { return }
+            let items = targets.map { target -> BatchPreviewItem in
+                do {
+                    let result = try self.runBatchOperation(
+                        operation, appName: target.name, volumePath: volumePath,
+                        force: target.compatibility?.grade == .popupRisk, dryRun: true
+                    )
+                    return BatchPreviewItem(
+                        appName: target.name, listPath: target.path, preview: result,
+                        compatibility: result.compatibility ?? target.compatibility, exclusion: nil
+                    )
+                } catch {
+                    return BatchPreviewItem(
+                        appName: target.name, listPath: target.path, preview: nil,
+                        compatibility: target.compatibility, exclusion: self.describe(error: error)
+                    )
+                }
+            }
+            let preview = BatchPreview(
+                operation: operation,
+                volumePath: volumePath,
+                items: items,
+                availableBytes: self.service.availableBytes(atPath: volumePath ?? "/")
+            )
+            self.lock.lock()
+            // A user can navigate away while the previews are loading.
+            if self.state.currentScreen == origin {
+                self.state.confirmFocusIndex = 0
+                self.state.batchRiskAccepted = false
+                self.state.pushScreen(.batchPreview(preview))
+            }
+            self.lock.unlock()
+        }
+    }
+
+    private func handleBatchReviewKey(_ key: Key, preview: BatchPreview, confirming: Bool) {
+        switch key {
+        case .escape:
+            state.popScreen()
+            state.confirmFocusIndex = 0
+            if !confirming { state.batchRiskAccepted = false }
+        case .char("q"), .char("Q"): shouldExit = true
+        case .up, .char("k"), .char("K"): scrollDetail(by: -1)
+        case .down, .char("j"), .char("J"): scrollDetail(by: 1)
+        case .left: state.confirmFocusIndex = 0
+        case .right: state.confirmFocusIndex = 1
+        case .tab: state.confirmFocusIndex = 1 - state.confirmFocusIndex
+        case .enter:
+            if state.confirmFocusIndex == 0 {
+                state.popScreen()
+                if !confirming { state.batchRiskAccepted = false }
+                return
+            }
+            if confirming {
+                executeBatch(preview: preview)
+                return
+            }
+            switch renderer.batchConfirmAction(preview: preview, riskAccepted: state.batchRiskAccepted) {
+            case .unavailable:
+                state.popScreen()
+                state.batchRiskAccepted = false
+            case .acceptRisk:
+                state.batchRiskAccepted = true
+                state.confirmFocusIndex = 0
+                state.detailScrollOffset = 0
+            case .continueToConfirmation:
+                state.confirmFocusIndex = 0
+                state.pushScreen(.batchConfirmation(preview))
+            }
+        default: break
+        }
+    }
+
+    private func executeBatch(preview: BatchPreview) {
+        let items = preview.included
+        guard !state.isMutating, !state.isLoading, preview.canProceed, let first = items.first,
+              preview.riskItems.isEmpty || state.batchRiskAccepted else { return }
+        let operation = preview.operation
+        state.isMutating = true
+        state.batchTotal = items.count
+        state.batchResults = []
+        state.operationStarted = Date()
+        state.operationElapsed = 0
+        state.completedSteps = []
+        state.copyProgress = nil
+        // Replace the review stack so the result returns straight to the list.
+        state.popScreen()
+        state.popScreen()
+        state.pushScreen(.mutatingProgress(operation: operation.rawValue, appName: first.appName))
+
+        workerQueue.async { [weak self] in
+            guard let self else { return }
+            var results: [BatchItemResult] = []
+            var stopped = false
+            for (index, item) in items.enumerated() {
+                self.lock.lock()
+                // A quit request waits for the running app, then no further app starts.
+                if self.state.quitDeferred { stopped = true }
+                if !stopped {
+                    self.state.currentScreen = .mutatingProgress(
+                        operation: operation.rawValue,
+                        appName: "\(item.appName) · \(index + 1) of \(items.count)"
+                    )
+                    self.state.completedSteps = []
+                    self.state.copyProgress = nil
+                    self.state.currentStepLabel = "Revalidating against the preview"
+                    self.state.currentStepStarted = Date()
+                }
+                self.lock.unlock()
+                self.requestRedraw()
+                guard !stopped else {
+                    results.append(BatchItemResult(appName: item.appName, status: .notStarted))
+                    continue
+                }
+
+                do {
+                    let force = item.compatibility?.grade == .popupRisk
+                    let current = try self.runBatchOperation(
+                        operation, appName: item.appName, volumePath: preview.volumePath, force: force, dryRun: true
+                    )
+                    guard let planned = item.preview,
+                          current.sourcePath == planned.sourcePath,
+                          current.destinationPath == planned.destinationPath,
+                          (current.compatibility?.grade ?? item.compatibility?.grade) == item.compatibility?.grade else {
+                        throw MacBayError.unsupportedOperation(
+                            "\(item.appName) changed since the preview and was not \(operation.pastTense). Review a new preview."
+                        )
+                    }
+                    let result = try self.runBatchOperation(
+                        operation, appName: item.appName, volumePath: preview.volumePath, force: force, dryRun: false
+                    )
+                    results.append(BatchItemResult(appName: item.appName, status: .succeeded(result)))
+                } catch {
+                    let message = self.describe(error: error)
+                    let details = (error as? MacBayError)?.errorDetails
+                    results.append(BatchItemResult(
+                        appName: item.appName,
+                        status: .failed(message: message, details: (details?.isEmpty ?? true) || details == message ? nil : details)
+                    ))
+                    stopped = true
+                }
+                self.lock.lock()
+                self.state.batchResults = results
+                self.lock.unlock()
+            }
+
+            self.lock.lock()
+            self.state.isMutating = false
+            self.state.currentStepLabel = nil
+            self.state.copyProgress = nil
+            self.state.batchTotal = 0
+            self.state.batchResults = []
+            self.state.batchRiskAccepted = false
+            switch operation {
+            case .dock: self.state.selectedMovePaths = []
+            case .undock: self.state.selectedRestorePaths = []
+            }
+            self.state.currentScreen = .batchResult(BatchReport(operation: operation, results: results, excluded: preview.excluded))
+            self.state.detailScrollOffset = 0
+            if self.state.quitDeferred { self.shouldExit = true }
+            self.lock.unlock()
+            self.requestRedraw()
+            if !self.shouldExit {
+                self.loadStatus(force: true)
+                self.loadScan(force: true)
+                self.loadExplorer(force: true)
+            }
+        }
+    }
+
+    private func handleBatchResultKey(_ key: Key) {
+        switch key {
+        case .up, .char("k"), .char("K"): scrollDetail(by: -1)
+        case .down, .char("j"), .char("J"): scrollDetail(by: 1)
+        case .enter, .escape: state.popScreen()
+        case .char("q"), .char("Q"): shouldExit = true
+        default: break
         }
     }
 
@@ -1200,7 +2234,22 @@ public final class TUIApp: @unchecked Sendable {
                     state.restoreListScrollOffset = state.restoreListIndex - listHeight + 1
                 }
             }
+        case .char(" "):
+            guard items.indices.contains(state.restoreListIndex) else { return }
+            toggleRestoreSelection(items[state.restoreListIndex])
+        case .char("a"), .char("A"):
+            let selectable = items.filter(\.isRestorable)
+            state.selectedRestorePaths.formUnion(selectable.map(\.sourcePath))
+            let skipped = items.count - selectable.count
+            state.errorMessage = skipped > 0 ? "\(skipped) app(s) shown are not managed and were not selected." : nil
+        case .char("x"), .char("X"):
+            state.selectedRestorePaths = []
+            state.errorMessage = nil
         case .enter:
+            if !state.selectedRestorePaths.isEmpty {
+                prepareBatchPreview(operation: .undock, volumePath: nil)
+                return
+            }
             guard items.indices.contains(state.restoreListIndex) else { return }
             let item = items[state.restoreListIndex]
             switch item.status {
@@ -1704,6 +2753,10 @@ public final class TUIApp: @unchecked Sendable {
 
         if state.isMutating, let started = state.operationStarted {
             state.operationElapsed = Date().timeIntervalSince(started)
+        }
+        if !state.isMutating, !state.deferredVolumeChanges.isEmpty {
+            applyDeferredVolumeChanges()
+            needsRedraw = true
         }
     }
 }
