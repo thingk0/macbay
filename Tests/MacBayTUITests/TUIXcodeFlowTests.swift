@@ -153,6 +153,9 @@ final class TUIXcodeFlowTests: XCTestCase {
         waitUntil { !app.state.isLoading }
         XCTAssertEqual(app.state.currentScreen, .xcodeOptions)
         XCTAssertTrue(service.xcodeExecutions.isEmpty)
+        // The refusal names the TUI's Force option, not the CLI's --force flag.
+        XCTAssertFalse(app.state.errorMessage?.contains("--force") ?? true)
+        XCTAssertTrue(app.state.errorMessage?.contains("enable Force") ?? false)
         for _ in 0..<4 { app.handleKey(.down) }
         app.handleKey(.char(" "))
         XCTAssertTrue(app.state.xcodeOptions.force)

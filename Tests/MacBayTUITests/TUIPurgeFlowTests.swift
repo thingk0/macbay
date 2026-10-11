@@ -83,6 +83,24 @@ final class TUIPurgeFlowTests: XCTestCase {
         XCTAssertTrue(service.purgeExecutions.isEmpty)
     }
 
+    func testTargetsSharingAFolderNameShowTheirParentFolder() {
+        let service = FakeTUIService()
+        service.purgeItemsToReturn = [
+            item("Example", "Partitions/alpha/Code Cache"),
+            item("Example", "Partitions/beta/Code Cache"),
+            item("Example", "GPUCache"),
+            item("Other", "Code Cache"),
+        ]
+        let app = open(service)
+        let frame = app.renderString(width: 80, height: 24)
+        XCTAssertTrue(frame.contains("Code Cache (alpha)"))
+        XCTAssertTrue(frame.contains("Code Cache (beta)"))
+        XCTAssertTrue(frame.contains("] GPUCache ·"))
+        // A name that is unique within its app keeps the short label.
+        XCTAssertTrue(frame.contains("] Code Cache ·"))
+        assertFrame(app)
+    }
+
     func testPreviewAndSeparateConfirmationCancelByDefault() {
         for cancelWithEscape in [false, true] {
             let service = FakeTUIService()

@@ -442,7 +442,7 @@ public struct TerminalRenderer {
             return "Not undoable: it failed and changed nothing."
         }
         if let first = state.historyEntries.first(where: { $0.outcome != .failure }), first == selected {
-            return state.undoRefusal ?? "Not undoable."
+            return state.undoRefusal == nil ? "Not undoable." : "Not undoable: the reason is shown above."
         }
         return "Not undoable: only the latest successful operation is considered."
     }
@@ -456,7 +456,10 @@ public struct TerminalRenderer {
         if let plan = state.undoPlan {
             eligibility = wrapped(["Can undo: \(historyEntryLabel(plan.entry)) by running \(plan.command)"], width: width)
         } else {
-            eligibility = wrapped(["Cannot undo: \(state.undoRefusal ?? "unknown reason")"], width: width)
+            let refusal = state.undoRefusal ?? "unknown reason"
+            // Planner refusals already read "Cannot undo …" or "Nothing to undo: …".
+            let selfDescribing = refusal.hasPrefix("Cannot undo") || refusal.hasPrefix("Nothing to undo")
+            eligibility = wrapped([selfDescribing ? refusal : "Cannot undo: \(refusal)"], width: width)
         }
         if eligibility.count > 3 {
             eligibility = Array(eligibility.prefix(2)) + [truncate(eligibility[2] + "…", width: width - 2)]
@@ -769,6 +772,18 @@ public struct TerminalRenderer {
             return lines + ["No purgeable caches found.", "Browsing and cancellation make no changes."]
         }
         let rows = state.purgeRows
+        // Targets sharing a folder name within one app (e.g. Code Cache in two partitions)
+        // also show their parent folder so the rows can be told apart.
+        var nameCounts: [String: Int] = [:]
+        for item in state.purgeItems {
+            nameCounts[item.appName + "\u{0}" + URL(fileURLWithPath: item.path).lastPathComponent, default: 0] += 1
+        }
+        func targetName(_ item: PurgeItem) -> String {
+            let url = URL(fileURLWithPath: item.path)
+            let name = url.lastPathComponent
+            guard (nameCounts[item.appName + "\u{0}" + name] ?? 0) > 1 else { return name }
+            return "\(name) (\(url.deletingLastPathComponent().lastPathComponent))"
+        }
         let capacity = max(1, height - 8)
         let offset = min(state.purgeListScrollOffset, max(0, rows.count - capacity))
         for index in offset..<min(rows.count, offset + capacity) {
@@ -781,7 +796,7 @@ public struct TerminalRenderer {
                 let bytes = row.eligibleItems.reduce(UInt64(0)) { $0 + $1.sizeBytes }
                 label = "[\(mark)] \(group.appName) · \(OutputFormatter.humanBytes(bytes)) · \(group.items.count) target(s)"
             case .target(let item):
-                label = "  [\(mark)] \(URL(fileURLWithPath: item.path).lastPathComponent) · \(OutputFormatter.humanBytes(item.sizeBytes))"
+                label = "  [\(mark)] \(targetName(item)) · \(OutputFormatter.humanBytes(item.sizeBytes))"
                     + (item.isRunning ? " [Skipped: running]" : "")
             }
             lines.append(index == state.purgeListIndex ? "\u{001B}[7;1m> \(label)\u{001B}[0m" : "  " + label)
@@ -1823,9 +1838,19 @@ public struct TerminalRenderer {
             for character in plain {
                 let nextWidth = characterWidth(character)
                 if columns + nextWidth > capacity, !row.isEmpty {
-                    result.append(row)
-                    row = ""
-                    columns = 0
+                    // Break at the last space so words stay whole; a word wider than the row splits.
+                    if character != " ", let space = row.lastIndex(of: " "),
+                       row[..<space].contains(where: { $0 != " " }) {
+                        let carried = String(row[row.index(after: space)...])
+                        result.append(String(row[..<space]))
+                        row = carried
+                        columns = displayWidth(carried)
+                    } else {
+                        result.append(row)
+                        row = ""
+                        columns = 0
+                    }
+                    if character == " " { continue }
                 }
                 row.append(character)
                 columns += nextWidth
