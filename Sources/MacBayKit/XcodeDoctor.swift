@@ -313,12 +313,15 @@ public struct XcodeDoctor {
         }
     }
 
+    /// Refusal raised when Xcode runs and force is off. Front ends that name the force switch
+    /// differently match this text to replace it.
+    public static let xcodeRunningMessage =
+        "Xcode is currently running. Please quit Xcode before modifying its storage or caches, or pass --force to proceed anyway."
+
     private func assertXcodeNotRunning(force: Bool) throws {
         guard !force else { return }
         if try isXcodeRunning() {
-            throw MacBayError.unsupportedOperation(
-                "Xcode is currently running. Please quit Xcode before modifying its storage or caches, or pass --force to proceed anyway."
-            )
+            throw MacBayError.unsupportedOperation(Self.xcodeRunningMessage)
         }
     }
 }

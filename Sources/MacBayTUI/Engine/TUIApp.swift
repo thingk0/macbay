@@ -786,7 +786,9 @@ public final class TUIApp: @unchecked Sendable {
                 state.historyIndex = min(max(0, state.historyEntries.count - 1), state.historyIndex + 1)
             case .char("u"), .char("U"), .enter:
                 guard let plan = state.undoPlan else {
-                    state.errorMessage = state.undoRefusal ?? "Nothing can be undone."
+                    state.errorMessage = state.undoRefusal == nil
+                        ? "Nothing can be undone."
+                        : "Nothing can be undone; the reason is shown above."
                     return
                 }
                 prepareUndoPreview(plan: plan)
@@ -980,9 +982,20 @@ public final class TUIApp: @unchecked Sendable {
                 }
                 self.lock.unlock()
             } catch {
-                self.recordRequestError(error)
+                self.lock.lock()
+                self.state.errorMessage = self.xcodeErrorMessage(error)
+                self.lock.unlock()
             }
         }
+    }
+
+    /// The service's Xcode-running refusal names the CLI's --force flag; in the TUI the same
+    /// switch is the Force option, so name that instead.
+    private func xcodeErrorMessage(_ error: Error) -> String {
+        error.localizedDescription.replacingOccurrences(
+            of: XcodeDoctor.xcodeRunningMessage,
+            with: "Xcode is running. Quit Xcode and press r to refresh, or enable Force while Xcode runs."
+        )
     }
 
     private func handleXcodeReviewKey(_ key: Key, plan: XcodeStoragePlan, confirming: Bool) {
@@ -1031,7 +1044,7 @@ public final class TUIApp: @unchecked Sendable {
                 message = nil
             } catch {
                 report = nil
-                message = error.localizedDescription
+                message = self.xcodeErrorMessage(error)
             }
             self.lock.lock()
             self.state.isMutating = false

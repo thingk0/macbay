@@ -103,7 +103,7 @@ public final class FakeTUIService: @unchecked Sendable, TUIServiceProtocol {
         simulateWorkload()
         if let xcodePlanError { throw xcodePlanError }
         if xcodeRunning && !options.force {
-            throw MacBayError.unsupportedOperation("Xcode is currently running. Quit Xcode or explicitly enable Force.")
+            throw MacBayError.unsupportedOperation(XcodeDoctor.xcodeRunningMessage)
         }
         return XcodeStoragePlan(volumePath: volumePath, volumeUUID: "test-volume", availableBytes: 1_000_000_000,
                                 requiredBytes: 0, options: options, report: xcodePlanReport,

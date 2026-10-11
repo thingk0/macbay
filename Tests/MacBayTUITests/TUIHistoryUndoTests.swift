@@ -28,6 +28,15 @@ final class TUIHistoryUndoTests: XCTestCase {
         }
     }
 
+    /// The frame's text with rows joined, so a phrase wrapped across rows still matches.
+    private func flattened(_ app: TUIApp) -> String {
+        app.renderString()
+            .replacingOccurrences(of: "\u{001B}\\[[0-9;]*m", with: "", options: .regularExpression)
+            .components(separatedBy: "\r\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .joined(separator: " ")
+    }
+
     private func open(_ entries: [HistoryEntry]) -> (FakeTUIService, TUIApp) {
         let service = FakeTUIService()
         service.historyEntries = entries
@@ -172,8 +181,10 @@ final class TUIHistoryUndoTests: XCTestCase {
         ]
         for (entries, reason) in cases {
             let (service, app) = open(entries)
-            XCTAssertTrue(app.renderString().contains("Cannot undo"), reason)
-            XCTAssertTrue(app.renderString().contains(reason), reason)
+            let frame = flattened(app)
+            XCTAssertTrue(frame.contains("Cannot undo") || frame.contains("Nothing to undo"), reason)
+            XCTAssertFalse(frame.contains("Cannot undo: Cannot undo"), reason)
+            XCTAssertTrue(frame.contains(reason), reason)
             app.handleKey(.enter)
             XCTAssertEqual(app.state.currentScreen, .historyList)
             XCTAssertNotNil(app.state.errorMessage)
@@ -182,6 +193,23 @@ final class TUIHistoryUndoTests: XCTestCase {
             XCTAssertTrue(service.undoCalls.isEmpty)
             assertFrame(app)
         }
+    }
+
+    func testLongRefusalWrapsAtWordsAndIsShownOnce() throws {
+        let (_, app) = open([entry("undock", "Example.app")])
+        let refusal = try XCTUnwrap(app.state.undoRefusal)
+        let frame = app.renderString(width: 80, height: 24)
+            .replacingOccurrences(of: "\u{001B}\\[[0-9;]*m", with: "", options: .regularExpression)
+        let rows = frame.components(separatedBy: "\r\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        // Every word of the refusal survives intact on some row; none is cut across rows.
+        let words = Set(rows.flatMap { $0.split(separator: " ").map(String.init) })
+        for word in refusal.split(separator: " ") {
+            XCTAssertTrue(words.contains(String(word)), "split word: \(word)")
+        }
+        XCTAssertEqual(frame.components(separatedBy: "already restored data").count - 1, 1)
+        app.handleKey(.char("u"))
+        XCTAssertEqual(app.state.errorMessage, "Nothing can be undone; the reason is shown above.")
+        assertFrame(app)
     }
 
     func testOlderEntriesAreNotUndoableEvenWhenTheyAreDocks() {
@@ -204,7 +232,7 @@ final class TUIHistoryUndoTests: XCTestCase {
         let (service, app) = open([])
         let frame = app.renderString()
         XCTAssertTrue(frame.contains("No recorded operations yet"))
-        XCTAssertTrue(frame.contains("Cannot undo"))
+        XCTAssertTrue(frame.contains("Nothing to undo"))
         app.handleKey(.enter)
         app.handleKey(.down)
         XCTAssertTrue(service.undoCalls.isEmpty)
