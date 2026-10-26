@@ -60,6 +60,7 @@ final class TerminalProgress: @unchecked Sendable {
         case .updatingLink: label = "Updating application link"
         case .savingManifest: label = "Saving MacBay records"
         case .refreshingDock: label = "Refreshing Dock"
+        case .removingBackup: label = "Removing repair backup"
         }
         started = Date()
         write(interactive ? "\(label)…" : "\(label)…\n")

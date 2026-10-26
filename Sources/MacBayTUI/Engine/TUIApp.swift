@@ -2145,6 +2145,7 @@ public final class TUIApp: @unchecked Sendable {
         case .updatingLink: label = "Updating application link"
         case .savingManifest: label = "Saving MacBay records"
         case .refreshingDock: label = "Refreshing Dock"
+        case .removingBackup: label = "Removing repair backup"
         }
 
         if let prevLabel = state.currentStepLabel, let started = state.currentStepStarted {

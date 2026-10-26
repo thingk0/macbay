@@ -27,6 +27,7 @@ MacBay is a developer-first storage externalizer designed for Apple Silicon Macs
 
 - **Interactive TUI Mode (`mb tui` / `mb ui`)**: Launch an interactive, keyboard-driven Terminal User Interface to visually inspect storage capacity, browse applications with Safe/Review/Blocked status, and preview moves and restorations.
 - **Application Relocation (`dock` / `undock` / `adopt`)**: Migrate large apps to external storage, restore them to internal disk, or adopt already-externalized apps into standard MacBay layout without restoring first. Dock icons and LaunchServices are automatically refreshed.
+- **Repair Backup Management (`backups`)**: List the backups created by `repair --action redock` with their saved version, date, and logical size, and remove only the unreferenced backups you no longer need. Backups referenced by an operation or recovery journal, or whose metadata cannot be verified, stay protected.
 - **Lossless Cache Purging (`purge` / `pu`)**: Safely reclaim gigabytes of internal SSD space by purging regenerated Chromium/Electron caches (`Code Cache`, `GPUCache`, `CacheStorage`), ShipIt update installers, Homebrew package downloads, and crash logs without touching user accounts, SQLite databases, or preferences.
 - **Xcode Storage Optimization (`xcode`)**: Offload massive iOS DeviceSupport symbols and build Archives to external APFS storage, safely purge DerivedData and simulator/Xcode caches, and remove unavailable simulators. Preserves existing legacy symlinks.
 - **Arbitrary Directory Relocation (`move` / `unmove`)**: Externalize any directory — game libraries, VM disks, datasets, media — to `<Volume>/MacBay/Data/` with the same manifest-tracked symlink model used for apps.
@@ -162,6 +163,7 @@ mb ui
 - **Xcode Storage (`xcode`)**: The standard workflow externalizes iOS DeviceSupport and Archives and deletes unavailable simulators. Select a destination volume and optionally enable DerivedData externalization, DerivedData cleanup, or CoreSimulator/Xcode cache cleanup. Running Xcode blocks normal preview and execution; Force requires an explicit option choice and a Force & Execute confirmation. Preview is read-only, followed by separate confirmation with Cancel selected by default. Before execution, MacBay revalidates options, volume identity and eligibility, sufficient space, selected paths and file metadata, running Xcode, and unavailable simulator targets. Changed conditions stop execution and require a fresh preview. Results retain completed actions, per-action failures, and actual cache bytes reclaimed; execution is recorded in `mb history`, including partial outcomes.
 - **History & Undo (`history`, `undo`)**: Scroll recent operations with command, target, time, and outcome. The screen explains which latest successful `dock` or `move` can be undone and why any other operation cannot (partial, failed, already undone, or not reversible). Enter or `u` opens the same dry-run preview as `mb undo`, followed by a separate confirmation with Cancel selected by default. Execution rechecks history and current state, shows progress, then refreshes history. Eligibility comes from the shared `mb undo` planner, so CLI restrictions apply unchanged.
 - Cache externalization (`mb cache`) in the TUI remains planned; use the CLI today.
+- Repair backup management (`mb backups`) is CLI-only today; the TUI does not expose it in this version.
 
 ### 1. Check Storage Health
 
@@ -318,6 +320,7 @@ Short aliases accept the same arguments and options as the full commands. Run `m
 | `teardown` | `td` |
 | `history` | `hist` |
 | `undo` | — |
+| `backups` | — |
 | `tui` | `ui` |
 
 ```sh
@@ -599,9 +602,39 @@ Available actions:
 
 **Safety & Backup Policy**:
 - **Bundle ID Matching**: `redock` strictly verifies that bundle identifiers match before proceeding. If IDs differ, `redock` is refused to prevent accidental overwrites.
-- **External Backup Retention**: When executing `redock`, the existing external copy is moved to `<Volume>/MacBay/Backups/<OperationID>/<App>.app` before the new copy is placed. External backups are preserved and never automatically deleted.
+- **External Backup Retention**: When executing `redock`, the existing external copy is moved to `<Volume>/MacBay/Backups/<OperationID>/<App>.app` before the new copy is placed. External backups are preserved and never automatically deleted; use `mb backups` to inspect them and remove only the ones you no longer need.
 - **Dedicated Repair Journal**: Operations are recorded in `<Volume>/MacBay/.operations/repair-<App>.json` (schema v1). If an operation is interrupted, `mb doctor` reports it (`incomplete_operation`) and guides you to run `mb repair "<App>" --rollback`.
 - **Keep-Local**: `keep-local` removes only the item entry from `manifest.json`. Both local and external applications remain completely untouched, with the external copy becoming an unmanaged archive.
+
+### Inspecting and Removing Repair Backups (`backups`)
+
+`repair --action redock` archives the previous external copy under `<Volume>/MacBay/Backups/<OperationID>/<App>.app` and never deletes it automatically. Use `mb backups` to inspect those archives and remove only the ones you no longer need:
+
+```sh
+# List backups with app, saved version, date, and logical size
+mb backups --volume /Volumes/ExternalSSD
+
+# Preview removing one backup (full operation ID or a unique prefix)
+mb backups --remove 6f2c1b9a --volume /Volumes/ExternalSSD --dry-run
+
+# Remove it after confirmation
+mb backups --remove 6f2c1b9a --volume /Volumes/ExternalSSD
+
+# Remove several backups without prompts
+mb backups --remove <ID1> --remove <ID2> --yes
+```
+
+**What is protected**:
+- A backup referenced by any operation or recovery journal in `<Volume>/MacBay/.operations` cannot be removed. This includes interrupted repair and move/restore workflows.
+- If a journal cannot be read or parsed, backups without a confirmed reference are reported as `Unverifiable` and stay protected.
+- Backups with a symlinked or unrecognized layout, unreadable metadata, or a size/date that cannot be determined are also protected.
+- Discovery never follows symlinks outside `<Volume>/MacBay/Backups`; a symlinked backups root or operation directory is reported and left untouched.
+
+**Stale previews**: Removal re-scans the volume before deleting. If a backup became referenced, changed size/date, or disappeared after the preview, that backup is not deleted and the command reports the failure. Cancelling the confirmation prompt makes no changes.
+
+**Output and exit codes**: The list is read-only. `--remove` previews the exact backups and total logical size, then asks for a separate confirmation (`--yes` skips it). Removal is recorded in `mb history` with no undo hint, because a deleted backup cannot be reconstructed. Sizes and reclaimed bytes are logical; APFS shared blocks and snapshots can change the actual free space, so the result also shows the volume's free space before and after. Exit codes: `0` when every requested backup was removed, `1` when a requested backup was protected, stale, missing, or failed to delete.
+
+`mb backups --json` reports each backup with `id`, `appName`, `path`, `version`, `buildNumber`, `savedAt`, `sizeBytes`, and `state` (`unreferenced`, `referenced`, `unverifiable`), plus `referencedBy` or `reason` when applicable. The report also carries `summary`, `notes`, and `warnings`.
 
 ### Moving Any Directory (`move` / `unmove`)
 

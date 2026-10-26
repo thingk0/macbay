@@ -4,7 +4,7 @@ import Foundation
 public enum OperationProgress: Sendable {
     case selectingVolume, validating, checkingProcesses, verifyingSignature
     case checkingCompatibility, inspectingStorage, copying, moving, updatingLink
-    case savingManifest, refreshingDock
+    case savingManifest, refreshingDock, removingBackup
     case copyProgress(CopyProgress)
 }
 

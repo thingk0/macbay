@@ -1064,6 +1064,273 @@ public struct OutputFormatter {
 
 
 
+    public func backups(_ report: RepairBackupInventory) -> String {
+        var sections: [[String]] = []
+
+        sections.append([
+            style("MacBay backups", color: "36", bold: true),
+            "  Volume: \(report.volumeName) (\(report.volumePath))",
+            "  Root: \(report.backupsRoot)"
+        ])
+
+        if report.backups.isEmpty {
+            sections.append([bold("Backups · 0"), "  None"])
+        } else {
+            let prefixes = Self.uniqueIDPrefixes(report.backups.map(\.id))
+            let idTexts = report.backups.map { prefixes[$0.id] ?? String($0.id.prefix(8)) }
+            let versionTexts = report.backups.map(Self.backupVersionText)
+            let savedTexts = report.backups.map { Self.shortTimestamp($0.savedAt) }
+            let sizeTexts = report.backups.map { $0.sizeBytes.map { Self.humanBytes($0) } ?? "Unknown" }
+            let stateTexts = report.backups.map { Self.backupStateText($0.state) }
+
+            let idWidth = max(idTexts.map { Self.displayWidth(of: $0) }.max() ?? 2, Self.displayWidth(of: "ID"))
+            let appWidth = max(report.backups.map { Self.displayWidth(of: $0.appName) }.max() ?? 3, Self.displayWidth(of: "APP"))
+            let versionWidth = max(versionTexts.map { Self.displayWidth(of: $0) }.max() ?? 7, Self.displayWidth(of: "VERSION"))
+            let savedWidth = max(savedTexts.map { Self.displayWidth(of: $0) }.max() ?? 5, Self.displayWidth(of: "SAVED"))
+            let sizeWidth = max(sizeTexts.map { Self.displayWidth(of: $0) }.max() ?? 4, Self.displayWidth(of: "SIZE"))
+            let stateWidth = max(stateTexts.map { Self.displayWidth(of: $0) }.max() ?? 5, Self.displayWidth(of: "STATE"))
+
+            var lines = [bold("Backups · \(report.summary.count) · \(Self.humanBytes(report.summary.totalSizeBytes))")]
+            let header = "  "
+                + padRight("ID", rawText: "ID", toDisplayWidth: idWidth) + "  "
+                + padRight("APP", rawText: "APP", toDisplayWidth: appWidth) + "  "
+                + padRight("VERSION", rawText: "VERSION", toDisplayWidth: versionWidth) + "  "
+                + padRight("SAVED", rawText: "SAVED", toDisplayWidth: savedWidth) + "  "
+                + padLeft("SIZE", rawText: "SIZE", toDisplayWidth: sizeWidth) + "  "
+                + padRight("STATE", rawText: "STATE", toDisplayWidth: stateWidth)
+            lines.append(dim(header))
+            lines.append(dim(
+                "  " + String(repeating: "-", count: idWidth)
+                    + "  " + String(repeating: "-", count: appWidth)
+                    + "  " + String(repeating: "-", count: versionWidth)
+                    + "  " + String(repeating: "-", count: savedWidth)
+                    + "  " + String(repeating: "-", count: sizeWidth)
+                    + "  " + String(repeating: "-", count: stateWidth)
+            ))
+
+            for index in report.backups.indices {
+                let entry = report.backups[index]
+                let stateText = stateTexts[index]
+                let row = "  "
+                    + padRight(idTexts[index], rawText: idTexts[index], toDisplayWidth: idWidth) + "  "
+                    + padRight(bold(entry.appName), rawText: entry.appName, toDisplayWidth: appWidth) + "  "
+                    + padRight(versionTexts[index], rawText: versionTexts[index], toDisplayWidth: versionWidth) + "  "
+                    + padRight(savedTexts[index], rawText: savedTexts[index], toDisplayWidth: savedWidth) + "  "
+                    + padLeft(sizeTexts[index], rawText: sizeTexts[index], toDisplayWidth: sizeWidth) + "  "
+                    + padRight(
+                        style(stateText, color: Self.backupStateColor(entry.state)),
+                        rawText: stateText,
+                        toDisplayWidth: stateWidth
+                    )
+                lines.append(row)
+                if let referencedBy = entry.referencedBy {
+                    lines.append("    " + dim("referenced by: \(referencedBy)"))
+                }
+                if let reason = entry.reason {
+                    lines.append("    " + dim("reason: \(reason)"))
+                }
+            }
+
+            if report.summary.referencedCount > 0 || report.summary.unverifiableCount > 0 {
+                lines.append("")
+                lines.append(
+                    "  " + dim("Referenced: \(report.summary.referencedCount) · Unverifiable: \(report.summary.unverifiableCount) — protected from removal")
+                )
+            }
+            sections.append(lines)
+        }
+
+        if !report.notes.isEmpty {
+            var lines = [bold("Notes · \(report.notes.count)")]
+            for note in report.notes {
+                lines.append("  • " + note)
+            }
+            sections.append(lines)
+        }
+
+        if !report.warnings.isEmpty {
+            var lines = [bold("Warnings · \(report.warnings.count)")]
+            for warning in report.warnings {
+                lines.append("  • " + warning)
+            }
+            sections.append(lines)
+        }
+
+        return sections.map { $0.joined(separator: "\n") }.joined(separator: "\n\n")
+    }
+
+    public func backupRemovalPlan(_ plan: RepairBackupRemovalPlan, dryRun: Bool) -> String {
+        var sections: [[String]] = []
+
+        sections.append([
+            style(dryRun ? "Dry run: remove repair backups" : "Plan: remove repair backups", color: dryRun ? "33" : "36", bold: true),
+            "  Volume: \(plan.volumeName) (\(plan.volumePath))",
+            "  Requested IDs: \(plan.requestedIDs.count)"
+        ])
+
+        if plan.selected.isEmpty {
+            sections.append([bold("Selected · 0"), "  None eligible for removal."])
+        } else {
+            let prefixes = Self.uniqueIDPrefixes(plan.selected.map(\.id))
+            let idTexts = plan.selected.map { prefixes[$0.id] ?? String($0.id.prefix(8)) }
+            let sizeTexts = plan.selected.map { $0.sizeBytes.map { Self.humanBytes($0) } ?? "Unknown" }
+            let idWidth = max(idTexts.map { Self.displayWidth(of: $0) }.max() ?? 2, Self.displayWidth(of: "ID"))
+            let appWidth = max(plan.selected.map { Self.displayWidth(of: $0.appName) }.max() ?? 3, Self.displayWidth(of: "APP"))
+            let sizeWidth = max(sizeTexts.map { Self.displayWidth(of: $0) }.max() ?? 4, Self.displayWidth(of: "SIZE"))
+
+            var lines = [bold("Selected · \(plan.selected.count) · \(Self.humanBytes(plan.totalBytes))")]
+            lines.append(dim(
+                "  " + padRight("ID", rawText: "ID", toDisplayWidth: idWidth) + "  "
+                    + padRight("APP", rawText: "APP", toDisplayWidth: appWidth) + "  "
+                    + padLeft("SIZE", rawText: "SIZE", toDisplayWidth: sizeWidth)
+            ))
+            lines.append(dim(
+                "  " + String(repeating: "-", count: idWidth) + "  "
+                    + String(repeating: "-", count: appWidth) + "  "
+                    + String(repeating: "-", count: sizeWidth)
+            ))
+            for index in plan.selected.indices {
+                let entry = plan.selected[index]
+                lines.append(
+                    "  " + padRight(idTexts[index], rawText: idTexts[index], toDisplayWidth: idWidth) + "  "
+                        + padRight(bold(entry.appName), rawText: entry.appName, toDisplayWidth: appWidth) + "  "
+                        + padLeft(sizeTexts[index], rawText: sizeTexts[index], toDisplayWidth: sizeWidth)
+                )
+                lines.append("    " + dim(entry.path))
+            }
+            sections.append(lines)
+        }
+
+        if !plan.refused.isEmpty {
+            var lines = [style("Refused · \(plan.refused.count)", color: "33", bold: true)]
+            for refusal in plan.refused {
+                let name = refusal.appName ?? refusal.id
+                lines.append("  • \(name) — \(refusal.reason)")
+                if let path = refusal.path {
+                    lines.append("    " + dim(path))
+                }
+            }
+            sections.append(lines)
+        }
+
+        if dryRun {
+            sections.append(["  Dry run: no files were changed"])
+        }
+
+        if !plan.notes.isEmpty {
+            var lines = [bold("Notes · \(plan.notes.count)")]
+            for note in plan.notes {
+                lines.append("  • " + note)
+            }
+            sections.append(lines)
+        }
+
+        return sections.map { $0.joined(separator: "\n") }.joined(separator: "\n\n")
+    }
+
+    public func backupRemovalResult(_ result: RepairBackupRemovalResult) -> String {
+        var sections: [[String]] = []
+
+        sections.append([
+            style("MacBay backup removal", color: "36", bold: true),
+            "  Volume: \(result.volumeName) (\(result.volumePath))"
+        ])
+
+        if result.removed.isEmpty {
+            sections.append([bold("Removed · 0")])
+        } else {
+            var lines = [
+                style("Removed · \(result.removed.count) · \(Self.humanBytes(result.reclaimedBytes)) reclaimed (logical)", color: "32", bold: true)
+            ]
+            for entry in result.removed {
+                let size = entry.sizeBytes.map { Self.humanBytes($0) } ?? "Unknown"
+                lines.append("  • \(entry.appName) — \(size) — \(entry.id)")
+            }
+            sections.append(lines)
+        }
+
+        if !result.refused.isEmpty {
+            var lines = [style("Refused · \(result.refused.count)", color: "33", bold: true)]
+            for refusal in result.refused {
+                lines.append("  • \(refusal.appName ?? refusal.id) — \(refusal.reason)")
+            }
+            sections.append(lines)
+        }
+
+        if !result.failed.isEmpty {
+            var lines = [style("Failed · \(result.failed.count)", color: "31", bold: true)]
+            for failure in result.failed {
+                lines.append("  • \(failure.appName ?? failure.id) — \(failure.reason)")
+                lines.append("    " + dim(failure.path))
+            }
+            sections.append(lines)
+        }
+
+        if let before = result.freeBytesBefore, let after = result.freeBytesAfter {
+            sections.append(["  Volume free: \(Self.humanBytes(before)) → \(Self.humanBytes(after))"])
+        } else if let before = result.freeBytesBefore {
+            sections.append(["  Volume free before removal: \(Self.humanBytes(before)) (after unavailable)"])
+        }
+
+        if !result.notes.isEmpty {
+            var lines = [bold("Notes · \(result.notes.count)")]
+            for note in result.notes {
+                lines.append("  • " + note)
+            }
+            sections.append(lines)
+        }
+
+        return sections.map { $0.joined(separator: "\n") }.joined(separator: "\n\n")
+    }
+
+    private static func uniqueIDPrefixes(_ ids: [String], minimumLength: Int = 8) -> [String: String] {
+        var prefixes: [String: String] = [:]
+        for id in ids {
+            var length = min(minimumLength, id.count)
+            while length < id.count {
+                let prefix = String(id.prefix(length)).lowercased()
+                let matches = ids.filter { $0.lowercased().hasPrefix(prefix) }.count
+                if matches == 1 { break }
+                length += 1
+            }
+            prefixes[id] = String(id.prefix(length))
+        }
+        return prefixes
+    }
+
+    private static func backupVersionText(_ entry: RepairBackupEntry) -> String {
+        guard let version = entry.version else { return "Unknown" }
+        guard let build = entry.buildNumber, !build.isEmpty else { return version }
+        return "\(version) (\(build))"
+    }
+
+    private static func backupStateText(_ state: RepairBackupState) -> String {
+        switch state {
+        case .unreferenced: return "Unreferenced"
+        case .referenced: return "Referenced"
+        case .unverifiable: return "Unverifiable"
+        }
+    }
+
+    private static func backupStateColor(_ state: RepairBackupState) -> String {
+        switch state {
+        case .unreferenced: return "32"
+        case .referenced: return "33"
+        case .unverifiable: return "31"
+        }
+    }
+
+    private static func shortTimestamp(_ value: String?) -> String {
+        guard let value = value else { return "Unknown" }
+        let parser = ISO8601DateFormatter()
+        guard let date = parser.date(from: value) else { return value }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone.current
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter.string(from: date)
+    }
+
     public func initReport(_ report: InitReport) -> String {
         var lines = [style("MacBay default volume", color: "36", bold: true)]
         lines.append("  Saved: \(report.volume.name) (\(report.volume.path))")

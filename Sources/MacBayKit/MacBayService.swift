@@ -13,6 +13,7 @@ public struct MacBayService {
     private let appAdopter: AppAdopter
     public let adoptAppUseCase: any AdoptAppUseCaseProtocol
     public let repairAppUseCase: any RepairAppUseCaseProtocol
+    private let repairBackupUseCase: any RepairBackupUseCaseProtocol
     private let xcodeDoctor: XcodeDoctor
     private let cacheManager: CacheManager
     private let purgeEngine: PurgeEngine
@@ -32,6 +33,7 @@ public struct MacBayService {
         updateWorkflowStore: UpdateWorkflowStore? = nil,
         adoptAppUseCase: (any AdoptAppUseCaseProtocol)? = nil,
         repairAppUseCase: (any RepairAppUseCaseProtocol)? = nil,
+        repairBackupUseCase: (any RepairBackupUseCaseProtocol)? = nil,
         historyStore: HistoryStore? = nil,
         purgeEngine: PurgeEngine? = nil,
         xcodeDoctor: XcodeDoctor? = nil,
@@ -86,6 +88,9 @@ public struct MacBayService {
             journal: DarwinRepairJournal(fileManager: fileManager),
             volumeInspector: DarwinRepairVolumeInspector(fileManager: fileManager),
             systemRefresher: DarwinSystemEnvironmentRefresher(fileManager: fileManager, commandRunner: commandRunner)
+        )
+        self.repairBackupUseCase = repairBackupUseCase ?? RepairBackupUseCase(
+            fileSystem: DarwinRepairBackupFileSystem(fileManager: fileManager)
         )
         self.xcodeDoctor = xcodeDoctor ?? XcodeDoctor(
             fileManager: fileManager,
@@ -534,6 +539,59 @@ public struct MacBayService {
         } catch {
             recordOperation(
                 command: "repair --rollback", subject: appName, outcome: .failure,
+                detail: error.localizedDescription
+            )
+            throw error
+        }
+    }
+
+    public func listRepairBackups(volumePath: String?) throws -> RepairBackupInventory {
+        let selection = try selectVolume(path: volumePath)
+        return try repairBackupUseCase.inventory(
+            on: URL(fileURLWithPath: selection.volume.path),
+            volumeName: selection.volume.name
+        )
+    }
+
+    public func planRepairBackupRemoval(
+        ids: [String],
+        volumePath: String?
+    ) throws -> RepairBackupRemovalPlan {
+        let selection = try selectVolume(path: volumePath)
+        return try repairBackupUseCase.planRemoval(
+            ids: ids,
+            on: URL(fileURLWithPath: selection.volume.path),
+            volumeName: selection.volume.name
+        )
+    }
+
+    public func executeRepairBackupRemoval(
+        plan: RepairBackupRemovalPlan,
+        progress: ProgressHandler? = nil
+    ) throws -> RepairBackupRemovalResult {
+        let subject = plan.selected.map(\.appName).joined(separator: ", ")
+        do {
+            let result = try repairBackupUseCase.execute(plan: plan, progress: progress)
+            let outcome: HistoryOutcome
+            if result.exitCode == 0 {
+                outcome = .success
+            } else if result.removed.isEmpty {
+                outcome = .failure
+            } else {
+                outcome = .partial
+            }
+            recordOperation(
+                command: "backups --remove",
+                subject: subject.isEmpty ? "\(plan.selected.count) backup(s)" : subject,
+                outcome: outcome,
+                detail: "removed \(result.removed.count) backup(s), reclaimed \(OutputFormatter.humanBytes(result.reclaimedBytes))"
+            )
+            return result
+        } catch {
+            recordOperation(
+                command: "backups --remove",
+                subject: subject.isEmpty ? "\(plan.selected.count) backup(s)" : subject,
+                outcome: .failure,
                 detail: error.localizedDescription
             )
             throw error
