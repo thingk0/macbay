@@ -27,6 +27,7 @@ MacBay는 Apple Silicon Mac을 위해 설계된 개발자 중심의 스토리지
 
 - **대화형 TUI 모드 (`mb` / `mb tui`)**: 터미널에서 `mb`만 입력하여 키보드로 조작하는 터미널 UI를 엽니다. 저장 공간 조회, 앱 후보 탐색(Safe/Review/Blocked 상태), dry-run 미리보기 및 안전한 앱 이동·복원, 진단 결과 및 문제별 권장 조치를 탐색할 수 있습니다.
 - **애플리케이션 이전 (`dock` / `undock` / `adopt`)**: 대용량 앱을 외장 스토리지로 마이그레이션하거나, 내장 복원 없이 기존 외장 앱을 MacBay 표준 구조로 수용합니다. Dock 아이콘과 LaunchServices 등록 정보가 자동으로 갱신됩니다.
+- **복구 백업 관리 (`backups`)**: `repair --action redock`이 만든 백업을 저장된 버전·날짜·논리 크기와 함께 조회하고, 더 이상 필요 없는 참조되지 않은 백업만 삭제합니다. 작업/복구 저널이 참조하거나 메타데이터를 검증할 수 없는 백업은 보호됩니다.
 - **무손실 애플리케이션 캐시 정리 (`purge` / `pu`)**: 사용자 계정, SQLite 데이터베이스, 환경 설정을 전혀 건드리지 않고, 자동 재생성되는 Chromium/Electron 캐시(`Code Cache`, `GPUCache`, `CacheStorage`), ShipIt 업데이트 설치 파일, Homebrew 패키지 다운로드 캐시, 진단 크래시 로그를 안전하게 정리하여 내장 SSD 공간을 수 기가바이트 이상 확보합니다.
 - **안전성 검사 엔진 (`AppInspector`)**: 앱 번들의 가상화 권한(entitlement), 커널/시스템 확장(KEXT/System Extension), 하드코딩된 자체 재배치 로직 여부를 자동으로 검사합니다.
 - **Xcode DeviceSupport 관리 (`xcode`)**: 방대한 용량을 차지하는 iOS DeviceSupport 심볼을 외장 드라이브로 이전하면서도 Xcode가 정상적으로 작동하도록 지원합니다. 기존 레거시 심볼릭 링크를 보존하고 사용 불가능한 시뮬레이터를 정리합니다.
@@ -156,6 +157,7 @@ mb tui
 - **드라이브 연결·분리**: TUI 실행 중 외장 볼륨을 연결·분리하거나 이름을 바꾸면 `r` 없이 볼륨 상태를 갱신합니다. 상태줄에 연결·분리된 볼륨을 표시하고, 이동 목록에는 현재 대상 볼륨을 보여주거나 사용 가능한 볼륨(또는 기본 볼륨)이 없을 때 경고합니다. 세션 대상 볼륨이 사라지면 선택을 지우고 다시 고르게 하며, 그 볼륨을 쓰던 미리보기나 확인 화면은 아무것도 변경되지 않았다는 안내와 함께 닫힙니다. 작업 중에는 분리 경고를 표시하고, 작업이 결과를 보고한 뒤 상태를 갱신합니다. 알림은 상태를 다시 읽기만 하며 이동·복원·정리를 시작하지 않고, 실제 변화가 없는 반복 알림은 재스캔을 일으키지 않습니다.
 - **Xcode 저장 공간 (`xcode`)**: 기본 작업은 iOS DeviceSupport·Archives 외장화와 사용 불가능한 시뮬레이터 삭제입니다. 대상 볼륨을 선택하고 DerivedData 외장화·정리, CoreSimulator·Xcode 캐시 정리를 선택적으로 켭니다. Xcode 실행 중에는 일반 미리보기·실행을 차단하며, 강제 실행은 Force 옵션을 직접 선택한 뒤 Force & Execute로 확인해야 합니다. 읽기 전용 미리보기 다음에 별도 확인을 거치며 기본 선택은 취소입니다. 실행 직전 옵션, 볼륨 식별·가용성·여유 공간, 대상 경로·파일 메타데이터, Xcode 실행 상태, 시뮬레이터 대상을 재검증합니다. 조건이 바뀌면 작업 전에 중단하고 새 미리보기를 요청합니다. 완료 작업·작업별 실패·실제로 정리한 캐시 용량을 표시하고 부분 실패도 `mb history`에 기록합니다.
 - 캐시 외장화(`mb cache`)의 TUI 실행은 후속 범위이며 현재는 CLI를 사용합니다.
+- 복구 백업 관리(`mb backups`)는 현재 CLI에서만 제공되며, 이 버전의 TUI에는 노출되지 않습니다.
 
 ### 1. 스토리지 상태 확인
 
@@ -307,6 +309,7 @@ Healthy · 2
 | `teardown` | `td` |
 | `history` | `hist` |
 | `undo` | — |
+| `backups` | — |
 | `tui` | `ui` |
 
 ```sh
@@ -588,9 +591,39 @@ Available actions:
 
 **안전성 및 백업 정책**:
 - **식별자 일치 필수**: `redock`은 두 경로의 번들 식별자(`CFBundleIdentifier`)가 일치해야 진행됩니다. 다른 앱을 덮어쓰는 실수를 방지합니다.
-- **이전 외장 사본 백업 보관**: `redock` 실행 시 기존 외장 앱은 `<Volume>/MacBay/Backups/<작업ID>/<App>.app`으로 안전하게 이동된 후 새 앱이 배치됩니다. 백업 사본은 자동 삭제되지 않고 영구 보관됩니다.
+- **이전 외장 사본 백업 보관**: `redock` 실행 시 기존 외장 앱은 `<Volume>/MacBay/Backups/<작업ID>/<App>.app`으로 안전하게 이동된 후 새 앱이 배치됩니다. 백업 사본은 자동 삭제되지 않고 영구 보관됩니다. `mb backups`로 확인하고 더 이상 필요 없는 백업만 직접 삭제하세요.
 - **독립된 복구 저널**: 작업 상태는 `<Volume>/MacBay/.operations/repair-<App>.json`(버전 1)에 안전하게 기록됩니다. 작업이 중단된 경우 `mb doctor`가 감지하여 `mb repair "<App>" --rollback`으로 복원하도록 안내합니다.
 - **내장 유지 (keep-local)**: 매니페스트 항목만 원자적으로 제거하며, 내장 앱과 외장 사본은 파일시스템에서 전혀 삭제되지 않고 외장 사본은 비관리 보관 사본이 됩니다.
+
+### 복구 백업 조회 및 삭제 (`backups`)
+
+`repair --action redock`은 기존 외장 사본을 `<Volume>/MacBay/Backups/<작업ID>/<App>.app`에 보관하며 자동으로 삭제하지 않습니다. `mb backups`로 백업을 조회하고 필요한 것만 삭제하세요:
+
+```sh
+# 앱, 저장된 버전, 날짜, 논리 크기와 함께 백업 조회
+mb backups --volume /Volumes/ExternalSSD
+
+# 백업 하나 삭제 미리보기 (전체 작업 ID 또는 고유 접두사)
+mb backups --remove 6f2c1b9a --volume /Volumes/ExternalSSD --dry-run
+
+# 확인 후 삭제
+mb backups --remove 6f2c1b9a --volume /Volumes/ExternalSSD
+
+# 여러 백업을 프롬프트 없이 삭제
+mb backups --remove <ID1> --remove <ID2> --yes
+```
+
+**보호 대상**:
+- `<Volume>/MacBay/.operations`의 작업 또는 복구 저널이 참조하는 백업은 삭제할 수 없습니다. 중단된 repair 및 move/restore 작업도 포함됩니다.
+- 저널을 읽거나 파싱할 수 없으면, 참조가 확인되지 않은 백업은 `Unverifiable`로 표시되어 보호됩니다.
+- 심볼릭 링크이거나 알 수 없는 구조, 읽을 수 없는 메타데이터, 크기/날짜를 확인할 수 없는 백업도 보호됩니다.
+- 탐색은 `<Volume>/MacBay/Backups` 밖의 심볼릭 링크를 따라가지 않으며, 심볼릭 링크인 백업 루트나 작업 디렉터리는 보고만 하고 건드리지 않습니다.
+
+**미리보기 이후 변경**: 삭제 전에 볼륨을 다시 스캔합니다. 미리보기 이후 백업이 참조되거나 크기/날짜가 바뀌었거나 사라졌다면 해당 백업은 삭제하지 않고 실패로 보고합니다. 확인 프롬프트에서 취소하면 아무것도 변경되지 않습니다.
+
+**출력 및 종료 코드**: 목록 조회는 읽기 전용입니다. `--remove`는 삭제할 백업과 총 논리 크기를 미리 보여준 뒤 별도 확인을 요구하며(`--yes`로 생략), 삭제 결과는 되돌릴 수 없으므로 `mb history`에 undo 힌트 없이 기록됩니다. 크기와 확보 용량은 논리 크기이며 APFS 공유 블록과 스냅샷에 따라 실제 여유 공간은 달라질 수 있으므로, 결과에는 삭제 전후의 볼륨 여유 공간도 표시합니다. 종료 코드는 요청한 백업을 모두 삭제하면 `0`, 보호되었거나 미리보기 이후 변경·누락·삭제 실패가 있으면 `1`입니다.
+
+`mb backups --json`은 각 백업의 `id`, `appName`, `path`, `version`, `buildNumber`, `savedAt`, `sizeBytes`, `state`(`unreferenced`, `referenced`, `unverifiable`)와 해당되는 경우 `referencedBy` 또는 `reason`을 보고합니다. `summary`, `notes`, `warnings`도 함께 포함됩니다.
 
 ### 임의 디렉터리 이전 (`move` / `unmove`)
 

@@ -143,6 +143,7 @@ final class CLIIntegrationTests: XCTestCase {
         XCTAssertTrue(result.stdout.contains("adopt"))
         XCTAssertTrue(result.stdout.contains("undock"))
         XCTAssertTrue(result.stdout.contains("repair"))
+        XCTAssertTrue(result.stdout.contains("backups"))
         XCTAssertTrue(result.stdout.contains("xcode"))
         XCTAssertTrue(result.stdout.contains("move"))
         XCTAssertTrue(result.stdout.contains("unmove"))
@@ -902,6 +903,65 @@ final class CLIIntegrationTests: XCTestCase {
         return (localAppURL, externalAppURL)
     }
 
+    private func makeBackupFixture(
+        on volumeURL: URL,
+        appName: String = "CLIBackup.app",
+        version: String = "1.0.0"
+    ) throws -> (id: String, appURL: URL) {
+        let id = UUID().uuidString
+        let appURL = volumeURL
+            .appendingPathComponent("MacBay/Backups", isDirectory: true)
+            .appendingPathComponent(id, isDirectory: true)
+            .appendingPathComponent(appName, isDirectory: true)
+        let contents = appURL.appendingPathComponent("Contents", isDirectory: true)
+        try FileManager.default.createDirectory(at: contents, withIntermediateDirectories: true)
+
+        let plist = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>CFBundleExecutable</key>
+            <string>App</string>
+            <key>CFBundleIdentifier</key>
+            <string>com.example.clibackup</string>
+            <key>CFBundleShortVersionString</key>
+            <string>\(version)</string>
+            <key>CFBundleVersion</key>
+            <string>100</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+        </dict>
+        </plist>
+        """
+        try plist.write(to: contents.appendingPathComponent("Info.plist"), atomically: true, encoding: .utf8)
+        try Data(repeating: 0, count: 4096).write(to: contents.appendingPathComponent("Payload"))
+
+        fixtureDirectories.append(appURL.deletingLastPathComponent())
+        return (id, appURL)
+    }
+
+    @discardableResult
+    private func writeBackupJournal(
+        on volumeURL: URL,
+        backupURL: URL,
+        appName: String
+    ) throws -> URL {
+        let operations = volumeURL.appendingPathComponent("MacBay/.operations", isDirectory: true)
+        try FileManager.default.createDirectory(at: operations, withIntermediateDirectories: true)
+        let journalURL = operations.appendingPathComponent("backup-cli-\(UUID().uuidString).json")
+        let contents = """
+        {
+          "schemaVersion": 1,
+          "appName": "\(appName)",
+          "backupPath": "\(backupURL.standardizedFileURL.path)"
+        }
+        """
+        try contents.write(to: journalURL, atomically: true, encoding: .utf8)
+        fixtureDirectories.append(journalURL)
+        return journalURL
+    }
+
     func testRepairComparisonReadOnlyOutputsComparison() throws {
         guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
             throw XCTSkip("Binary not found at \(binaryURL.path)")
@@ -997,6 +1057,157 @@ final class CLIIntegrationTests: XCTestCase {
         let message = errorObj["message"] as? String ?? ""
         XCTAssertTrue(message.contains("Confirmation required"))
         XCTAssertTrue(FileManager.default.fileExists(atPath: localURL.path))
+    }
+
+    func testBackupsHelpOutput() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+
+        let result = try runCLI(arguments: ["backups", "--help"])
+        XCTAssertEqual(result.status, 0)
+        XCTAssertTrue(result.stdout.contains("Inspect repair backups"))
+        XCTAssertTrue(result.stdout.contains("--remove"))
+        XCTAssertTrue(result.stdout.contains("--dry-run"))
+        XCTAssertTrue(result.stdout.contains("--json"))
+        XCTAssertTrue(result.stdout.contains("--yes"))
+    }
+
+    func testBackupsListJSONIncludesFixture() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+        guard let volume = try firstWritableExternalVolume() else {
+            throw XCTSkip("No writable external volume available for integration test")
+        }
+
+        let volumeURL = URL(fileURLWithPath: volume.path)
+        let fixture = try makeBackupFixture(on: volumeURL, appName: "CLIBackupList.app")
+        let home = try makeIsolatedHome()
+        let environment = configEnvironment(home, home: home)
+
+        let result = try runCLI(arguments: ["backups", "--volume", volume.path, "--json"], environment: environment)
+        XCTAssertEqual(result.status, 0)
+
+        guard let data = result.stdout.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let backups = json["backups"] as? [[String: Any]] else {
+            return XCTFail("stdout was not valid backups JSON: \(result.stdout)")
+        }
+
+        guard let entry = backups.first(where: { ($0["id"] as? String) == fixture.id }) else {
+            return XCTFail("Fixture backup \(fixture.id) was not listed")
+        }
+        XCTAssertEqual(entry["appName"] as? String, "CLIBackupList.app")
+        XCTAssertEqual(entry["version"] as? String, "1.0.0")
+        XCTAssertEqual(entry["state"] as? String, "unreferenced")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.appURL.path))
+    }
+
+    func testBackupsRemovalDryRunDoesNotMutateFiles() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+        guard let volume = try firstWritableExternalVolume() else {
+            throw XCTSkip("No writable external volume available for integration test")
+        }
+
+        let volumeURL = URL(fileURLWithPath: volume.path)
+        let fixture = try makeBackupFixture(on: volumeURL, appName: "CLIBackupDryRun.app")
+        let home = try makeIsolatedHome()
+        let environment = configEnvironment(home, home: home)
+
+        let result = try runCLI(
+            arguments: ["backups", "--remove", fixture.id, "--volume", volume.path, "--dry-run"],
+            environment: environment
+        )
+        XCTAssertEqual(result.status, 0)
+        XCTAssertTrue(result.stdout.contains("Dry run: remove repair backups"))
+        XCTAssertTrue(result.stdout.contains("Dry run: no files were changed"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.appURL.path))
+    }
+
+    func testBackupsReferencedBackupIsProtected() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+        guard let volume = try firstWritableExternalVolume() else {
+            throw XCTSkip("No writable external volume available for integration test")
+        }
+
+        let volumeURL = URL(fileURLWithPath: volume.path)
+        let fixture = try makeBackupFixture(on: volumeURL, appName: "CLIBackupReferenced.app")
+        let journalURL = try writeBackupJournal(
+            on: volumeURL,
+            backupURL: fixture.appURL,
+            appName: "CLIBackupReferenced.app"
+        )
+        let home = try makeIsolatedHome()
+        let environment = configEnvironment(home, home: home)
+
+        let result = try runCLI(
+            arguments: ["backups", "--remove", fixture.id, "--volume", volume.path, "--yes"],
+            environment: environment
+        )
+        XCTAssertEqual(result.status, 1)
+        XCTAssertTrue(result.stdout.contains("Refused · 1"))
+        XCTAssertTrue(result.stdout.contains("Referenced by"))
+        XCTAssertTrue(result.stdout.contains("cannot be removed"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.appURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: journalURL.path))
+    }
+
+    func testBackupsRemoveWithYesDeletesBackup() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+        guard let volume = try firstWritableExternalVolume() else {
+            throw XCTSkip("No writable external volume available for integration test")
+        }
+
+        let volumeURL = URL(fileURLWithPath: volume.path)
+        let fixture = try makeBackupFixture(on: volumeURL, appName: "CLIBackupRemove.app")
+        let home = try makeIsolatedHome()
+        let environment = configEnvironment(home, home: home)
+
+        let result = try runCLI(
+            arguments: ["backups", "--remove", fixture.id, "--volume", volume.path, "--yes"],
+            environment: environment
+        )
+        XCTAssertEqual(result.status, 0)
+        XCTAssertTrue(result.stdout.contains("Removed · 1"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.appURL.path))
+    }
+
+    func testBackupsRemovalJSONWithoutYesFailsWithErrorEnvelope() throws {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            throw XCTSkip("Binary not found at \(binaryURL.path)")
+        }
+        guard let volume = try firstWritableExternalVolume() else {
+            throw XCTSkip("No writable external volume available for integration test")
+        }
+
+        let volumeURL = URL(fileURLWithPath: volume.path)
+        let fixture = try makeBackupFixture(on: volumeURL, appName: "CLIBackupJSONNoYes.app")
+        let home = try makeIsolatedHome()
+        let environment = configEnvironment(home, home: home)
+
+        let result = try runCLI(
+            arguments: ["backups", "--remove", fixture.id, "--volume", volume.path, "--json"],
+            environment: environment,
+            closeStdin: true
+        )
+        XCTAssertNotEqual(result.status, 0)
+
+        guard let data = result.stderr.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let errorObj = json["error"] as? [String: Any] else {
+            return XCTFail("stderr was not valid error JSON envelope: \(result.stderr)")
+        }
+
+        XCTAssertEqual(errorObj["code"] as? String, "configuration_error")
+        XCTAssertTrue((errorObj["message"] as? String ?? "").contains("Cancelled"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.appURL.path))
     }
 
     func testZeroArgumentNonTTYOutputsHelpAndExitsZero() throws {

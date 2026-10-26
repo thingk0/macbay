@@ -27,6 +27,7 @@ MacBay 是一款专为 Apple Silicon Mac 设计的开发者优先存储外部化
 
 - **交互式 TUI 模式 (`mb` / `mb tui`)**：在终端直接输入 `mb` 即可启动键盘控制的终端用户界面（TUI）。查看磁盘容量、浏览应用候选（Safe/Review/Blocked 状态）、安全进行 dry-run 预览与迁移/恢复、探索诊断结果及针对性建议。
 - **应用程序迁移 (`dock` / `undock` / `adopt`)**：将大型应用迁移至外置存储、恢复至内置磁盘，或在无需拷回内置磁盘的情况下将已有外置应用纳管至 MacBay 标准目录结构。自动刷新 Dock 栏图标与 LaunchServices 注册。
+- **修复备份管理 (`backups`)**：列出 `repair --action redock` 创建的备份（含保存版本、日期与逻辑大小），并仅删除不再需要的未引用备份。被操作/恢复日志引用或元数据无法验证的备份会受到保护。
 - **安全检查引擎 (`AppInspector`)**：自动分析应用程序包（App Bundle）的虚拟化权限（Entitlements）、内核/系统扩展（KEXT/System Extensions）以及硬编码重定位信号。
 - **Xcode DeviceSupport 管理 (`xcode`)**：迁移庞大的 iOS DeviceSupport 符号文件，同时确保 Xcode 无缝正常运行。保留原有的历史链接，并清理不可用的模拟器。
 - **任意目录迁移 (`move` / `unmove`)**：将任意目录——游戏库、虚拟机磁盘、数据集、媒体文件夹——迁移至 `<Volume>/MacBay/`，并采用与应用相同的清单跟踪符号链接模型进行管理。
@@ -155,6 +156,7 @@ mb tui
 - **驱动器连接与断开**：TUI运行期间，外部卷的挂载、卸载或重命名会自动刷新卷状态，无需按`r`。状态行会显示连接或断开的卷，移动列表会显示当前目标卷，或在没有可用卷（或默认卷）时给出警告。如果会话目标卷消失，会清除该选择并要求重新选择；依赖该卷的预览或确认页面会关闭，并提示未做任何更改。操作进行中会显示断开警告，并在操作报告结果后刷新状态。通知只会重新读取状态，绝不会启动移动、恢复或清理；没有实际变化的重复通知不会触发重新扫描。
 - **Xcode存储 (`xcode`)**：默认操作包括外置iOS DeviceSupport和Archives，以及删除不可用的模拟器。选择目标卷后，可启用DerivedData外置、DerivedData清理和CoreSimulator／Xcode缓存清理。Xcode运行时会阻止普通预览与执行；强制执行需要明确选择Force选项并通过Force & Execute确认。只读预览后还有单独确认，默认选择取消。执行前会重新验证选项、卷标识与可用性、剩余空间、目标路径和文件元数据、Xcode运行状态以及模拟器目标。条件发生变化时会在操作前停止，并要求重新预览。结果保留已完成操作、逐项失败和实际清理的缓存容量，部分失败也会记录到`mb history`。
 - 缓存外置（`mb cache`）的TUI操作仍在计划中，目前请使用CLI。
+- 修复备份管理（`mb backups`）目前仅在 CLI 中提供，此版本的 TUI 不包含该入口。
 
 ### 1. 检查存储状态
 
@@ -306,6 +308,7 @@ Healthy · 2
 | `teardown` | `td` |
 | `history` | `hist` |
 | `undo` | — |
+| `backups` | — |
 | `tui` | `ui` |
 
 ```sh
@@ -529,9 +532,39 @@ Available actions:
 
 **安全性与备份策略**：
 - **标识符严格匹配**：执行 `redock` 时，会严格比对两端应用包标识符（`CFBundleIdentifier`）。若标识符不一致将拒绝执行，防止意外覆盖不相关的应用。
-- **保留外置备份副本**：执行 `redock` 时，现有外置副本会首先安全移动至 `<Volume>/MacBay/Backups/<OperationID>/<App>.app` 进行归档，然后再放置新副本。外置备份副本绝不会被自动删除。
+- **保留外置备份副本**：执行 `redock` 时，现有外置副本会首先安全移动至 `<Volume>/MacBay/Backups/<OperationID>/<App>.app` 进行归档，然后再放置新副本。外置备份副本绝不会被自动删除；请使用 `mb backups` 查看，并仅手动删除不再需要的备份。
 - **独立修复操作日志**：修复操作状态保存在外置卷的 `<Volume>/MacBay/.operations/repair-<App>.json`（架构版本 v1）中。若操作意外中断，`mb doctor` 将检测并报告未完成操作（`incomplete_operation`），并引导用户执行 `mb repair "<App>" --rollback` 进行恢复。
 - **保留本地副本（keep-local）**：`keep-local` 仅原子移除清单中的对应条目。内置应用与外置副本均完好保留在文件系统中，外置副本变为未受管的归档副本。
+
+### 查看与删除修复备份 (`backups`)
+
+`repair --action redock` 会将原有外置副本归档至 `<Volume>/MacBay/Backups/<OperationID>/<App>.app`，且不会自动删除。使用 `mb backups` 查看这些归档，并仅删除不再需要的备份：
+
+```sh
+# 列出备份的应用、保存版本、日期与逻辑大小
+mb backups --volume /Volumes/ExternalSSD
+
+# 预览删除一个备份（完整操作 ID 或唯一前缀）
+mb backups --remove 6f2c1b9a --volume /Volumes/ExternalSSD --dry-run
+
+# 确认后删除
+mb backups --remove 6f2c1b9a --volume /Volumes/ExternalSSD
+
+# 无需提示删除多个备份
+mb backups --remove <ID1> --remove <ID2> --yes
+```
+
+**受保护的备份**：
+- 被 `<Volume>/MacBay/.operations` 中任一操作或恢复日志引用的备份无法删除，包括中断的 repair 与 move/restore 工作流。
+- 如果日志无法读取或解析，未确认引用的备份会显示为 `Unverifiable` 并受到保护。
+- 符号链接、无法识别的目录结构、无法读取的元数据，以及无法确定大小/日期的备份同样受到保护。
+- 扫描不会跟随 `<Volume>/MacBay/Backups` 之外的符号链接；指向外部的备份根目录或操作目录只会被报告，不会被修改。
+
+**预览后变更**：删除前会重新扫描卷。如果备份在预览后变为被引用、大小/日期发生变化或已消失，则不会删除该备份，并报告失败。在确认提示中取消不会做任何更改。
+
+**输出与退出码**：列表为只读操作。`--remove` 会预览将删除的备份与总逻辑大小，然后要求单独确认（`--yes` 可跳过）。删除不可逆，因此会以无 undo 提示的形式记录到 `mb history`。大小与回收量均为逻辑大小；APFS 共享块与快照可能改变实际可用空间，因此结果还会显示删除前后的卷可用空间。退出码：请求的备份全部删除时为 `0`；存在受保护、预览后变更、缺失或删除失败的备份时为 `1`。
+
+`mb backups --json` 会返回每个备份的 `id`、`appName`、`path`、`version`、`buildNumber`、`savedAt`、`sizeBytes`、`state`（`unreferenced`、`referenced`、`unverifiable`），以及适用时的 `referencedBy` 或 `reason`；同时包含 `summary`、`notes` 与 `warnings`。
 
 ### 任意目录迁移 (`move` / `unmove`)
 
