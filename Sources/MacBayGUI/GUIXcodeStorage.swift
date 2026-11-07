@@ -58,16 +58,32 @@ enum GUIXcodeWorkflow {
     static func result(_ report: XcodeDoctorReport, recoveryRecords: [MoveOperationRecord] = []) -> GUIActionResult {
         let migrations = [report.deviceSupport, report.archives, report.derivedData].compactMap { $0 }
         let cleanups = [report.derivedDataCleanup, report.cacheCleanup, report.simulatorCleanup].compactMap { $0 }
+        var messages: [String] = []
+        var paths: [String] = []
+        for migration in migrations {
+            messages.append("\(migration.name): \(migration.destinationPath)")
+            messages.append(contentsOf: migration.messages)
+            paths.append(contentsOf: [migration.sourcePath, migration.destinationPath])
+        }
+        for cleanup in cleanups {
+            let outcome = cleanup.succeeded ? "Completed" : "Needs attention"
+            messages.append("\(cleanup.command): \(outcome)\n\(cleanup.output)")
+        }
+        if report.derivedDataCleanup != nil || report.cacheCleanup != nil {
+            messages.append("Removed \(GUIFormat.bytes(report.freedBytes)) of logical build and cache data. APFS free-space changes can differ.")
+        }
+        for failure in report.failedActions {
+            messages.append("\(failure.action): \(failure.reason)")
+        }
+        if !recoveryRecords.isEmpty {
+            messages.append("An interrupted move preserved its data copies. Inspect all recorded paths in Recovery Center before retrying.")
+        }
+        for record in recoveryRecords {
+            paths.append(contentsOf: [record.sourcePath, record.destinationPath])
+            if let backup = record.backupPath { paths.append(backup) }
+        }
         return GUIActionResult(succeeded: !report.hasFailures,
             title: report.hasFailures ? "Xcode storage needs attention" : "Xcode storage completed",
-            messages: migrations.flatMap { [$0.name + ": " + $0.destinationPath] + $0.messages }
-                + cleanups.map { $0.command + ": " + ($0.succeeded ? "Completed" : "Needs attention") + "\n" + $0.output }
-                + (report.derivedDataCleanup != nil || report.cacheCleanup != nil
-                    ? ["Removed " + GUIFormat.bytes(report.freedBytes) + " of logical build and cache data. APFS free-space changes can differ."] : [])
-                + report.failedActions.map { $0.action + ": " + $0.reason }
-                + (recoveryRecords.isEmpty ? [] : ["An interrupted move preserved its data copies. Inspect all recorded paths in Recovery Center before retrying."]),
-            paths: migrations.flatMap { [$0.sourcePath, $0.destinationPath] }
-                + recoveryRecords.flatMap { [$0.sourcePath, $0.destinationPath] + [$0.backupPath].compactMap { $0 } },
-            canOpenRecovery: !recoveryRecords.isEmpty)
+            messages: messages, paths: paths, canOpenRecovery: !recoveryRecords.isEmpty)
     }
 }

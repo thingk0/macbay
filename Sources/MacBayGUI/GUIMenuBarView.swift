@@ -100,23 +100,38 @@ struct GUIMenuBarView: View {
     }
 
     private func disk(name: String, capacity: GUIMenuBarCapacity?, external: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
+        let availableDescription: String
+        let accessibilityDescription: String
+        if let capacity {
+            availableDescription = "\(capacity.availableText) available"
+            accessibilityDescription = "\(name), \(capacity.percentageText) used, \(capacity.availableText) available"
+        } else {
+            availableDescription = external ? snapshot.connection : "Unavailable"
+            accessibilityDescription = "\(name), Unavailable"
+        }
+
+        return VStack(alignment: .leading, spacing: 7) {
             Label(name, systemImage: external ? "externaldrive" : "laptopcomputer")
                 .font(.caption.weight(.medium)).lineLimit(1).help(name)
             HStack(spacing: 7) {
-                ZStack {
-                    Circle().stroke(.primary.opacity(0.10), lineWidth: 3)
-                    if let fraction = capacity?.usedFraction {
-                        Circle().trim(from: 0, to: fraction).stroke(Color.accentColor, style: StrokeStyle(lineWidth: 3, lineCap: .round))
-                            .rotationEffect(.degrees(-90))
-                    }
-                }.frame(width: 28, height: 28).accessibilityHidden(true)
+                usageGauge(fraction: capacity?.usedFraction)
                 Text(capacity?.percentageText ?? "—").font(.system(size: 19, weight: .medium)).monospacedDigit()
             }
-            Text(capacity.map { $0.availableText + " available" } ?? (external ? snapshot.connection : "Unavailable"))
+            Text(availableDescription)
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }.frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(name + ", " + (capacity.map { $0.percentageText + " used, " + $0.availableText + " available" } ?? "Unavailable"))
+        .accessibilityLabel(accessibilityDescription)
+    }
+
+    private func usageGauge(fraction: Double?) -> some View {
+        ZStack {
+            Circle().stroke(Color.primary.opacity(0.10), lineWidth: 3)
+            if let fraction {
+                Circle().trim(from: 0, to: CGFloat(fraction))
+                    .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+            }
+        }.frame(width: 28, height: 28).accessibilityHidden(true)
     }
 }
