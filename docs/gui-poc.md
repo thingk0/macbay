@@ -39,6 +39,7 @@ These artifacts use local ad-hoc signing. They are not notarized release downloa
 Public distribution needs Developer ID signing, hardened runtime configuration,
 and Apple notarization. Staple the ticket for reliable offline Gatekeeper checks.
 No certificates or release credentials are needed for local builds.
+See [release setup](releasing-1.10.md) for credential names and the distribution pipeline.
 
 ## Window design
 
@@ -56,7 +57,7 @@ The default content size is 900 × 700, with an 800 × 580 minimum.
 - **Overview**: real internal/external capacity, drive selection, candidate app sizes, warnings, and recent history.
 - **Menu bar**: connected internal/external gauges with used percentages by default. Choose Combined storage or Available space in Settings or the popover; preferences persist across launches. The external gauge follows the same selected destination as Overview. The popover shows each disk and their combined available space. Combined percentage is weighted by disk capacity and includes only the selected connected external drive. Disconnected, unselected, loading, and unreadable disks never retain stale external capacity.
 - **Applications**: native table, search, local/external filters, compatibility status, app details, and confirmed single-app moves and restores. Finder and copy-path actions are available from app details and the context menu; Command-F focuses search.
-- **Developer Data**: discovered and managed data plus the shared Xcode storage planner.
+- **Developer Data**: discovered and managed data plus confirmed Xcode storage execution. DeviceSupport and Archives moves are selected by default. DerivedData has mutually exclusive Keep, Move, and Remove choices. Cache and unavailable-simulator removal are off by default and require their own acknowledgment. Review shows source/destination paths, copy size, free space, cleanup locations, and exact simulator IDs. Empty plans explain why execution is disabled.
 - **Cleanup**: shared cache whitelist, explicit selection, running-app exclusion, preview, and a separate acknowledgment before permanent removal. Results retain skipped paths and individual failures.
 - **Update Center**: persisted update workflows, manual Prepare → vendor update → Finish, and supported managed Kiro CLI updates.
 - **Recovery Center**: grouped interrupted repairs, updates, adoptions, moves, and restores; confirmed repair rollback and update resume/finish actions, with manual CLI guidance for other states.
@@ -66,8 +67,12 @@ The default content size is 900 × 700, with an 800 × 580 minimum.
 - **Settings**: a separate native window with system/light/dark appearance, compact rows, the app details panel, menu-bar visibility/display/values, and opt-in completion notifications.
 - **MacBay updates**: a manual stable-release check opens the official release page when a newer version is available. It does not download or install automatically.
 
-Xcode storage plans remain previews. Applications, Cleanup, Update Center, and supported
-Recovery Center actions use a separate preview and explicit confirmation.
+Xcode Storage, Applications, Cleanup, Update Center, and supported Recovery Center
+actions use a separate preview and explicit confirmation.
+Default-drive saving is opt-in. Losing or clearing a selected destination never silently
+switches a pending action to another connected drive. Only one main-window sheet is presented
+at a time; Settings remains a separate window.
+
 Preparing an app for update restores it locally;
 finishing returns it to its original physical drive. Vendor updating is manual except
 for the existing supported Kiro CLI managed updater. Finishing requires acknowledgment
@@ -102,7 +107,7 @@ exits explicitly. Disable menu-bar display to retain the window-only lifecycle.
 
 The main window is owned by `NSSplitViewController` with a native sidebar item and a
 SwiftUI content item. AppKit owns the sidebar material, rounded edges, tracking
-separator, and animated toggle. The toolbar uses the system sidebar button. System colors, semantic text styles, GroupBox sections, table rows,
+separator, and animated toggle. The toolbar uses the system sidebar button. System colors, semantic text styles, grouped Form sections, table rows,
 resizable split panes, and standard bordered buttons keep the interface consistent
 with macOS. The system supplies materials and accessibility behavior. No custom glass layers,
 content gradients, floating sidebar shell, or rounded table container are added.
@@ -143,6 +148,17 @@ and bounded path fingerprints. `CachePurgePlan` refreshes the whitelist and runn
 checks and fingerprints every selected path. `DefaultVolumePlan` retains the previous
 configuration and selected volume identity. Execution rechecks each plan before mutation.
 
+`XcodeStoragePlan` captures the exact selected actions, physical drive identity, source and
+destination fingerprints, cleanup scope, Xcode process state, and unavailable simulator IDs.
+Execution holds the shared volume lock while revalidating the plan and applying changes.
+No GUI force override is offered. Simulator tools are not queried when simulator cleanup is off.
+Moved Xcode folders have manifest entries and interruption journals, and can be restored with
+`mb unmove <original-path>`. The GUI shows managed folders; interrupted moves expose their
+source, destination, and backup in Recovery Center for manual inspection.
+If old-backup cleanup fails, the original-path link and complete destination stay intact.
+Doctor preserves journals when a backup remains or safe reconciliation cannot be established.
+Cleanup results list skipped paths and failures; disposable-cache failures do not offer an unrelated recovery action.
+
 `AppUpdatePlan` captures a shared-engine dry run, the persisted workflow, resolved
 original volume, and bounded filesystem fingerprints. Execution reruns the shared
 preflight and rejects changed conditions. `RepairRollbackPlan` validates the existing
@@ -156,7 +172,7 @@ The GUI keeps prepared plans behind single-use preview tokens. Navigation, refre
 disk changes, and cancellation invalidate pending confirmation; late previews are
 discarded. Every execution result refreshes workflow state, Diagnostics, and History.
 Progress callbacks are scoped to one execution. The window has a minimum content size
-of 900 × 620, and closing or quitting is blocked while an operation is running.
+of 800 × 580, and closing or quitting is blocked while files or the default-drive setting are being changed.
 
 `GUIAssets` explicitly resolves the bundled resources in a packaged `.app`, with
 the SwiftPM module bundle as the development fallback. This handles the different
@@ -176,3 +192,4 @@ and files, missing/replaced volumes, redirected parents, partial rollback, clean
 failures, setup choices, and mocked release checks. The safe runner excludes legacy
 CLI fixtures that require a physical external drive.
 Tests never relocate real apps or write to a physical external drive.
+See [1.10 stabilization validation](validation-1.10.md) for the verified scope and remaining distribution checks.

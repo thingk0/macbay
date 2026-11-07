@@ -23,13 +23,13 @@ public final class GUISettingsWindowController: NSObject, NSWindowDelegate {
     }
 
     public func show() {
-        guard !store.isExecutingAction, !store.isSavingSetup, !store.showsActionSheet else { return }
+        guard store.canOpenSettings else { return }
         if store.showsSettings { present() }
         else { store.showsSettings = true }
     }
 
     private func present() {
-        guard !store.isExecutingAction, !store.isSavingSetup, !store.showsActionSheet else {
+        guard store.canOpenSettings else {
             store.showsSettings = false
             return
         }

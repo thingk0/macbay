@@ -15,6 +15,7 @@ public enum GUIActionKind: Equatable, Sendable {
     case repairRollback
     case migration(ApplicationMigrationAction)
     case cleanup
+    case xcode
 }
 
 public struct GUIActionPreview: Identifiable, Sendable {
@@ -24,6 +25,8 @@ public struct GUIActionPreview: Identifiable, Sendable {
     public let confirmTitle: String
     public let requiresRiskAcknowledgment: Bool
     public let canExecute: Bool
+    public let blockedReason: String?
+    public let requiresXcodeRemovalConfirmation: Bool
     public var requiresVendorFinished: Bool { kind == .update(.finish) }
     public var requiresCacheRemovalConfirmation: Bool { kind == .cleanup }
     public func accepts(_ confirmation: GUIActionConfirmation) -> Bool {
@@ -31,11 +34,15 @@ public struct GUIActionPreview: Identifiable, Sendable {
             && (!requiresRiskAcknowledgment || confirmation.acknowledgesRisks)
             && (!requiresVendorFinished || confirmation.vendorFinished)
             && (!requiresCacheRemovalConfirmation || confirmation.confirmsCacheRemoval)
+            && (!requiresXcodeRemovalConfirmation || confirmation.confirmsXcodeRemoval)
     }
     public init(id: UUID = UUID(), kind: GUIActionKind, detail: GUIPreview, confirmTitle: String,
-                requiresRiskAcknowledgment: Bool = false, canExecute: Bool = true) {
+                requiresRiskAcknowledgment: Bool = false, canExecute: Bool = true,
+                requiresXcodeRemovalConfirmation: Bool = false, blockedReason: String? = nil) {
         self.id = id; self.kind = kind; self.detail = detail; self.confirmTitle = confirmTitle
         self.requiresRiskAcknowledgment = requiresRiskAcknowledgment; self.canExecute = canExecute
+        self.requiresXcodeRemovalConfirmation = requiresXcodeRemovalConfirmation
+        self.blockedReason = blockedReason
     }
 }
 
@@ -45,11 +52,13 @@ public struct GUIActionConfirmation: Sendable {
     public let acknowledgesRisks: Bool
     public let vendorFinished: Bool
     public let confirmsCacheRemoval: Bool
+    public let confirmsXcodeRemoval: Bool
     public init(previewID: UUID, reviewed: Bool, acknowledgesRisks: Bool = false, vendorFinished: Bool = false,
-                confirmsCacheRemoval: Bool = false) {
+                confirmsCacheRemoval: Bool = false, confirmsXcodeRemoval: Bool = false) {
         self.previewID = previewID; self.reviewed = reviewed
         self.acknowledgesRisks = acknowledgesRisks; self.vendorFinished = vendorFinished
         self.confirmsCacheRemoval = confirmsCacheRemoval
+        self.confirmsXcodeRemoval = confirmsXcodeRemoval
     }
 }
 

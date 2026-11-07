@@ -215,7 +215,24 @@ actor WorkflowGUIService: GUIServiceProtocol {
     func setupChecks(volumePath: String?) -> GUISetupReport {
         GUISetupReport(volumePath: volumePath, checks: [], canSaveDefault: volumePath != nil)
     }
-    func saveSetup(_ id: UUID) throws {
+    private var holdsSetupSave = false
+    private var pendingSetupSave: CheckedContinuation<Void, Never>?
+    private var setupSaveObserver: CheckedContinuation<Void, Never>?
+    func holdSetupSave() { holdsSetupSave = true }
+    func waitForSetupSave() async {
+        if pendingSetupSave != nil { return }
+        await withCheckedContinuation { setupSaveObserver = $0 }
+    }
+    func releaseSetupSave() { pendingSetupSave?.resume(); pendingSetupSave = nil }
+    func saveSetup(_ id: UUID) async throws {
+        if holdsSetupSave {
+            holdsSetupSave = false
+            await withCheckedContinuation {
+                pendingSetupSave = $0
+                setupSaveObserver?.resume()
+                setupSaveObserver = nil
+            }
+        }
         if setupFails { throw GUIError.unavailable("Drive changed; check setup again.") }
         savedSetupCount += 1
     }
@@ -300,5 +317,7 @@ actor WorkflowGUIService: GUIServiceProtocol {
     func discardAction(_ id: UUID) {}
     func previewApplication(_ app: GUIApplication, volumePath: String?) -> GUIActionPreview { GUIActionPreview(kind: .migration(.move), detail: GUIPreview(title: "", subtitle: "", rows: []), confirmTitle: "Move") }
     func previewCaches(_ items: [PurgeItem]) -> GUIActionPreview { GUIActionPreview(kind: .cleanup, detail: GUIPreview(title: "", subtitle: "", rows: []), confirmTitle: "Clean") }
-    func previewXcode(volumePath: String) -> GUIPreview { GUIPreview(title: "", subtitle: "", rows: []) }
+    func previewXcode(volumePath: String, options: XcodeDoctorOptions) -> GUIActionPreview {
+        GUIActionPreview(kind: .xcode, detail: GUIPreview(title: "Xcode Storage", subtitle: "", rows: []), confirmTitle: "Apply")
+    }
 }

@@ -27,6 +27,7 @@ MacBay is a macOS storage manager for Apple Silicon Macs, with a native SwiftUI 
 
 - **Native macOS App**: English SwiftUI interface with native macOS sidebars, tables, a separate Settings window, confirmed app moves/restores and cache cleanup, Diagnostics, and History. First-run setup checks the selected drive and access; Settings offers completion notifications and a manual MacBay update check. Build a local app and DMG with `bash scripts/build-app.sh --dmg`; see [GUI setup and scope](docs/gui-poc.md).
 - **GUI Update Center**: Preview and confirm Prepare → vendor update → Finish, or run the supported managed Kiro CLI updater. Rechecks app identity, signature, process locks, space, workflow state, and the original drive.
+- **GUI Xcode Storage**: Choose DeviceSupport and Archives moves, a single DerivedData action (keep, move, or remove), and optional cache/simulator cleanup. Review exact paths, confirm, and follow progress and per-action results. Moves are recorded in the volume manifest; cleanup stays off until selected.
 - **GUI Recovery Center**: Groups interrupted repairs, updates, adoptions, moves, and restores. Validated repair rollbacks and update actions execute after confirmation; ambiguous states show operation-specific manual guidance.
 - **Interactive TUI Mode (`mb tui` / `mb ui`)**: Launch an interactive, keyboard-driven Terminal User Interface to visually inspect storage capacity, browse applications with Safe/Review/Blocked status, and preview moves and restorations.
 - **Application Relocation (`dock` / `undock` / `adopt`)**: Migrate large apps to external storage, restore them to internal disk, or adopt already-externalized apps into standard MacBay layout without restoring first. Dock icons and LaunchServices are automatically refreshed.
@@ -66,7 +67,9 @@ For 1.10.0, the script produces `.build/gui/MacBay.app`,
 These are locally ad-hoc signed development artifacts, not notarized public releases.
 Use `bash scripts/run-app.sh --demo` to explore the native interface without reading or changing real apps.
 Moves, restores, cleanup, updates, and supported recovery actions require a separate
-preview and confirmation. Xcode storage plans currently prepare previews only.
+preview and confirmation. Developer Data also executes selected Xcode storage actions after review;
+simulator and cache deletion are off by default and require a separate removal acknowledgment.
+See [distribution setup](docs/releasing-1.10.md) for the Developer ID and notarization pipeline.
 
 ### CLI via Homebrew
 
@@ -713,6 +716,13 @@ mb xcode --externalize-derived-data --dry-run
 
 > [!NOTE]
 > `mb xcode` checks whether `Xcode.app` is actively running before modifying its storage or deleting caches. To proceed anyway, pass `-f, --force`.
+
+The GUI leaves simulator and cache removal off by default; CLI/TUI retain their existing simulator-cleanup default.
+Confirmed GUI/TUI plans delete only the simulator IDs shown in the preview. Xcode moves now save manifest entries
+and interruption journals, so `mb status`, `mb unmove <original-path>`, Diagnostics, and Recovery can track them.
+Cleanup refuses links into unrelated data folders and checks open files before deleting build data or caches.
+If removing an old backup fails after a move, the working link and complete external copy are preserved;
+the possibly incomplete backup is left for inspection rather than restored over the live data.
 
 ### Developer Cache Routing (`cache`)
 

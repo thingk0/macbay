@@ -10,7 +10,7 @@ public protocol GUIServiceProtocol: Sendable {
     func caches() async -> [PurgeItem]
     func previewApplication(_ app: GUIApplication, volumePath: String?) async throws -> GUIActionPreview
     func previewCaches(_ items: [PurgeItem]) async throws -> GUIActionPreview
-    func previewXcode(volumePath: String) async throws -> GUIPreview
+    func previewXcode(volumePath: String, options: XcodeDoctorOptions) async throws -> GUIActionPreview
     func updates() async throws -> [UpdateWorkflowRecord]
     func recovery() async throws -> GUIRecoverySnapshot
     func previewRecovery(_ item: GUIRecoveryItem) async throws -> GUIActionPreview
@@ -27,7 +27,7 @@ public actor LiveGUIService: GUIServiceProtocol {
     private let service: MacBayService
     private enum Prepared {
         case update(AppUpdatePlan), rollback(RepairRollbackPlan)
-        case migration(ApplicationMigrationPlan), cleanup(CachePurgePlan)
+        case migration(ApplicationMigrationPlan), cleanup(CachePurgePlan), xcode(XcodeStoragePlan)
     }
     private var pending: (preview: GUIActionPreview, work: Prepared)?
     private var setupPlan: (id: UUID, plan: DefaultVolumePlan)?
@@ -209,6 +209,18 @@ public actor LiveGUIService: GUIServiceProtocol {
             return GUIActionResult(succeeded: true,
                 title: plan.action == .move ? "Application moved" : "Application restored",
                 messages: result.messages, paths: [plan.appPath, result.destinationPath])
+        case .xcode(let plan):
+            let report = try service.executeXcode(plan: plan, progress: { event in
+                switch event {
+                case .copying: progress(GUIActionProgress("Copying Xcode data…"))
+                case .updatingLink: progress(GUIActionProgress("Updating the original Xcode path…"))
+                default: progress(GUIActionProgress(event))
+                }
+            })
+            let sources = Set([plan.report.deviceSupport, plan.report.archives, plan.report.derivedData].compactMap { $0?.sourcePath })
+            let records = OperationJournal().listIncompleteMoves(on: URL(fileURLWithPath: plan.volumePath))
+                .filter { sources.contains($0.sourcePath) }
+            return GUIXcodeWorkflow.result(report, recoveryRecords: records)
         case .cleanup(let plan):
             progress(GUIActionProgress("Removing the selected disposable caches…"))
             let result = try service.executeCachePurge(plan: plan)
@@ -217,8 +229,8 @@ public actor LiveGUIService: GUIServiceProtocol {
                 title: complete ? "Cleanup completed" : "Cleanup partially completed",
                 messages: ["Removed " + GUIFormat.bytes(result.totalReclaimedBytes) + " of logical cache data. APFS free-space changes can differ."]
                     + result.messages.filter { !$0.contains("successfully") }
-                    + result.failedItems.map { $0.path + ": " + $0.reason },
-                canOpenRecovery: !complete)
+                    + result.skippedItems.map { "Skipped: " + $0.path + ($0.isRunning ? " · App is running." : " · Rescan and review this cache before retrying.") }
+                    + result.failedItems.map { $0.path + ": " + $0.reason })
         }
     }
 
@@ -271,19 +283,24 @@ public actor LiveGUIService: GUIServiceProtocol {
         return preview
     }
 
-    public func previewXcode(volumePath: String) throws -> GUIPreview {
-        let plan = try service.planXcode(volumePath: volumePath, options: XcodeDoctorOptions())
-        let results = [plan.report.deviceSupport, plan.report.archives, plan.report.derivedData].compactMap { $0 }
-        return GUIPreview(
-            title: "Xcode Storage Preview", subtitle: "Review the shared Xcode planner before any operation.",
-            rows: [GUIInfoRow("Destination drive", plan.volumePath),
-                   GUIInfoRow("Copy size", GUIFormat.bytes(plan.requiredBytes)),
-                   GUIInfoRow("Destination free", GUIFormat.bytes(plan.availableBytes))]
-                + results.map { GUIInfoRow($0.name, $0.destinationPath + " · " + GUIFormat.bytes($0.sizeBytes)) }
-                + [GUIInfoRow("Unavailable simulators", String(plan.unavailableSimulatorIDs.count))],
-            messages: plan.options.actionDescriptions + results.flatMap(\.messages)
-                + plan.report.failedActions.map { $0.action + ": " + $0.reason },
-            needsReview: plan.xcodeRunning || plan.report.hasFailures
-        )
+    public func previewXcode(volumePath: String, options: XcodeDoctorOptions) throws -> GUIActionPreview {
+        pending = nil
+        guard !options.force, !options.actionDescriptions.isEmpty else {
+            throw GUIError.unavailable("Select at least one Xcode storage action. Quit Xcode before reviewing changes.")
+        }
+        let plan: XcodeStoragePlan
+        do { plan = try service.planXcode(volumePath: volumePath, options: options) }
+        catch {
+            if error.localizedDescription.contains(XcodeDoctor.xcodeRunningMessage) {
+                throw GUIError.unavailable("Xcode is running. Quit Xcode and review a new preview before changing its storage.")
+            }
+            throw error
+        }
+        guard plan.volumeUUID?.isEmpty == false else {
+            throw GUIError.unavailable("The destination drive identity could not be verified. Reconnect the external APFS drive and try again.")
+        }
+        let preview = GUIXcodeWorkflow.preview(plan)
+        pending = (preview, .xcode(plan))
+        return preview
     }
 }

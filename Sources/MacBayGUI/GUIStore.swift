@@ -38,10 +38,19 @@ public final class GUIStore: ObservableObject {
         didSet { if selectedApplicationID != oldValue { invalidatePreview() } }
     }
     @Published public var selectedVolumePath: String? {
-        didSet { if selectedVolumePath != oldValue { invalidatePreview() } }
+        didSet {
+            mayChooseInitialDestination = false
+            if selectedVolumePath != oldValue {
+                invalidatePreview()
+                invalidateSetupChecks()
+            }
+        }
     }
     @Published public var selectedCacheIDs = Set<String>() {
         didSet { if selectedCacheIDs != oldValue { invalidatePreview() } }
+    }
+    @Published public var xcodeSelection = GUIXcodeSelection() {
+        didSet { if xcodeSelection != oldValue { invalidatePreview() } }
     }
     @Published public var preview: GUIPreview?
     @Published public var alert: GUIAlert?
@@ -80,8 +89,9 @@ public final class GUIStore: ObservableObject {
     private var storageGeneration = 0
     private var executionID: UUID?
     private var setupGeneration = 0
-    private var setupAfterSettings = false
-    private var releaseAfterSettings = false
+    private enum SettingsDestination { case setup, releaseCheck }
+    private var settingsDestination: SettingsDestination?
+    private var mayChooseInitialDestination = true
 
     public init(service: any GUIServiceProtocol, isDemo: Bool = false, monitorVolumes: Bool = true,
                 releaseChecker: any GUIReleaseChecking = GitHubGUIReleaseChecker()) {
@@ -127,17 +137,40 @@ public final class GUIStore: ObservableObject {
     public var updateApplications: [GUIApplication] {
         applications.filter { app in app.state == .external && !updateRecords.contains { $0.sourcePath == app.path } }
     }
-    public var canPrepareWorkflow: Bool { !isRefreshing && !isPreparingPreview && !isExecutingAction && !isFinalizingAction && actionResult == nil }
+    public var isPerformingMutation: Bool { isExecutingAction || isSavingSetup }
     public var showsActionSheet: Bool { actionPreview != nil || actionResult != nil || isExecutingAction }
+    public var hasPresentedSheet: Bool { showsSetup || showsReleaseCheck || preview != nil || showsActionSheet }
+    public var canNavigate: Bool {
+        !isPerformingMutation && !isFinalizingAction && !hasPresentedSheet && settingsDestination == nil
+    }
+    public var canOpenSettings: Bool {
+        !isPerformingMutation && !isFinalizingAction && !isPreparingPreview && !hasPresentedSheet && settingsDestination == nil
+    }
+    public var canOpenSetup: Bool {
+        !isPerformingMutation && !isFinalizingAction && !isPreparingPreview && !showsReleaseCheck
+            && preview == nil && !showsActionSheet && settingsDestination == nil
+    }
+    public var canCheckForAppUpdates: Bool {
+        !isPerformingMutation && !isFinalizingAction && !isPreparingPreview && !showsSetup
+            && preview == nil && !showsActionSheet && settingsDestination == nil
+    }
+    public var canRefreshView: Bool { canNavigate && !isRefreshing && !isScanning && !isScanningCaches }
+    private var canReviewFileAction: Bool {
+        !isRefreshing && !isScanning && !isScanningCaches && !isPreparingPreview && !isPerformingMutation
+            && !isFinalizingAction && actionResult == nil && !showsSetup && !showsReleaseCheck
+            && preview == nil && settingsDestination == nil
+    }
+    public var canPrepareWorkflow: Bool { canReviewFileAction && actionPreview == nil }
+    public var canConfirmAction: Bool { canReviewFileAction && actionPreview != nil }
 
     public func goBack() {
-        guard !isExecutingAction, !isSavingSetup, !showsActionSheet,
+        guard canNavigate,
               let previous = navigationHistory.goBack() else { return }
         section = previous
     }
 
     public func goForward() {
-        guard !isExecutingAction, !isSavingSetup, !showsActionSheet,
+        guard canNavigate,
               let next = navigationHistory.goForward() else { return }
         section = next
     }
@@ -150,7 +183,7 @@ public final class GUIStore: ObservableObject {
     }
 
     public func refresh() async {
-        if isExecutingAction { refreshRequested = true; return }
+        if isPerformingMutation { refreshRequested = true; return }
         if isRefreshing { refreshRequested = true; return }
         isRefreshing = true
         defer { isRefreshing = false }
@@ -163,7 +196,7 @@ public final class GUIStore: ObservableObject {
                 applyStorageStatus(status)
             } catch {
                 statusReport = nil
-                selectedVolumePath = nil
+                if selectedVolumePath != nil { selectedVolumePath = nil }
                 statusError = error.localizedDescription
             }
             do {
@@ -193,19 +226,19 @@ public final class GUIStore: ObservableObject {
 
     /// Menu-bar polling reads capacity only, without rescanning apps or discarding a reviewed preview.
     public func refreshStorage() async {
-        guard !isRefreshingStorage, !isRefreshing, !isExecutingAction, !isFinalizingAction, !isPreparingPreview else { return }
+        guard !isRefreshingStorage, !isRefreshing, !isPerformingMutation, !isFinalizingAction, !isPreparingPreview else { return }
         isRefreshingStorage = true
         storageGeneration += 1
         let generation = storageGeneration
         defer { isRefreshingStorage = false }
         do {
             let status = try await service.status()
-            guard generation == storageGeneration, !Task.isCancelled, !isExecutingAction else { return }
+            guard generation == storageGeneration, !Task.isCancelled, !isPerformingMutation else { return }
             applyStorageStatus(status)
         } catch {
-            guard generation == storageGeneration, !Task.isCancelled, !isExecutingAction else { return }
+            guard generation == storageGeneration, !Task.isCancelled, !isPerformingMutation else { return }
             statusReport = nil
-            selectedVolumePath = nil
+            if selectedVolumePath != nil { selectedVolumePath = nil }
             statusError = error.localizedDescription
         }
     }
@@ -214,21 +247,20 @@ public final class GUIStore: ObservableObject {
         statusReport = status
         statusError = nil
         let paths = Set(status.externalVolumes.map(\.path))
-        if selectedVolumePath.map({ paths.contains($0) }) != true {
-            if let configured = status.defaultVolume?.mountedPath, paths.contains(configured) {
-                selectedVolumePath = configured
-            } else if status.defaultVolume != nil {
-                selectedVolumePath = nil
-            } else if status.externalVolumes.count == 1 {
-                selectedVolumePath = status.externalVolumes[0].path
-            } else {
-                selectedVolumePath = nil
-            }
+        if let selected = selectedVolumePath {
+            if !paths.contains(selected) { selectedVolumePath = nil }
+            return
+        }
+        guard mayChooseInitialDestination else { return }
+        if let configured = status.defaultVolume?.mountedPath, paths.contains(configured) {
+            selectedVolumePath = configured
+        } else if status.defaultVolume == nil, status.externalVolumes.count == 1 {
+            selectedVolumePath = status.externalVolumes[0].path
         }
     }
 
     public func scanApplications() async {
-        guard !isScanning, !isExecutingAction else { return }
+        guard !isScanning, !isPerformingMutation else { return }
         invalidatePreview()
         isScanning = true
         defer { isScanning = false }
@@ -238,7 +270,7 @@ public final class GUIStore: ObservableObject {
     }
 
     public func scanCaches() async {
-        guard !isScanningCaches, !isExecutingAction else { return }
+        guard !isScanningCaches, !isPerformingMutation else { return }
         invalidatePreview()
         isScanningCaches = true
         defer { isScanningCaches = false }
@@ -261,30 +293,40 @@ public final class GUIStore: ObservableObject {
         await prepareWorkflow { try await service.previewCaches(items) }
     }
     public func previewXcode() async {
-        guard !isExecutingAction else { return }
+        guard canPrepareWorkflow, xcodeSelection.hasActions else { return }
         guard let path = selectedVolume?.path else { return }
         let service = self.service
-        await prepare { try await service.previewXcode(volumePath: path) }
+        let options = xcodeSelection.options
+        await prepareWorkflow { try await service.previewXcode(volumePath: path, options: options) }
     }
     public func dismissPreview() { invalidatePreview() }
 
     public func requestSetup() {
-        guard !isExecutingAction else { return }
-        if showsSettings { setupAfterSettings = true; showsSettings = false }
+        guard canOpenSetup else { return }
+        if showsSettings { settingsDestination = .setup; showsSettings = false }
         else { showsSetup = true }
     }
     public func settingsDismissed() {
-        if setupAfterSettings { setupAfterSettings = false; showsSetup = true }
-        if releaseAfterSettings { releaseAfterSettings = false; Task { await checkForAppUpdates() } }
+        let destination = settingsDestination
+        settingsDestination = nil
+        switch destination {
+        case .setup: requestSetup()
+        case .releaseCheck: requestReleaseCheck()
+        case nil: break
+        }
     }
     public func requestReleaseCheck() {
-        guard !isExecutingAction, !showsSetup, !showsActionSheet else { return }
-        if showsSettings { releaseAfterSettings = true; showsSettings = false }
-        else { Task { await checkForAppUpdates() } }
+        guard canCheckForAppUpdates else { return }
+        if showsSettings { settingsDestination = .releaseCheck; showsSettings = false }
+        else {
+            showsReleaseCheck = true
+            Task { await checkForAppUpdates() }
+        }
     }
     public func checkForAppUpdates() async {
-        guard !isCheckingRelease else { return }
+        guard canCheckForAppUpdates, !showsSettings else { return }
         showsReleaseCheck = true
+        guard !isCheckingRelease else { return }
         isCheckingRelease = true
         releaseInfo = nil
         releaseError = nil
@@ -296,6 +338,7 @@ public final class GUIStore: ObservableObject {
         } catch { releaseError = error.localizedDescription }
     }
     public func checkSetup() async {
+        guard canOpenSetup, !showsSettings else { return }
         setupGeneration += 1
         let generation = setupGeneration
         let path = selectedVolumePath
@@ -311,33 +354,41 @@ public final class GUIStore: ObservableObject {
             }
             setupReport = report
         } catch {
-            if generation == setupGeneration { setupError = error.localizedDescription }
+            if generation == setupGeneration, path == selectedVolumePath { setupError = error.localizedDescription }
         }
     }
-    public func finishSetup(saveDefault: Bool) async -> Bool {
-        guard !isSavingSetup, !isCheckingSetup, let report = setupReport,
+    public func finishSetup(saveDefault: Bool = false) async -> Bool {
+        guard canOpenSetup, !isCheckingSetup, !showsSettings, let report = setupReport,
               report.volumePath == selectedVolumePath, !saveDefault || report.canSaveDefault else { return false }
         isSavingSetup = true
-        defer { isSavingSetup = false }
         do {
             if saveDefault { try await service.saveSetup(report.id) }
+            isSavingSetup = false
             dismissSetup()
             await refresh()
             return true
         } catch {
+            isSavingSetup = false
             setupError = error.localizedDescription
+            if refreshRequested { await refresh() }
             return false
         }
     }
     public func dismissSetup() {
+        guard !isSavingSetup else { return }
+        invalidateSetupChecks()
+        showsSetup = false
+    }
+
+    private func invalidateSetupChecks() {
         setupGeneration += 1
         if let report = setupReport {
             let service = self.service
             Task { await service.discardAction(report.id) }
         }
         setupReport = nil
+        setupError = nil
         isCheckingSetup = false
-        showsSetup = false
     }
 
     public func previewUpdate(_ request: GUIUpdateRequest) async {
@@ -377,7 +428,7 @@ public final class GUIStore: ObservableObject {
     }
 
     public func confirmAction(_ confirmation: GUIActionConfirmation) async {
-        guard let reviewed = actionPreview, reviewed.accepts(confirmation), canPrepareWorkflow else { return }
+        guard let reviewed = actionPreview, reviewed.accepts(confirmation), canConfirmAction else { return }
         isExecutingAction = true
         let runID = UUID()
         executionID = runID
@@ -392,7 +443,8 @@ public final class GUIStore: ObservableObject {
         } catch {
             actionResult = GUIActionResult(succeeded: false, title: "Action stopped",
                 messages: [error.localizedDescription,
-                           "Review the refreshed workflow and Diagnostics. A new preview is required before retrying."], canOpenRecovery: true)
+                           "Review the refreshed workflow and Diagnostics. A new preview is required before retrying."],
+                canOpenRecovery: reviewed.kind != .cleanup && reviewed.kind != .xcode)
         }
         executionID = nil
         let completedResult = actionResult
@@ -414,20 +466,6 @@ public final class GUIStore: ObservableObject {
             actionPreview = nil
             let service = self.service
             Task { await service.discardAction(action.id) }
-        }
-    }
-    private func prepare(_ work: @Sendable () async throws -> GUIPreview) async {
-        invalidatePreview()
-        let generation = previewGeneration
-        isPreparingPreview = true
-        defer { if generation == previewGeneration { isPreparingPreview = false } }
-        do {
-            let result = try await work()
-            guard generation == previewGeneration, !Task.isCancelled else { return }
-            preview = result
-        } catch {
-            guard generation == previewGeneration, !Task.isCancelled else { return }
-            alert = GUIAlert(message: error.localizedDescription)
         }
     }
 }

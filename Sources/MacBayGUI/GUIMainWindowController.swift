@@ -68,6 +68,7 @@ public final class GUIMainWindowController: NSWindowController, NSToolbarDelegat
     }
 
     @objc private func refresh(_ sender: Any?) {
+        guard store.canRefreshView else { return }
         Task {
             await store.refresh()
             if store.section == .applications { await store.scanApplications() }
@@ -76,7 +77,7 @@ public final class GUIMainWindowController: NSWindowController, NSToolbarDelegat
     }
 
     private func updateNavigation() {
-        let enabled = !store.isExecutingAction && !store.isSavingSetup && !store.showsActionSheet
+        let enabled = store.canNavigate
         navigationControl?.setEnabled(enabled && store.navigationHistory.canGoBack, forSegment: 0)
         navigationControl?.setEnabled(enabled && store.navigationHistory.canGoForward, forSegment: 1)
     }
@@ -133,6 +134,6 @@ public final class GUIMainWindowController: NSWindowController, NSToolbarDelegat
 
     public func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
         guard item.itemIdentifier == Self.refreshItem else { return true }
-        return !store.isRefreshing && !store.isScanning && !store.isScanningCaches && !store.isExecutingAction
+        return store.canRefreshView
     }
 }

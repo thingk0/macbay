@@ -78,15 +78,16 @@ struct GUIRecoveryReader {
                 same(record.volumePath, volume.path) && same(record.sourcePath, finding.paths[0]) && same(record.destinationPath, finding.paths[1]) {
                 let source: GUIRecoverySource = record.kind == .move ? .move : .restore
                 let command: String
-                if record.kind == .move, record.phase == .linkSwapped || record.phase == .manifestSaved {
-                    command = "mb doctor --fix --dry-run"
+                let isXcodeMove = record.destinationPath.hasPrefix(MacBayPaths.xcodeRoot(on: url).path + "/")
+                if record.kind == .move, record.phase == .linkSwapped || record.phase == .manifestSaved || isXcodeMove {
+                    command = "mb doctor --volume " + quote(volume.path) + " --fix --dry-run"
                 } else if record.kind == .move {
                     command = "mb move " + quote(record.sourcePath) + " --volume " + quote(volume.path) + " --dry-run"
                 } else { command = "mb unmove " + quote(record.sourcePath) + " --dry-run" }
                 matches.append(GUIRecoveryItem(id: source.rawValue + "|" + volume.path + "|" + record.id,
                     source: source, name: record.name, phase: record.phase.rawValue, detail: finding.detail,
-                    paths: [record.sourcePath, record.destinationPath],
-                    guidance: "Inspect both paths, including any partial or orphaned copy. Review the operation-specific CLI dry run before deciding how to continue.",
+                    paths: [record.sourcePath, record.destinationPath] + [record.backupPath].compactMap { $0 },
+                    guidance: "Inspect every recorded path, including any remaining backup. A backup may be incomplete; preserve the complete destination. Review the operation-specific CLI dry run before deciding how to continue.",
                     capability: .manual(command: command)))
             }
             guard matches.count == 1, let matched = matches.first else {

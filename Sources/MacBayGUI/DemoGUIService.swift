@@ -4,7 +4,7 @@ import MacBayKit
 /// Deterministic previews for UI evaluation without inspecting or changing the host filesystem.
 public actor DemoGUIService: GUIServiceProtocol {
     private var workflowRecords = GUIExamples.updates
-    private enum DemoAction { case update(GUIUpdateRequest), rollback, migration(ApplicationMigrationAction, String), cleanup([String]) }
+    private enum DemoAction { case update(GUIUpdateRequest), rollback, migration(ApplicationMigrationAction, String), cleanup([String]), xcode(XcodeStoragePlan) }
     private var pendingAction: (GUIActionPreview, DemoAction)?
     private var movedPaths = Set(GUIExamples.scan.externalApplications.map(\.sourcePath))
     private var cleanedPaths = Set<String>()
@@ -98,6 +98,9 @@ public actor DemoGUIService: GUIServiceProtocol {
         case .cleanup(let paths):
             cleanedPaths.formUnion(paths)
             return GUIActionResult(succeeded: true, title: "Cleanup simulation completed", messages: ["No real caches were removed."])
+        case .xcode(let plan):
+            return GUIActionResult(succeeded: true, title: "Xcode storage simulation completed",
+                messages: ["No real developer files or simulators were read or changed."] + plan.options.actionDescriptions)
         case .update(let value): request = value
         }
         if request.action == .begin {
@@ -150,15 +153,42 @@ public actor DemoGUIService: GUIServiceProtocol {
         pendingAction = (preview, .cleanup(items.map(\.id)))
         return preview
     }
-    public func previewXcode(volumePath: String) -> GUIPreview {
-        GUIPreview(title: "Xcode Storage Preview", subtitle: "Sample data. No developer files will be moved.",
-            rows: [GUIInfoRow("Destination drive", volumePath),
-                   GUIInfoRow("iOS DeviceSupport", "18.4 GB"), GUIInfoRow("Archives", "10.2 GB")],
-            messages: ["Xcode must be closed before a real operation.", "Original paths are preserved."])
+    public func previewXcode(volumePath: String, options: XcodeDoctorOptions) throws -> GUIActionPreview {
+        pendingAction = nil
+        guard !options.force, !options.actionDescriptions.isEmpty else {
+            throw GUIError.unavailable("Select at least one Xcode storage action.")
+        }
+        let plan = GUIExamples.xcodePlan(volumePath: volumePath, options: options)
+        let preview = GUIXcodeWorkflow.preview(plan, demo: true)
+        pendingAction = (preview, .xcode(plan))
+        return preview
     }
+
 }
 
 public enum GUIExamples {
+    static func xcodePlan(volumePath: String, options: XcodeDoctorOptions) -> XcodeStoragePlan {
+        func migration(_ name: String, bytes: UInt64, enabled: Bool) -> MigrationResult? {
+            guard enabled else { return nil }
+            return MigrationResult(operation: "externalize " + name, name: name,
+                sourcePath: "/Users/demo/Library/Developer/Xcode/" + name,
+                destinationPath: volumePath + "/MacBay/Xcode/" + name, sizeBytes: bytes, dryRun: true,
+                messages: ["Simulated move: original path is preserved."])
+        }
+        let device = migration("iOS DeviceSupport", bytes: 18_400_000_000, enabled: options.externalizeDeviceSupport)
+        let archives = migration("Archives", bytes: 10_200_000_000, enabled: options.externalizeArchives)
+        let derived = migration("DerivedData", bytes: 4_800_000_000, enabled: options.externalizeDerivedData)
+        let cleanups = [options.cleanDerivedData, options.cleanCaches].filter { $0 }.count
+        let report = XcodeDoctorReport(deviceSupport: device, archives: archives, derivedData: derived,
+            simulatorCleanup: options.deleteUnavailableSimulators ? CommandResultSummary(command: "delete selected simulators", succeeded: true, output: "Demo unavailable simulator") : nil,
+            derivedDataCleanup: options.cleanDerivedData ? CommandResultSummary(command: "clean DerivedData", succeeded: true, output: "/Users/demo/Library/Developer/Xcode/DerivedData") : nil,
+            cacheCleanup: options.cleanCaches ? CommandResultSummary(command: "clean Xcode caches", succeeded: true, output: "/Users/demo/Library/Caches/com.apple.dt.Xcode") : nil,
+            freedBytes: UInt64(cleanups) * 1_000_000_000)
+        return XcodeStoragePlan(volumePath: volumePath, volumeUUID: "DEMO-VOLUME", availableBytes: 808_570_000_000,
+            requiredBytes: [device, archives, derived].compactMap { $0 }.reduce(0) { $0 + $1.sizeBytes },
+            options: options, report: report, xcodeRunning: false,
+            unavailableSimulatorIDs: options.deleteUnavailableSimulators ? ["DEMO-UNAVAILABLE-SIMULATOR"] : [], fingerprints: [:])
+    }
     public static let repairRecord = RepairJournalRecord(id: "DEMO-REPAIR", appName: "Example.app",
         localPath: "/Applications/Example.app", externalPath: "/Volumes/KLEVV/MacBay/Applications/Example.app",
         backupPath: "/Volumes/KLEVV/MacBay/Backups/DEMO-REPAIR/Example.app",

@@ -179,6 +179,38 @@ final class GUIStoreTests: XCTestCase {
         XCTAssertEqual(store.statusReport, newStatus)
         XCTAssertNil(store.selectedVolumePath)
     }
+    @MainActor
+    func testSelectedDriveDisconnectNeverSelectsAnotherDriveAutomatically() async {
+        let first = GUIExamples.status.externalVolumes[0]
+        let other = StorageVolume(name: "Other", path: "/Volumes/Other", isInternal: false, totalBytes: 100, availableBytes: 90)
+        let fake = ControlledGUIService()
+        await fake.setStatus(StatusReport(generatedAt: "initial", internalVolume: GUIExamples.status.internalVolume,
+            externalVolumes: [first, other], dockedItems: []))
+        let store = GUIStore(service: fake, monitorVolumes: false)
+        await store.refresh()
+        store.selectedVolumePath = first.path
+        await fake.setStatus(StatusReport(generatedAt: "disconnected", internalVolume: GUIExamples.status.internalVolume,
+            externalVolumes: [other], dockedItems: []))
+        await store.refreshStorage()
+        XCTAssertNil(store.selectedVolumePath, "Losing a chosen drive must not retarget the next move to a different disk")
+        await store.refresh()
+        XCTAssertNil(store.selectedVolumePath, "A later full refresh must keep the destination unselected")
+    }
+
+    @MainActor
+    func testExplicitlyClearedDestinationStaysUnselectedAcrossCapacityPolling() async {
+        let volume = GUIExamples.status.externalVolumes[0]
+        let fake = ControlledGUIService()
+        await fake.setStatus(StatusReport(generatedAt: "initial", internalVolume: GUIExamples.status.internalVolume,
+            externalVolumes: [volume], dockedItems: []))
+        let store = GUIStore(service: fake, monitorVolumes: false)
+        await store.refresh()
+        XCTAssertEqual(store.selectedVolumePath, volume.path)
+        store.selectedVolumePath = nil
+        await store.refreshStorage()
+        XCTAssertNil(store.selectedVolumePath, "The menu bar must respect the user's cleared destination")
+    }
+
 }
 
 private actor ControlledGUIService: GUIServiceProtocol {
@@ -248,5 +280,7 @@ private actor ControlledGUIService: GUIServiceProtocol {
         pending = nil
     }
     func previewCaches(_ items: [PurgeItem]) -> GUIActionPreview { GUIActionPreview(kind: .cleanup, detail: GUIPreview(title: "", subtitle: "", rows: []), confirmTitle: "Clean") }
-    func previewXcode(volumePath: String) -> GUIPreview { GUIPreview(title: "", subtitle: "", rows: []) }
+    func previewXcode(volumePath: String, options: XcodeDoctorOptions) -> GUIActionPreview {
+        GUIActionPreview(kind: .xcode, detail: GUIPreview(title: "Xcode Storage", subtitle: "", rows: []), confirmTitle: "Apply")
+    }
 }

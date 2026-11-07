@@ -78,6 +78,20 @@ final class GUIRecoveryTests: XCTestCase {
             journal.removeMove(id: move.id, on: volume)
         }
     }
+    func testInterruptedXcodeMoveExposesBackupAndDoctorGuidance() throws {
+        let source = root.appendingPathComponent("home/Library/Developer/Xcode/Archives").path
+        let destination = MacBayPaths.xcodeArchivesRoot(on: volume).path
+        let backup = root.appendingPathComponent("home/Library/Developer/Xcode/.Archives.macbay-backup").path
+        let record = MoveOperationRecord(id: "xcode", kind: .move, name: "Archives", sourcePath: source,
+            destinationPath: destination, backupPath: backup, volumePath: volume.path, phase: .copied, timestamp: "")
+        try OperationJournal().saveMove(record, on: volume)
+        let item = try XCTUnwrap(reader.items(doctor: doctor([source, destination], name: "Archives"), status: status).first)
+        XCTAssertEqual(item.source, .move)
+        XCTAssertTrue(item.paths.contains(backup))
+        XCTAssertEqual(item.capability, .manual(command: "mb doctor --volume '" + volume.path + "' --fix --dry-run"))
+        XCTAssertTrue(item.guidance.contains("backup may be incomplete"))
+    }
+
     func testAmbiguousJournalsNeverOfferRollback() throws {
         let record = repair()
         try DarwinRepairJournal().save(record, on: volume)

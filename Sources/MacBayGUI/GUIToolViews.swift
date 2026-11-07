@@ -12,15 +12,42 @@ struct GUIDeveloperView: View {
                     GUISectionIcon(section: .developer)
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Xcode Storage").fontWeight(.medium)
-                        Text("Review DeviceSupport, Archives, and unavailable simulators.")
+                        Text("Choose what to move or clean, then review the affected paths.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 GUIVolumePicker(store: store)
-                Button("Preview Xcode Storage…") { Task { await store.previewXcode() } }
-                    .disabled(store.selectedVolume == nil || store.isPreparingPreview)
+            }
+            Section {
+                Toggle("iOS DeviceSupport", isOn: $store.xcodeSelection.moveDeviceSupport)
+                Toggle("Archives", isOn: $store.xcodeSelection.moveArchives)
+                Picker("Derived Data", selection: $store.xcodeSelection.derivedData) {
+                    ForEach(GUIXcodeSelection.DerivedDataAction.allCases, id: \.self) { action in
+                        Text(action.rawValue).tag(action)
+                    }
+                }
+            } header: {
+                Text("Move to External Drive")
             } footer: {
-                Text("Move growing development data while preserving original paths.")
+                Text("Moved folders keep their original paths through links. The external drive must remain connected.")
+            }
+            Section {
+                Toggle("Remove Xcode and simulator caches", isOn: $store.xcodeSelection.cleanCaches)
+                Toggle("Delete unavailable simulators", isOn: $store.xcodeSelection.deleteUnavailableSimulators)
+            } header: {
+                Text("Cleanup")
+            } footer: {
+                Text("Cleanup permanently removes the selected data and requires a separate confirmation. Build data and caches can be recreated.")
+            }
+            Section {
+                HStack {
+                    if store.isPreparingPreview { ProgressView().controlSize(.small) }
+                    Spacer()
+                    Button("Review Changes…") { Task { await store.previewXcode() } }
+                        .disabled(store.selectedVolume == nil || !store.xcodeSelection.hasActions || !store.canPrepareWorkflow)
+                }
+            } footer: {
+                Text("Quit Xcode before reviewing or applying changes.")
             }
             Section("Discovered Developer Data") {
                 if candidates.isEmpty {
@@ -37,7 +64,7 @@ struct GUIDeveloperView: View {
                     GUIDataRow(name: item.name, detail: item.externalPath, size: item.sizeBytes, symbol: "link")
                 }
             }
-        }.formStyle(.grouped)
+        }.formStyle(.grouped).disabled(store.isPerformingMutation)
     }
 }
 

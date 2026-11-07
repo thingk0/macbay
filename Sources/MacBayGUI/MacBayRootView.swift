@@ -59,13 +59,13 @@ struct GUIMainSidebarView: View {
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)
             .environment(\.defaultMinListRowHeight, 30)
-            .disabled(store.isExecutingAction)
+            .disabled(!store.canNavigate)
             VStack(alignment: .leading, spacing: 10) {
                 GUIVolumePicker(store: store).labelsHidden().controlSize(.small)
-                    .disabled(store.isExecutingAction)
+                    .disabled(store.isPerformingMutation)
                 Button { store.showsSettings = true } label: { Label("Settings…", systemImage: "gearshape") }
                     .buttonStyle(.borderless)
-                    .disabled(store.isExecutingAction || store.isSavingSetup || store.showsActionSheet)
+                    .disabled(!store.canOpenSettings)
             }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(minWidth: 220, idealWidth: 230, maxWidth: .infinity, maxHeight: .infinity)
@@ -215,10 +215,10 @@ struct GUISettingsView: View {
             }
             Section("Notifications") { GUINotificationSetting() }
             Section("MacBay") {
-                Button("Run Setup Again…") { openMainWindow(); store.requestSetup() }
-                Button("Check for Updates…") { openMainWindow(); store.requestReleaseCheck() }
+                Button("Run Setup Again…") { openMainWindow(); store.requestSetup() }.disabled(!store.canOpenSetup)
+                Button("Check for Updates…") { openMainWindow(); store.requestReleaseCheck() }.disabled(!store.canCheckForAppUpdates)
                 LabeledContent("Version", value: GUIAppInfo.version)
-            }.disabled(store.isExecutingAction || store.isSavingSetup || store.showsActionSheet || store.showsSetup)
+            }
         }
         .formStyle(.grouped)
         .background(GUIWindowAppearance(appearance: appearance))
@@ -274,6 +274,6 @@ struct GUIVolumePicker: View {
             ForEach(store.statusReport?.externalVolumes ?? []) { volume in
                 Text(volume.name + " · " + GUIFormat.bytes(volume.availableBytes) + " free").tag(Optional(volume.path))
             }
-        }.pickerStyle(.menu).frame(maxWidth: 380, alignment: .leading)
+        }.pickerStyle(.menu).frame(maxWidth: 380, alignment: .leading).disabled(store.isPerformingMutation)
     }
 }

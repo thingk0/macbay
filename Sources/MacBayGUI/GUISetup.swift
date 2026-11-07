@@ -35,7 +35,7 @@ public extension GUIServiceProtocol {
 struct GUISetupView: View {
     @ObservedObject var store: GUIStore
     @AppStorage("macbay.gui.onboardingCompleted") private var completed = false
-    @State private var saveDefault = true
+    @State private var saveDefault = false
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             GUIPageHeading(title: "Set Up MacBay", subtitle: "Choose your storage and review access before your first operation.")
@@ -65,7 +65,7 @@ struct GUISetupView: View {
                             Text("Saved default: " + previous).font(.caption).foregroundStyle(.secondary)
                         }
                         Toggle("Save the selected drive as my default", isOn: $saveDefault)
-                            .disabled(report.volumePath == nil)
+                            .disabled(!report.canSaveDefault || store.isSavingSetup)
                         Text("Saving replaces the previous default only after you finish setup. No applications are moved.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
@@ -95,9 +95,9 @@ struct GUISetupView: View {
         }
         .padding(20).frame(width: 640, height: 640)
         .interactiveDismissDisabled(store.isSavingSetup)
-        .task { saveDefault = store.selectedVolumePath != nil; await store.checkSetup() }
-        .onChange(of: store.selectedVolumePath) { path in
-            saveDefault = path != nil
+        .task { await store.checkSetup() }
+        .onChange(of: store.selectedVolumePath) { _ in
+            saveDefault = false
             Task { await store.checkSetup() }
         }
     }

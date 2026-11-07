@@ -55,17 +55,19 @@ final class MacBayAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate
         settingsWindow?.stop()
     }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if store?.isExecutingAction == true { showOperationInProgress(); return .terminateCancel }
+        if store?.isPerformingMutation == true { showOperationInProgress(); return .terminateCancel }
         return .terminateNow
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        if store?.isExecutingAction == true { showOperationInProgress(); return false }
+        if store?.isPerformingMutation == true { showOperationInProgress(); return false }
         return true
     }
     private func showOperationInProgress() {
         let alert = NSAlert()
-        alert.messageText = "An operation is in progress"
-        alert.informativeText = "Keep MacBay open and the original drive connected until the operation finishes."
+        alert.messageText = store?.isSavingSetup == true ? "Saving drive settings" : "An operation is in progress"
+        alert.informativeText = store?.isSavingSetup == true
+            ? "Keep MacBay open until your default drive has been saved."
+            : "Keep MacBay open and the original drive connected until the operation finishes."
         alert.addButton(withTitle: "Continue")
         alert.runModal()
     }
@@ -75,7 +77,7 @@ final class MacBayAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate
         NSApplication.shared.activate(ignoringOtherApps: true)
     }
     @objc private func showSettings() {
-        guard let store, !store.isExecutingAction, !store.isSavingSetup, !store.showsActionSheet else { return }
+        guard let store, store.canOpenSettings else { return }
         settingsWindow?.show()
     }
     @objc private func showSetup() { showWindow(); store?.requestSetup() }
@@ -84,7 +86,7 @@ final class MacBayAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate
         NSApplication.shared.orderFrontStandardAboutPanel(options: [.applicationVersion: GUIAppInfo.version])
     }
     @objc private func findApplication() {
-        guard let store, !store.isExecutingAction else { return }
+        guard let store, store.canNavigate else { return }
         store.section = .applications
         store.searchFocusRequest += 1
     }
@@ -92,7 +94,7 @@ final class MacBayAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate
     @objc private func goBack() { mainWindowController?.goBack(nil) }
     @objc private func goForward() { mainWindowController?.goForward(nil) }
     @objc private func refresh() {
-        guard let store else { return }
+        guard let store, store.canRefreshView else { return }
         Task {
             await store.refresh()
             if store.section == .applications { await store.scanApplications() }
@@ -157,12 +159,15 @@ final class MacBayAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate
         guard let store else { return false }
         if menuItem.action == #selector(goBack) || menuItem.action == #selector(goForward) {
             let available = menuItem.action == #selector(goBack) ? store.navigationHistory.canGoBack : store.navigationHistory.canGoForward
-            return available && !store.isExecutingAction && !store.isSavingSetup && !store.showsActionSheet
+            return available && store.canNavigate
         }
-        if [#selector(showSetup), #selector(checkForUpdates), #selector(showSettings), #selector(findApplication), #selector(refresh)]
-            .contains(menuItem.action) {
-            return !store.isExecutingAction && !store.isSavingSetup && !store.showsActionSheet
+        switch menuItem.action {
+        case #selector(showSetup): return store.canOpenSetup
+        case #selector(checkForUpdates): return store.canCheckForAppUpdates
+        case #selector(showSettings): return store.canOpenSettings
+        case #selector(findApplication): return store.canNavigate
+        case #selector(refresh): return store.canRefreshView
+        default: return true
         }
-        return true
     }
 }
