@@ -294,15 +294,15 @@ public struct DoctorChecker {
             let incompleteMoves = moveJournal.listIncompleteMoves(on: volumeURL)
             for record in incompleteMoves {
                 let category: DoctorCategory = .dataLink
-                let paths = [record.sourcePath, record.destinationPath]
+                let paths = [record.sourcePath, record.destinationPath] + [record.backupPath].compactMap { $0 }
                 let detail: String
                 let recommendation: String
                 switch record.kind {
                 case .move:
                     switch record.phase {
                     case .started, .copied:
-                        detail = "Interrupted move of \(record.name) (phase: \(record.phase.rawValue)): external copy at \(record.destinationPath) may be incomplete or orphaned while the source is unchanged"
-                        recommendation = "Reconnect the volume, remove the partial copy at \(record.destinationPath) if present, then run 'mb move \(record.sourcePath)' again."
+                        detail = "Interrupted move of \(record.name) (phase: \(record.phase.rawValue)): inspect the source, external copy at \(record.destinationPath), and any recorded backup before retrying"
+                        recommendation = "Reconnect the volume and inspect every recorded path. 'mb doctor --fix' can remove a partial copy only when the original remains in place and no backup exists."
                     case .linkSwapped, .manifestSaved:
                         detail = "Interrupted move of \(record.name) (phase: \(record.phase.rawValue)): source link was replaced but records may be unsaved"
                         recommendation = "Run 'mb doctor --fix' to reconcile the link and manifest, or inspect both paths manually."
@@ -478,6 +478,16 @@ public struct DoctorChecker {
         return URL(fileURLWithPath: path).standardizedFileURL.path.hasPrefix(root + "/")
     }
 
+    /// Resolve parent links as well as the destination. A journal or Data alias
+    /// must not turn automatic recovery cleanup into deletion outside this volume.
+    private func isUnderMoveRoot(_ path: String, onMountPoint mountPoint: String) -> Bool {
+        let volume = URL(fileURLWithPath: mountPoint).resolvingSymlinksInPath()
+        let destination = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+        return [MacBayPaths.dataRoot(on: volume), MacBayPaths.xcodeRoot(on: volume)].contains {
+            destination.hasPrefix($0.path + "/")
+        }
+    }
+
     private func orphanedMoveCopies(on volume: URL, manifest: DockManifest?) -> [DoctorFinding] {
         let dataRoot = MacBayPaths.dataRoot(on: volume).standardizedFileURL.path
         let recorded = Set((manifest?.items ?? []).map {
@@ -531,8 +541,24 @@ public struct DoctorChecker {
                 detail: "No interrupted move journal for \(source); the volume may be disconnected."
             )
         }
+        func manual(_ detail: String) -> DoctorFix {
+            DoctorFix(code: finding.code, name: finding.name, paths: finding.paths, status: .skipped, detail: detail)
+        }
+        guard record.kind == .move else {
+            return manual("Interrupted restores require manual inspection. All recorded copies and the journal were preserved.")
+        }
+        guard isUnderMoveRoot(destination, onMountPoint: mountPoint) else {
+            return manual("The destination resolves outside this volume's MacBay Data or Xcode folders. All copies and the journal were preserved.")
+        }
+        if let backup = record.backupPath,
+           fileManager.fileExists(atPath: backup) || isSymbolicLink(at: backup) {
+            return manual("A backup remains at \(backup) and may be incomplete. Inspect the complete destination and all recorded paths; the journal was preserved.")
+        }
         switch record.phase {
         case .started, .copied:
+            guard fileManager.fileExists(atPath: source), !isSymbolicLink(at: source) else {
+                return manual("The original path changed after copying. Both copies and the journal were preserved for manual inspection.")
+            }
             guard !dryRun else {
                 return DoctorFix(
                     code: finding.code, name: finding.name, paths: finding.paths,
@@ -542,9 +568,12 @@ public struct DoctorChecker {
             }
             do {
                 return try operationLock.withVolumeLock(on: URL(fileURLWithPath: mountPoint)) {
-                    if !isSymbolicLink(at: source),
-                       fileManager.fileExists(atPath: source),
-                       fileManager.fileExists(atPath: destination) {
+                    guard isUnderMoveRoot(destination, onMountPoint: mountPoint),
+                          !isSymbolicLink(at: source), fileManager.fileExists(atPath: source),
+                          record.backupPath.map({ !fileManager.fileExists(atPath: $0) && !isSymbolicLink(at: $0) }) ?? true else {
+                        return manual("Source or backup changed. All copies and the journal were preserved.")
+                    }
+                    if fileManager.fileExists(atPath: destination) {
                         try fileManager.removeItemMakingWritable(at: URL(fileURLWithPath: destination))
                     }
                     moveJournal.removeMove(id: record.id, on: URL(fileURLWithPath: mountPoint))
@@ -566,6 +595,9 @@ public struct DoctorChecker {
                 fileManager.fileExists(atPath: $0.item.externalPath)
                     && isUnderManagedRoot($0.item.externalPath, onMountPoint: $0.mountPoint)
             }
+            guard matches.count == 1 else {
+                return manual("The moved copy has no unique manifest record. Inspect the source link and destination before reconciling; the journal was preserved.")
+            }
             guard !dryRun else {
                 return DoctorFix(
                     code: finding.code, name: finding.name, paths: finding.paths,
@@ -575,7 +607,14 @@ public struct DoctorChecker {
             }
             do {
                 return try operationLock.withVolumeLock(on: URL(fileURLWithPath: mountPoint)) {
+                    guard isUnderMoveRoot(destination, onMountPoint: mountPoint) else {
+                        return manual("The destination changed outside the managed folders. All copies and the journal were preserved.")
+                    }
                     if let match = matches.first, matches.count == 1 {
+                        if isSymbolicLink(at: source),
+                           URL(fileURLWithPath: source).resolvingSymlinksInPath().path != URL(fileURLWithPath: match.item.externalPath).resolvingSymlinksInPath().path {
+                            return manual("The source links to a different copy. The journal and both paths were preserved.")
+                        }
                         if !isSymbolicLink(at: source) {
                             if fileManager.fileExists(atPath: source) {
                                 return DoctorFix(
@@ -635,6 +674,10 @@ public struct DoctorChecker {
                 detail: "No automatic fix is available; follow the recommendation for this finding."
             )
         }
+        guard isUnderMoveRoot(external, onMountPoint: mountPoint) else {
+            return DoctorFix(code: finding.code, name: finding.name, paths: finding.paths, status: .skipped,
+                detail: "The unrecorded path resolves outside the managed folders and was left untouched.")
+        }
         guard !dryRun else {
             return DoctorFix(
                 code: finding.code, name: finding.name, paths: finding.paths,
@@ -644,6 +687,10 @@ public struct DoctorChecker {
         }
         do {
             return try operationLock.withVolumeLock(on: URL(fileURLWithPath: mountPoint)) {
+                guard isUnderMoveRoot(external, onMountPoint: mountPoint) else {
+                    return DoctorFix(code: finding.code, name: finding.name, paths: finding.paths, status: .skipped,
+                        detail: "The destination changed outside the managed folders and was left untouched.")
+                }
                 let recorded = consulted.flatMap { $0.manifest?.items ?? [] }.contains {
                     URL(fileURLWithPath: $0.externalPath).standardizedFileURL.path
                         == URL(fileURLWithPath: external).standardizedFileURL.path

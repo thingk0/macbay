@@ -1221,7 +1221,11 @@ public struct MacBayService {
         dryRun: Bool
     ) throws -> XcodeDoctorReport {
         let selection = try selectVolume(path: volumePath)
-        return try xcodeDoctor.run(on: URL(fileURLWithPath: selection.volume.path), options: options, dryRun: dryRun)
+        let volume = URL(fileURLWithPath: selection.volume.path)
+        if dryRun { return try xcodeDoctor.run(on: volume, options: options, dryRun: true) }
+        return try VolumeOperationLock().withVolumeLock(on: volume) {
+            try xcodeDoctor.run(on: volume, options: options, dryRun: false)
+        }
     }
 
     public func isXcodeRunning() throws -> Bool { try xcodeDoctor.isXcodeRunning() }
@@ -1231,28 +1235,35 @@ public struct MacBayService {
         return try xcodeDoctor.makePlan(on: URL(fileURLWithPath: selection.volume.path), options: options)
     }
 
-    public func executeXcode(plan: XcodeStoragePlan) throws -> XcodeDoctorReport {
-        // Re-select the exact mount, never fall back to a different default volume.
-        do {
-            let current = try planXcode(volumePath: plan.volumePath, options: plan.options)
-            guard plan.hasSameConditions(as: current) else {
-                throw XcodePlanError.conditionsChanged("Selected paths, volume identity, Xcode state or simulator targets changed.")
+    public func executeXcode(plan: XcodeStoragePlan, progress: ProgressHandler? = nil) throws -> XcodeDoctorReport {
+        // Check the exact mount before creating lock metadata, then check all
+        // reviewed conditions again while holding the same lock as CLI/TUI moves.
+        let volume: URL
+        do { volume = URL(fileURLWithPath: try selectVolume(path: plan.volumePath).volume.path) }
+        catch { throw XcodePlanError.conditionsChanged(error.localizedDescription) }
+        return try VolumeOperationLock().withVolumeLock(on: volume) {
+            do {
+                let current = try planXcode(volumePath: plan.volumePath, options: plan.options)
+                guard plan.hasSameConditions(as: current) else {
+                    throw XcodePlanError.conditionsChanged("Selected paths, volume identity, Xcode state or simulator targets changed.")
+                }
+            } catch let error as XcodePlanError {
+                throw error
+            } catch {
+                throw XcodePlanError.conditionsChanged(error.localizedDescription)
             }
-        } catch let error as XcodePlanError {
-            throw error
-        } catch {
-            throw XcodePlanError.conditionsChanged(error.localizedDescription)
-        }
-        do {
-            let report = try xcode(volumePath: plan.volumePath, options: plan.options, dryRun: false)
-            historyStore.record(HistoryEntry(command: "xcode", subject: "Xcode data",
-                outcome: report.hasFailures ? .partial : .success,
-                detail: plan.options.actionDescriptions.joined(separator: ", ")))
-            return report
-        } catch {
-            historyStore.record(HistoryEntry(command: "xcode", subject: "Xcode data",
-                outcome: .failure, detail: error.localizedDescription))
-            throw error
+            do {
+                let report = try xcodeDoctor.run(on: volume, options: plan.options, dryRun: false,
+                    unavailableSimulatorIDs: plan.unavailableSimulatorIDs, progress: progress)
+                historyStore.record(HistoryEntry(command: "xcode", subject: "Xcode data",
+                    outcome: report.hasFailures ? .partial : .success,
+                    detail: plan.options.actionDescriptions.joined(separator: ", ")))
+                return report
+            } catch {
+                historyStore.record(HistoryEntry(command: "xcode", subject: "Xcode data",
+                    outcome: .failure, detail: error.localizedDescription))
+                throw error
+            }
         }
     }
 

@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 public protocol VolumeOperationLocking: Sendable {
     func withVolumeLock<T>(on volume: URL, _ body: () throws -> T) throws -> T
@@ -6,19 +7,19 @@ public protocol VolumeOperationLocking: Sendable {
 
 public struct VolumeOperationLock: VolumeOperationLocking {
     private static let guardLock = NSLock()
-    private nonisolated(unsafe) static var heldPaths: [String: ObjectIdentifier] = [:]
+    private nonisolated(unsafe) static var heldPaths: [String: pthread_t] = [:]
 
     public init() {}
 
     public func withVolumeLock<T>(on volume: URL, _ body: () throws -> T) throws -> T {
-        let lockURL = MacBayPaths.operationLockURL(on: volume)
+        let lockURL = MacBayPaths.operationLockURL(on: volume.resolvingSymlinksInPath())
         let key = lockURL.standardizedFileURL.path
-        let owner = ObjectIdentifier(Thread.current)
+        let owner = pthread_self()
 
         Self.guardLock.lock()
         if let holder = Self.heldPaths[key] {
             Self.guardLock.unlock()
-            if holder == owner {
+            if pthread_equal(holder, owner) != 0 {
                 return try body()
             }
             throw MacBayError.volumeBusy(path: volume.path, locks: [lockURL.path])

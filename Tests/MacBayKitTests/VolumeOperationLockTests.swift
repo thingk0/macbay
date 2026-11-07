@@ -165,6 +165,15 @@ final class VolumeOperationLockTests: XCTestCase {
         }
     }
 
+    func testNestedOperationsThroughAnAliasShareTheSameLock() throws {
+        let alias = tempDir.appendingPathComponent("VolumeAlias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: volumeURL)
+        try VolumeOperationLock().withVolumeLock(on: volumeURL) {
+            XCTAssertEqual(try VolumeOperationLock().withVolumeLock(on: alias) { 42 }, 42)
+        }
+        XCTAssertEqual(try VolumeOperationLock().withVolumeLock(on: alias) { 99 }, 99)
+    }
+
     func testNoOpVolumeOperationLock() throws {
         let noop = NoOpVolumeOperationLock()
         let emptyVol = tempDir.appendingPathComponent("NoOpVol")
