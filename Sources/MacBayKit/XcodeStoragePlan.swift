@@ -71,7 +71,7 @@ public extension XcodeDoctorOptions {
 
 /// Bounded metadata snapshots detect replaced paths, link changes and same-size file edits.
 /// Access times are excluded because reading the preview must not invalidate it.
-struct XcodePathFingerprinter {
+struct OperationPathFingerprinter {
     let fileManager: FileManager
     static let maximumEntries = 100_000
 
@@ -82,7 +82,7 @@ struct XcodePathFingerprinter {
         func visit(_ url: URL, recurse: Bool) throws {
             count += 1
             guard count <= Self.maximumEntries else {
-                throw MacBayError.unsupportedOperation("Xcode preview exceeded \(Self.maximumEntries) entries at \(root.path). Reduce the selected scope before retrying.")
+                throw MacBayError.unsupportedOperation("Operation preview exceeded \(Self.maximumEntries) entries at \(root.path). Reduce the selected scope before retrying.")
             }
             add(url.path)
             let attributes: [FileAttributeKey: Any]

@@ -23,7 +23,8 @@ MacBay is a developer-first storage externalizer for Apple Silicon Macs that rel
 swift build
 ```
 
-This builds the `MacBayKit` framework and both CLI executable targets:
+This builds the shared `MacBayKit` framework, the native GUI, and both CLI executables:
+- `.build/arm64-apple-macosx/debug/MacBayApp`
 - `.build/arm64-apple-macosx/debug/mb`
 - `.build/arm64-apple-macosx/debug/macbay`
 
@@ -39,11 +40,16 @@ The optimized binaries will be available under `.build/release/`.
 
 ## Running Tests
 
-All unit and integration tests can be run using SwiftPM:
+Run the hardware-free Swift suite and app packaging checks:
 
 ```sh
-swift test
+bash scripts/test-safe.sh
+python3 -m unittest discover -s Tests/PackagingTests -v
 ```
+
+The safe runner excludes legacy CLI fixtures that require a physical external
+drive. GUI tests use in-memory services or temporary filesystem fixtures.
+See [GUI setup](docs/gui-poc.md) for running and packaging the native app.
 
 ### Testing Guidelines & Safety Principles
 
@@ -176,7 +182,8 @@ MacBay strictly follows the [Conventional Commits 1.0.0](https://www.conventiona
 2. **Verify locally**:
    ```sh
    swift build -c release
-   swift test
+   bash scripts/test-safe.sh
+   python3 -m unittest discover -s Tests/PackagingTests -v
    ```
 3. **Open a Pull Request**:
    - The **PR Title** must follow the Conventional Commits format (e.g. `feat(cli): add quiet mode flag`). A GitHub Action validates the title format automatically.

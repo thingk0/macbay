@@ -396,6 +396,16 @@ public struct RepairAppUseCase: RepairAppUseCaseProtocol, @unchecked Sendable {
         on volume: URL,
         progress: ProgressHandler? = nil
     ) throws -> RepairExecutionResult {
+        try performRollback(appName: appName, on: volume, expectedRecord: nil, preflight: {}, progress: progress)
+    }
+
+    public func rollback(appName: String, on volume: URL, expectedRecord: RepairJournalRecord,
+                         preflight: () throws -> Void, progress: ProgressHandler? = nil) throws -> RepairExecutionResult {
+        try performRollback(appName: appName, on: volume, expectedRecord: expectedRecord, preflight: preflight, progress: progress)
+    }
+
+    private func performRollback(appName: String, on volume: URL, expectedRecord: RepairJournalRecord?,
+                                 preflight: () throws -> Void, progress: ProgressHandler?) throws -> RepairExecutionResult {
         return try operationLock.withVolumeLock(on: volume) {
             let cleanName = normalizeAppName(appName)
             guard let record = journal.load(appName: cleanName, on: volume) else {
@@ -403,6 +413,10 @@ public struct RepairAppUseCase: RepairAppUseCaseProtocol, @unchecked Sendable {
                     "No pending repair operation found for '\(cleanName)' on \(volume.path)."
                 )
             }
+            if let expectedRecord, record != expectedRecord {
+                throw MacBayError.unsupportedOperation("Repair journal changed. Refresh and review a new rollback preview.")
+            }
+            try preflight()
 
             let localURL = URL(fileURLWithPath: record.localPath)
             let externalURL = URL(fileURLWithPath: record.externalPath)
@@ -426,7 +440,8 @@ public struct RepairAppUseCase: RepairAppUseCaseProtocol, @unchecked Sendable {
             // If symlink was linked, restore local app
             if record.phase == .linked || record.phase == .manifestUpdated {
                 if bundleOperations.isSymbolicLink(at: localURL) {
-                    try? bundleOperations.remove(at: localURL)
+                    do { try bundleOperations.remove(at: localURL) }
+                    catch { rollbackErrors.append("Failed to remove local link: \(error.localizedDescription)") }
                 }
                 if bundleOperations.fileExists(at: localBackupURL) {
                     do {
@@ -440,7 +455,8 @@ public struct RepairAppUseCase: RepairAppUseCaseProtocol, @unchecked Sendable {
             // If new bundle was placed at externalURL, remove it
             if record.phase == .placedNewExternal || record.phase == .linked || record.phase == .manifestUpdated {
                 if bundleOperations.fileExists(at: externalURL) && bundleOperations.fileExists(at: backupURL) {
-                    try? bundleOperations.remove(at: externalURL)
+                    do { try bundleOperations.remove(at: externalURL) }
+                    catch { rollbackErrors.append("Failed to remove staged external app: \(error.localizedDescription)") }
                 }
             }
 
@@ -455,9 +471,15 @@ public struct RepairAppUseCase: RepairAppUseCaseProtocol, @unchecked Sendable {
                 }
             }
 
-            // Clean up staging
-            try? bundleOperations.remove(at: stagingURL)
-            try? bundleOperations.remove(at: stagingURL.deletingLastPathComponent())
+            // Preserve staged data and the journal when any restore step was incomplete.
+            if rollbackErrors.isEmpty {
+                do {
+                    try bundleOperations.remove(at: stagingURL)
+                    try bundleOperations.remove(at: stagingURL.deletingLastPathComponent())
+                } catch {
+                    rollbackErrors.append("Failed to clean recorded staging data: \(error.localizedDescription)")
+                }
+            }
 
             if !rollbackErrors.isEmpty {
                 throw MacBayError.unsupportedOperation(
@@ -466,6 +488,9 @@ public struct RepairAppUseCase: RepairAppUseCaseProtocol, @unchecked Sendable {
             }
 
             journal.remove(appName: cleanName, on: volume)
+            guard journal.load(appName: cleanName, on: volume) == nil else {
+                throw MacBayError.unsupportedOperation("Rollback file actions finished, but the repair journal could not be cleared. Inspect the paths and refresh before retrying.")
+            }
             systemRefresher.refreshLaunchServices(for: localURL)
 
             return RepairExecutionResult(

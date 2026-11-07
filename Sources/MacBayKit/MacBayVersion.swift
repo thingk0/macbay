@@ -1,4 +1,4 @@
-/// Shared release version for the CLI and terminal interface.
+/// Shared release version for the macOS app, CLI, and terminal interface.
 public enum MacBayVersion {
-    public static let current = "1.9.0-dev"
+    public static let current = "1.10.0"
 }

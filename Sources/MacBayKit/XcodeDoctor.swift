@@ -118,7 +118,7 @@ public struct XcodeDoctor {
             try SpaceEstimator(diskInfoProvider: volumeManager.diskInfoProvider)
                 .requireSufficientSpace(copyBytes: required, destinationVolume: volume)
         }
-        let fingerprinter = XcodePathFingerprinter(fileManager: fileManager)
+        let fingerprinter = OperationPathFingerprinter(fileManager: fileManager)
         var fingerprints: [String: String] = [:]
         func capture(_ url: URL, recursive: Bool = true) throws {
             if recursive || fingerprints[url.path] == nil {
