@@ -23,7 +23,8 @@ MacBay is a developer-first storage externalizer for Apple Silicon Macs that rel
 swift build
 ```
 
-This builds the `MacBayKit` framework and both CLI executable targets:
+This builds the shared `MacBayKit` framework, the native GUI, and both CLI executables:
+- `.build/arm64-apple-macosx/debug/MacBayApp`
 - `.build/arm64-apple-macosx/debug/mb`
 - `.build/arm64-apple-macosx/debug/macbay`
 
@@ -39,11 +40,16 @@ The optimized binaries will be available under `.build/release/`.
 
 ## Running Tests
 
-All unit and integration tests can be run using SwiftPM:
+Run the hardware-free Swift suite and app packaging checks:
 
 ```sh
-swift test
+bash scripts/test-safe.sh
+python3 -m unittest discover -s Tests/PackagingTests -v
 ```
+
+The safe runner excludes legacy CLI fixtures that require a physical external
+drive. GUI tests use in-memory services or temporary filesystem fixtures.
+See [GUI setup](docs/gui-poc.md) for running and packaging the native app.
 
 ### Testing Guidelines & Safety Principles
 
@@ -176,20 +182,21 @@ MacBay strictly follows the [Conventional Commits 1.0.0](https://www.conventiona
 2. **Verify locally**:
    ```sh
    swift build -c release
-   swift test
+   bash scripts/test-safe.sh
+   python3 -m unittest discover -s Tests/PackagingTests -v
    ```
 3. **Open a Pull Request**:
    - The **PR Title** must follow the Conventional Commits format (e.g. `feat(cli): add quiet mode flag`). A GitHub Action validates the title format automatically.
    - Describe the motivation, changes made, and how to test them in the PR body.
 4. **CI Checks**:
-   - `Build and Test (macOS)`: Builds the package and test targets, then runs the full test suite on macOS.
+   - `Build and Test (macOS)`: Runs hardware-free Swift and packaging tests with Xcode 26.6 on macOS 26 and Xcode 16.4 on macOS 15, explicitly compiles the legacy appearance branch, and uploads a local verification DMG.
    - `Release Build (macOS)`: Builds the optimized binaries in parallel with the test job.
    - `Validate PR Title`: Verifies the PR title adheres to Conventional Commits.
    - `Release`: Runs only on a `v*` tag. Builds the optimized binaries, verifies the tag matches the
      reported version, and publishes the GitHub release.
    - `Build and Test` and `Release Build` run for pushes to `main` and for pull requests into `main` or `develop`.
      Direct pushes to `develop` skip them; start the `CI` workflow from the Actions tab when a change needs the
-     Xcode 15.4 toolchain check before a release.
+     native and legacy toolchain checks before a release.
    - CI is skipped while a pull request is a draft, and for changes that only touch Markdown or `docs/`.
      A new push to the same branch cancels the run it supersedes.
 5. **Merge Policy**:

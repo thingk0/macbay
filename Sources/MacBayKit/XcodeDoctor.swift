@@ -6,6 +6,7 @@ public struct XcodeDoctorOptions: Equatable, Sendable {
     public var externalizeDerivedData: Bool
     public var cleanDerivedData: Bool
     public var cleanCaches: Bool
+    public var deleteUnavailableSimulators: Bool
     public var force: Bool
 
     public init(
@@ -14,6 +15,7 @@ public struct XcodeDoctorOptions: Equatable, Sendable {
         externalizeDerivedData: Bool = false,
         cleanDerivedData: Bool = false,
         cleanCaches: Bool = false,
+        deleteUnavailableSimulators: Bool = true,
         force: Bool = false
     ) {
         self.externalizeDeviceSupport = externalizeDeviceSupport
@@ -21,6 +23,7 @@ public struct XcodeDoctorOptions: Equatable, Sendable {
         self.externalizeDerivedData = externalizeDerivedData
         self.cleanDerivedData = cleanDerivedData
         self.cleanCaches = cleanCaches
+        self.deleteUnavailableSimulators = deleteUnavailableSimulators
         self.force = force
     }
 }
@@ -57,20 +60,23 @@ public struct XcodeDoctor {
         try run(on: volume, options: XcodeDoctorOptions(), dryRun: dryRun)
     }
 
-    public func run(on volume: URL, options: XcodeDoctorOptions, dryRun: Bool) throws -> XcodeDoctorReport {
-        if options.cleanDerivedData || options.cleanCaches || options.externalizeDerivedData || options.externalizeArchives {
+    public func run(on volume: URL, options: XcodeDoctorOptions, dryRun: Bool,
+                    unavailableSimulatorIDs: [String]? = nil, progress: ProgressHandler? = nil) throws -> XcodeDoctorReport {
+        if options.externalizeDeviceSupport || options.externalizeArchives || options.externalizeDerivedData
+            || options.cleanDerivedData || options.cleanCaches || options.deleteUnavailableSimulators {
             try assertXcodeNotRunning(force: options.force)
         }
 
         // Validate all selected actions before any mutation. Runtime failures still retain
         // successful action results instead of discarding an already partially completed run.
         if !dryRun { _ = try run(on: volume, options: options, dryRun: true) }
+        if !dryRun { progress?(.checkingProcesses) }
         var failures: [XcodeActionFailure] = []
         func externalize(_ enabled: Bool, source: URL, destination: URL, name: String) throws -> MigrationResult? {
             guard enabled else { return nil }
             do {
                 return try externalizeDirectory(source: source, destination: destination,
-                                                displayName: name, on: volume, dryRun: dryRun)
+                                                displayName: name, on: volume, dryRun: dryRun, progress: progress)
             } catch {
                 if dryRun { throw error }
                 failures.append(XcodeActionFailure(action: "externalize " + name, reason: error.localizedDescription))
@@ -87,9 +93,10 @@ public struct XcodeDoctor {
         let derivedData = try externalize(options.externalizeDerivedData,
             source: MacBayPaths.defaultXcodeDerivedDataURL(homeDirectory: homeDirectory),
             destination: MacBayPaths.xcodeDerivedDataRoot(on: volume), name: "Xcode DerivedData")
-        let derivedDataCleanup = options.cleanDerivedData ? try cleanupDerivedData(dryRun: dryRun) : nil
-        let cacheCleanup = options.cleanCaches ? try cleanupCaches(dryRun: dryRun) : nil
-        let simulatorCleanup = try cleanupUnavailableSimulators(dryRun: dryRun)
+        let derivedDataCleanup = options.cleanDerivedData ? try cleanupDerivedData(on: volume, dryRun: dryRun) : nil
+        let cacheCleanup = options.cleanCaches ? try cleanupCaches(on: volume, dryRun: dryRun) : nil
+        let simulatorCleanup = options.deleteUnavailableSimulators
+            ? try cleanupUnavailableSimulators(dryRun: dryRun, ids: unavailableSimulatorIDs) : nil
         return XcodeDoctorReport(
             deviceSupport: deviceSupport, archives: archives, derivedData: derivedData,
             simulatorCleanup: simulatorCleanup, derivedDataCleanup: derivedDataCleanup?.0,
@@ -118,7 +125,7 @@ public struct XcodeDoctor {
             try SpaceEstimator(diskInfoProvider: volumeManager.diskInfoProvider)
                 .requireSufficientSpace(copyBytes: required, destinationVolume: volume)
         }
-        let fingerprinter = XcodePathFingerprinter(fileManager: fileManager)
+        let fingerprinter = OperationPathFingerprinter(fileManager: fileManager)
         var fingerprints: [String: String] = [:]
         func capture(_ url: URL, recursive: Bool = true) throws {
             if recursive || fingerprints[url.path] == nil {
@@ -138,10 +145,16 @@ public struct XcodeDoctor {
                         MacBayPaths.defaultXcodeCachesURL(homeDirectory: homeDirectory)]
         }
         for source in sources { try capture(source) }
-        try capture(volume, recursive: false)
+        fingerprints[volume.path] = try fingerprinter.fingerprint(volume, recursive: false, includeDirectoryContentsMetadata: false)
+        let managedRoot = MacBayPaths.externalRoot(on: volume)
         for migration in migrations {
             var destination = URL(fileURLWithPath: migration.destinationPath)
-            while destination.path.hasPrefix(volume.path + "/") {
+            // The operation lock creates MacBay/.macbay.lock. Its parent is not
+            // an action target; validate its path without snapshotting that metadata.
+            guard destination.resolvingSymlinksInPath().path == destination.standardizedFileURL.path else {
+                throw MacBayError.unsupportedOperation("Xcode destination contains a symbolic link: \(destination.path)")
+            }
+            while destination.path.hasPrefix(managedRoot.path + "/") {
                 try capture(destination, recursive: false)
                 destination.deleteLastPathComponent()
             }
@@ -149,7 +162,7 @@ public struct XcodeDoctor {
         return XcodeStoragePlan(volumePath: volume.path, volumeUUID: info.volumeUUID,
                                 availableBytes: info.availableBytes, requiredBytes: required,
                                 options: options, report: report, xcodeRunning: running,
-                                unavailableSimulatorIDs: try unavailableSimulatorIDs(), fingerprints: fingerprints)
+                                unavailableSimulatorIDs: options.deleteUnavailableSimulators ? try unavailableSimulatorIDs() : [], fingerprints: fingerprints)
     }
 
     private func unavailableSimulatorIDs() throws -> [String] {
@@ -178,7 +191,8 @@ public struct XcodeDoctor {
         destination: URL,
         displayName: String,
         on volume: URL,
-        dryRun: Bool
+        dryRun: Bool,
+        progress: ProgressHandler?
     ) throws -> MigrationResult? {
         if let linkDestination = try? fileManager.destinationOfSymbolicLink(atPath: source.path) {
             let resolvedURL: URL
@@ -235,26 +249,28 @@ public struct XcodeDoctor {
                 source: source,
                 destination: destination,
                 operation: "externalize \(displayName)",
-                dryRun: dryRun
+                dryRun: dryRun,
+                recordOn: volume,
+                progress: progress
             )
         } else {
             return nil
         }
     }
 
-    private func cleanupDerivedData(dryRun: Bool) throws -> (CommandResultSummary, UInt64) {
+    private func cleanupDerivedData(on volume: URL, dryRun: Bool) throws -> (CommandResultSummary, UInt64) {
         try cleanupDirectories(command: "clean DerivedData",
-            targets: [("DerivedData", MacBayPaths.defaultXcodeDerivedDataURL(homeDirectory: homeDirectory))], dryRun: dryRun)
+            targets: [("DerivedData", MacBayPaths.defaultXcodeDerivedDataURL(homeDirectory: homeDirectory))], on: volume, dryRun: dryRun)
     }
 
-    private func cleanupCaches(dryRun: Bool) throws -> (CommandResultSummary, UInt64) {
+    private func cleanupCaches(on volume: URL, dryRun: Bool) throws -> (CommandResultSummary, UInt64) {
         try cleanupDirectories(command: "clean Xcode caches", targets: [
             ("CoreSimulator Caches", MacBayPaths.defaultCoreSimulatorCachesURL(homeDirectory: homeDirectory)),
             ("Xcode App Caches", MacBayPaths.defaultXcodeCachesURL(homeDirectory: homeDirectory))
-        ], dryRun: dryRun)
+        ], on: volume, dryRun: dryRun)
     }
 
-    private func cleanupDirectories(command: String, targets: [(String, URL)], dryRun: Bool) throws -> (CommandResultSummary, UInt64) {
+    private func cleanupDirectories(command: String, targets: [(String, URL)], on volume: URL, dryRun: Bool) throws -> (CommandResultSummary, UInt64) {
         var bytes: UInt64 = 0
         var details: [String] = []
         var succeeded = true
@@ -262,6 +278,20 @@ public struct XcodeDoctor {
             guard fileManager.fileExists(atPath: source.path) else { continue }
             let url = source.resolvingSymlinksInPath()
             do {
+                let suffix = String(source.path.dropFirst(homeDirectory.path.count))
+                let expectedLocal = homeDirectory.resolvingSymlinksInPath().path + suffix
+                let canonicalVolume = volume.resolvingSymlinksInPath()
+                let expectedExternal: URL
+                switch name {
+                case "DerivedData": expectedExternal = MacBayPaths.xcodeDerivedDataRoot(on: canonicalVolume)
+                case "CoreSimulator Caches": expectedExternal = MacBayPaths.cachesRoot(on: canonicalVolume).appendingPathComponent("CoreSimulator")
+                default: expectedExternal = MacBayPaths.cachesRoot(on: canonicalVolume).appendingPathComponent("com.apple.dt.Xcode")
+                }
+                guard url.path == expectedLocal || url.path == expectedExternal.path else {
+                    throw MacBayError.unsupportedOperation("Cleanup target links outside its original Xcode folder or standard MacBay destination. "
+                        + "The linked data was left untouched: \(source.path) → \(url.path)")
+                }
+                try ProcessInspector(commandRunner: commandRunner, fileManager: fileManager).assertSafeToMove(path: url)
                 let items = try fileManager.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)
                 for item in items {
                     let size = try sizeCalculator.size(of: item)
@@ -277,7 +307,7 @@ public struct XcodeDoctor {
                         }
                     }
                 }
-                details.append("\(name): \(source.path)")
+                details.append("\(name): \(source.path)" + (source.path == url.path ? "" : " → " + url.path))
             } catch {
                 if dryRun { throw error }
                 succeeded = false
@@ -289,8 +319,12 @@ public struct XcodeDoctor {
         return (CommandResultSummary(command: command, succeeded: succeeded, output: output), bytes)
     }
 
-    private func cleanupUnavailableSimulators(dryRun: Bool) throws -> CommandResultSummary {
-        let command = "/usr/bin/xcrun simctl delete unavailable"
+    private func cleanupUnavailableSimulators(dryRun: Bool, ids: [String]?) throws -> CommandResultSummary {
+        let targets = ids ?? ["unavailable"]
+        let command = "/usr/bin/xcrun simctl delete " + targets.joined(separator: " ")
+        if targets.isEmpty {
+            return CommandResultSummary(command: "delete unavailable simulators", succeeded: true, output: "No unavailable simulators to remove.")
+        }
         if dryRun {
             return CommandResultSummary(
                 command: command,
@@ -302,7 +336,7 @@ public struct XcodeDoctor {
         do {
             let result = try commandRunner.run(
                 "/usr/bin/xcrun",
-                arguments: ["simctl", "delete", "unavailable"]
+                arguments: ["simctl", "delete"] + targets
             )
             let output = [result.standardOutput, result.standardError]
                 .joined(separator: "\n")

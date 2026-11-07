@@ -16,6 +16,14 @@ let package = Package(
             name: "MacBayTUI",
             targets: ["MacBayTUI"]
         ),
+        .library(
+            name: "MacBayGUI",
+            targets: ["MacBayGUI"]
+        ),
+        .executable(
+            name: "MacBayApp",
+            targets: ["MacBayApp"]
+        ),
         .executable(
             name: "macbay",
             targets: ["macbay"]
@@ -39,6 +47,15 @@ let package = Package(
             name: "MacBayTUI",
             dependencies: ["MacBayKit"]
         ),
+        .target(
+            name: "MacBayGUI",
+            dependencies: ["MacBayKit"],
+            resources: [.process("Resources")]
+        ),
+        .executableTarget(
+            name: "MacBayApp",
+            dependencies: ["MacBayGUI"]
+        ),
         .executableTarget(
             name: "macbay",
             dependencies: [
@@ -54,6 +71,10 @@ let package = Package(
         .testTarget(
             name: "MacBayTUITests",
             dependencies: ["MacBayTUI", "MacBayKit"]
+        ),
+        .testTarget(
+            name: "MacBayGUITests",
+            dependencies: ["MacBayGUI", "MacBayKit"]
         )
     ],
     swiftLanguageVersions: [.v5]

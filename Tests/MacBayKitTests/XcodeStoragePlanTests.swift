@@ -10,10 +10,15 @@ final class XcodeStoragePlanTests: XCTestCase {
         var simulatorFailure = false
         var copyFailureName: String?
         var mutationCalls: [String] = []
+        var simulatorCalls: [[String]] = []
+        var simulatorListingFails = false
+        var hasOpenFiles = false
 
         func run(_ executable: String, arguments: [String]) throws -> CommandResult {
             if executable.hasSuffix("pgrep") { return CommandResult(status: processCheckStatus ?? (running ? 0 : 1)) }
-            if executable.hasSuffix("lsof") { return CommandResult(status: 1) }
+            if executable.hasSuffix("lsof") {
+                return hasOpenFiles ? CommandResult(status: 0, standardOutput: "COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\nSimulator 123 tester 4u REG 1,1 0 1 " + (arguments.last ?? "")) : CommandResult(status: 1)
+            }
             if executable.hasSuffix("ditto") {
                 let source = arguments[arguments.count - 2]
                 mutationCalls.append("copy:" + source)
@@ -23,6 +28,8 @@ final class XcodeStoragePlanTests: XCTestCase {
                 try FileManager.default.copyItem(atPath: source, toPath: arguments.last!)
                 return CommandResult(status: 0)
             }
+            if arguments.first == "simctl" { simulatorCalls.append(arguments) }
+            if simulatorListingFails, arguments.contains("list") { return CommandResult(status: 1) }
             if arguments.contains("delete") {
                 mutationCalls.append("delete unavailable")
                 return CommandResult(status: simulatorFailure ? 1 : 0, standardOutput: simulatorFailure ? "Simulator deletion failed" : "Deleted")
@@ -125,10 +132,10 @@ final class XcodeStoragePlanTests: XCTestCase {
         for file in [device, archive, derived] { XCTAssertTrue(FileManager.default.fileExists(atPath: file.path)) }
         XCTAssertFalse(FileManager.default.fileExists(atPath: history.stateDirectory.path))
         let result = try service.executeXcode(plan: plan)
-        XCTAssertFalse(result.hasFailures)
+        XCTAssertFalse(result.hasFailures, result.failedActions.map(\.reason).joined(separator: "\n"))
         XCTAssertEqual(result.freedBytes, 512)
         XCTAssertEqual(runner.mutationCalls.count, 4)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: result.archives!.destinationPath + "/data.bin"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: try XCTUnwrap(result.archives).destinationPath + "/data.bin"))
         XCTAssertFalse(FileManager.default.fileExists(atPath: derived.path))
         XCTAssertNotNil(try? FileManager.default.destinationOfSymbolicLink(atPath: derived.deletingLastPathComponent().path))
         XCTAssertEqual(history.entries().count, 1)
@@ -266,6 +273,85 @@ final class XcodeStoragePlanTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: removed.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: locked.path))
         XCTAssertEqual(history.entries()[0].outcome, .partial)
+    }
+
+    func testNewlyManagedXcodeDataCanBeRestoredThroughUnmove() throws {
+        let archive = try payload("Archives")
+        let source = archive.deletingLastPathComponent()
+        let service = service(fileManager: MockFileManager(mountedPaths: [volume.path]))
+        let plan = try service.planXcode(volumePath: volume.path, options: XcodeDoctorOptions(deleteUnavailableSimulators: false))
+        let report = try service.executeXcode(plan: plan)
+        let external = try XCTUnwrap(report.archives).destinationPath
+        XCTAssertNotNil(try? FileManager.default.destinationOfSymbolicLink(atPath: source.path))
+        _ = try service.unmove(path: source.path, volumePath: volume.path, dryRun: false)
+        XCTAssertNil(try? FileManager.default.destinationOfSymbolicLink(atPath: source.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: archive.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: external))
+        XCTAssertTrue(try ManifestStore().load(on: volume).items.isEmpty)
+        XCTAssertTrue(OperationJournal().listIncompleteMoves(on: volume).isEmpty)
+    }
+
+    func testSimulatorCleanupIsOptionalAndDoesNotRequireSimulatorToolsWhenOff() throws {
+        _ = try payload("Archives")
+        runner.simulatorListingFails = true
+        let service = service()
+        let options = XcodeDoctorOptions(deleteUnavailableSimulators: false)
+        let plan = try service.planXcode(volumePath: volume.path, options: options)
+        XCTAssertTrue(plan.unavailableSimulatorIDs.isEmpty)
+        XCTAssertNil(plan.report.simulatorCleanup)
+        XCTAssertFalse(options.actionDescriptions.contains("delete unavailable simulators"))
+        let report = try service.executeXcode(plan: plan)
+        XCTAssertFalse(report.hasFailures, report.failedActions.map(\.reason).joined(separator: "\n"))
+        XCTAssertTrue(runner.simulatorCalls.isEmpty)
+        XCTAssertEqual(try ManifestStore().load(on: volume).items.count, 1)
+    }
+
+    func testExecutionDeletesOnlyReviewedSimulatorIDsAndSkipsAnEmptyList() throws {
+        let service = service()
+        let options = XcodeDoctorOptions(externalizeDeviceSupport: false, externalizeArchives: false)
+        let plan = try service.planXcode(volumePath: volume.path, options: options)
+        _ = try service.executeXcode(plan: plan)
+        XCTAssertTrue(runner.simulatorCalls.contains(["simctl", "delete", "unavailable-device"]))
+        XCTAssertFalse(runner.simulatorCalls.contains(["simctl", "delete", "unavailable"]))
+        runner.mutationCalls.removeAll()
+        runner.simulators = []
+        let empty = try service.planXcode(volumePath: volume.path, options: options)
+        let report = try service.executeXcode(plan: empty)
+        XCTAssertFalse(report.hasFailures)
+        XCTAssertTrue(runner.mutationCalls.isEmpty)
+    }
+
+    func testDeviceSupportOnlyAlsoRequiresXcodeToBeClosed() throws {
+        _ = try payload("iOS DeviceSupport")
+        runner.running = true
+        XCTAssertThrowsError(try service().planXcode(volumePath: volume.path,
+            options: XcodeDoctorOptions(externalizeArchives: false, deleteUnavailableSimulators: false)))
+        XCTAssertTrue(runner.mutationCalls.isEmpty)
+    }
+
+    func testCleanupRefusesLinksToUnmanagedDataAndLeavesAllFilesUntouched() throws {
+        let important = home.appendingPathComponent("Important")
+        try FileManager.default.createDirectory(at: important, withIntermediateDirectories: true)
+        let archive = important.appendingPathComponent("archive.bin")
+        try Data("irreplaceable".utf8).write(to: archive)
+        let source = home.appendingPathComponent("Library/Developer/Xcode/DerivedData")
+        try FileManager.default.createDirectory(at: source.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: source, withDestinationURL: important)
+        XCTAssertThrowsError(try service().planXcode(volumePath: volume.path,
+            options: XcodeDoctorOptions(externalizeDeviceSupport: false, externalizeArchives: false,
+                cleanDerivedData: true, deleteUnavailableSimulators: false)))
+        XCTAssertEqual(try Data(contentsOf: archive), Data("irreplaceable".utf8))
+        XCTAssertTrue(runner.mutationCalls.isEmpty)
+    }
+
+    func testOpenFilesBlockCleanupBeforeDeletingAnyBuildData() throws {
+        let file = try payload("DerivedData")
+        runner.hasOpenFiles = true
+        XCTAssertThrowsError(try service().planXcode(volumePath: volume.path,
+            options: XcodeDoctorOptions(externalizeDeviceSupport: false, externalizeArchives: false,
+                cleanDerivedData: true, deleteUnavailableSimulators: false)))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+        XCTAssertTrue(runner.mutationCalls.isEmpty)
     }
 
     func testReportsDecodeOldJSONAndPreserveNewFailures() throws {

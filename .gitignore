@@ -24,6 +24,7 @@ Icon?
 *.key
 *.cert
 *.p12
+*.p8
 
 # IDE & Editor Settings
 .vscode/
@@ -33,3 +34,7 @@ Icon?
 .gemini/
 .commandcode/
 scratch/
+
+# Python release tooling
+__pycache__/
+*.py[cod]

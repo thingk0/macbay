@@ -39,5 +39,14 @@ public protocol RepairAppUseCaseProtocol: Sendable {
     func plan(appName: String, action: RepairAction, on volume: URL, progress: (@Sendable (String) -> Void)?) throws -> RepairPlan
     func execute(plan: RepairPlan, force: Bool, progress: (@Sendable (String) -> Void)?) throws -> RepairExecutionResult
     func rollback(appName: String, on volume: URL, progress: (@Sendable (String) -> Void)?) throws -> RepairExecutionResult
+    func rollback(appName: String, on volume: URL, expectedRecord: RepairJournalRecord,
+                  preflight: () throws -> Void, progress: (@Sendable (String) -> Void)?) throws -> RepairExecutionResult
+}
+
+public extension RepairAppUseCaseProtocol {
+    func rollback(appName: String, on volume: URL, expectedRecord: RepairJournalRecord,
+                  preflight: () throws -> Void, progress: (@Sendable (String) -> Void)?) throws -> RepairExecutionResult {
+        throw MacBayError.unsupportedOperation("This repair adapter does not support confirmed rollback plans.")
+    }
 }
 

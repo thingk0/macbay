@@ -1,0 +1,7 @@
+#!/bin/bash
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+# These legacy CLI fixtures discover physical APFS drives. Never run them automatically.
+skip='CLIIntegrationTests/(testInitWithClosedStdinIsNotInteractive|testAdoptDryRunOutputsPlanAndDoesNotMutateFiles|testAdoptJsonWithoutYesFailsWithConfirmationRequired|testAdoptReviewRequiredWithoutForceFailsWithoutPrompting|testAdoptReviewRequiredWithForceAndDryRun|testRepairComparisonReadOnlyOutputsComparison|testRepairRedockDryRunOutputsPlanAndDoesNotMutateFiles|testRepairKeepLocalDryRunOutputsPlan|testRepairRedockJsonWithoutYesFailsWithConfirmationRequired|testBackupsListJSONIncludesFixture|testBackupsRemovalDryRunDoesNotMutateFiles|testBackupsReferencedBackupIsProtected|testBackupsRemoveWithYesDeletesBackup|testBackupsRemovalJSONWithoutYesFailsWithErrorEnvelope)'
+swift build --build-tests
+swift test --skip-build --skip "$skip" "$@"

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>MacBay</string>
+    <key>CFBundleDisplayName</key>
+    <string>MacBay</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.thingk0.macbay</string>
+    <key>CFBundleExecutable</key>
+    <string>MacBayApp</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleLocalizations</key>
+    <array><string>en</string></array>
+    <key>CFBundleShortVersionString</key>
+    <string>$(MACBAY_VERSION)</string>
+    <key>CFBundleVersion</key>
+    <string>$(MACBAY_BUILD_NUMBER)</string>
+    <key>CFBundleIconFile</key>
+    <string>MacBay.icns</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.developer-tools</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © 2026 MacBay contributors. MIT License.</string>
+</dict>
+</plist>

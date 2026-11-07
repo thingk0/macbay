@@ -137,17 +137,19 @@ public struct DirectoryMoveManager {
                 at: destination.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
+            let replacement = SourceLinkReplacement(source: source, destination: destination, fileManager: fileManager)
             let record = MoveOperationRecord(
                 id: UUID().uuidString,
                 kind: .move,
                 name: source.lastPathComponent,
                 sourcePath: source.path,
                 destinationPath: destination.path,
+                backupPath: replacement.backup.path,
                 volumePath: volume.path,
                 phase: .started,
                 timestamp: macBayTimestamp()
             )
-            try? journal.saveMove(record, on: volume)
+            try journal.saveMove(record, on: volume)
             do {
                 progress?(.copying)
                 try runDitto(from: source, to: destination, totalBytes: sizeBytes, progress: progress)
@@ -155,21 +157,18 @@ public struct DirectoryMoveManager {
                 if fileManager.fileExists(atPath: destination.path) {
                     try? fileManager.removeItemMakingWritable(at: destination)
                 }
-                journal.removeMove(id: record.id, on: volume)
+                if !fileManager.fileExists(atPath: destination.path), !isSymbolicLink(destination) {
+                    journal.removeMove(id: record.id, on: volume)
+                }
                 throw error
             }
 
-            try? journal.saveMove(record.updatingPhase(.copied), on: volume)
+            try journal.saveMove(record.updatingPhase(.copied), on: volume)
 
             progress?(.updatingLink)
-            do {
-                try replaceSourceWithSymlink(source: source, destination: destination)
-            } catch {
-                journal.removeMove(id: record.id, on: volume)
-                throw error
-            }
-
-            try? journal.saveMove(record.updatingPhase(.linkSwapped), on: volume)
+            try replacement.install()
+            try journal.saveMove(record.updatingPhase(.linkSwapped), on: volume)
+            try replacement.removeBackup()
 
             progress?(.savingManifest)
             let item = DockedItem(
@@ -180,14 +179,9 @@ public struct DirectoryMoveManager {
                 kind: .directory,
                 dockedAt: macBayTimestamp()
             )
-            do {
-                try manifestStore.updating(on: volume) { manifest in
-                    manifest.items.removeAll { $0.sourcePath == item.sourcePath }
-                    manifest.items.append(item)
-                }
-            } catch {
-                journal.removeMove(id: record.id, on: volume)
-                throw error
+            try manifestStore.updating(on: volume) { manifest in
+                manifest.items.removeAll { $0.sourcePath == item.sourcePath }
+                manifest.items.append(item)
             }
 
             try? journal.saveMove(record.updatingPhase(.manifestSaved), on: volume)
@@ -488,17 +482,19 @@ public struct DirectoryMoveManager {
                 at: destination.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
+            let replacement = SourceLinkReplacement(source: source, destination: destination, fileManager: fileManager)
             let record = MoveOperationRecord(
                 id: UUID().uuidString,
                 kind: .move,
                 name: source.lastPathComponent,
                 sourcePath: source.path,
                 destinationPath: destination.path,
+                backupPath: replacement.backup.path,
                 volumePath: volume.path,
                 phase: .started,
                 timestamp: macBayTimestamp()
             )
-            try? journal.saveMove(record, on: volume)
+            try journal.saveMove(record, on: volume)
             do {
                 progress?(.copying)
                 try runDitto(from: source, to: destination, totalBytes: sizeBytes, progress: progress)
@@ -506,21 +502,18 @@ public struct DirectoryMoveManager {
                 if fileManager.fileExists(atPath: destination.path) {
                     try? fileManager.removeItemMakingWritable(at: destination)
                 }
-                journal.removeMove(id: record.id, on: volume)
+                if !fileManager.fileExists(atPath: destination.path), !isSymbolicLink(destination) {
+                    journal.removeMove(id: record.id, on: volume)
+                }
                 throw error
             }
 
-            try? journal.saveMove(record.updatingPhase(.copied), on: volume)
+            try journal.saveMove(record.updatingPhase(.copied), on: volume)
 
             progress?(.updatingLink)
-            do {
-                try replaceFileWithSymlink(source: source, destination: destination)
-            } catch {
-                journal.removeMove(id: record.id, on: volume)
-                throw error
-            }
-
-            try? journal.saveMove(record.updatingPhase(.linkSwapped), on: volume)
+            try replacement.install()
+            try journal.saveMove(record.updatingPhase(.linkSwapped), on: volume)
+            try replacement.removeBackup()
 
             progress?(.savingManifest)
             let item = DockedItem(
@@ -531,14 +524,9 @@ public struct DirectoryMoveManager {
                 kind: .file,
                 dockedAt: macBayTimestamp()
             )
-            do {
-                try manifestStore.updating(on: volume) { manifest in
-                    manifest.items.removeAll { $0.sourcePath == item.sourcePath }
-                    manifest.items.append(item)
-                }
-            } catch {
-                journal.removeMove(id: record.id, on: volume)
-                throw error
+            try manifestStore.updating(on: volume) { manifest in
+                manifest.items.removeAll { $0.sourcePath == item.sourcePath }
+                manifest.items.append(item)
             }
 
             try? journal.saveMove(record.updatingPhase(.manifestSaved), on: volume)
@@ -679,54 +667,6 @@ public struct DirectoryMoveManager {
                 status: result.status,
                 details: result.standardError.trimmingCharacters(in: .whitespacesAndNewlines)
             )
-        }
-    }
-
-    private func replaceSourceWithSymlink(source: URL, destination: URL) throws {
-        let backup = source.deletingLastPathComponent().appendingPathComponent(
-            ".\(source.lastPathComponent).macbay-\(UUID().uuidString)"
-        )
-        try fileManager.moveItemPreservingPermissions(at: source, to: backup)
-        do {
-            try fileManager.createSymbolicLink(atPath: source.path, withDestinationPath: destination.path)
-            try fileManager.removeItemMakingWritable(at: backup)
-        } catch {
-            if fileManager.fileExists(atPath: source.path) {
-                try? fileManager.removeItemMakingWritable(at: source)
-            }
-            if fileManager.fileExists(atPath: backup.path), !fileManager.fileExists(atPath: source.path) {
-                try? fileManager.moveItemPreservingPermissions(at: backup, to: source)
-            }
-            if fileManager.fileExists(atPath: destination.path) {
-                try? fileManager.removeItemMakingWritable(at: destination)
-            }
-            throw error
-        }
-    }
-
-    private func replaceFileWithSymlink(source: URL, destination: URL) throws {
-        let backup = source.deletingLastPathComponent().appendingPathComponent(
-            ".\(source.lastPathComponent).macbay-\(UUID().uuidString)"
-        )
-        do {
-            try fileManager.moveItem(at: source, to: backup)
-        } catch {
-            throw error
-        }
-        do {
-            try fileManager.createSymbolicLink(atPath: source.path, withDestinationPath: destination.path)
-            try fileManager.removeItem(at: backup)
-        } catch {
-            if fileManager.fileExists(atPath: source.path) || isSymbolicLink(source) {
-                try? fileManager.removeItem(at: source)
-            }
-            if fileManager.fileExists(atPath: backup.path), !fileManager.fileExists(atPath: source.path) {
-                try? fileManager.moveItem(at: backup, to: source)
-            }
-            if fileManager.fileExists(atPath: destination.path) {
-                try? fileManager.removeItemMakingWritable(at: destination)
-            }
-            throw error
         }
     }
 

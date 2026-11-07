@@ -48,9 +48,10 @@ final class DirectoryMoveManagerTests: XCTestCase {
     }
 
     private func makeManager(
-        commandRunner: any CommandRunner = TestBundleCommandRunner(entitlementsXml: "")
+        commandRunner: any CommandRunner = TestBundleCommandRunner(entitlementsXml: ""),
+        fileManager: FileManager? = nil
     ) -> DirectoryMoveManager {
-        let fileManager = MockFileManager(mountedPaths: ["/", volumeDir.path])
+        let fileManager = fileManager ?? MockFileManager(mountedPaths: ["/", volumeDir.path])
         let provider = MockDiskInfoProvider([
             "/": internalDiskInfo,
             volumeDir.path: externalDiskInfo
@@ -152,6 +153,115 @@ final class DirectoryMoveManagerTests: XCTestCase {
         XCTAssertTrue(journal.listIncompleteMoves(on: volumeDir).isEmpty)
         XCTAssertTrue(FileManager.default.fileExists(atPath: source.appendingPathComponent("Sub/file.txt").path))
         _ = manager
+    }
+
+    func testPartialBackupRemovalPreservesLinkedDataAndJournalForInspection() throws {
+        let source = try makeSourceDirectory()
+        try Data("first archive".utf8).write(to: source.appendingPathComponent("first.bin"))
+        let manager = MigrationFailureFileManager()
+        manager.failBackupRemoval = true
+        XCTAssertThrowsError(try makeManager(fileManager: manager).move(path: source.path, on: volumeDir, dryRun: false))
+        let destination = MacBayPaths.dataRoot(on: volumeDir).appendingPathComponent(source.lastPathComponent)
+        XCTAssertEqual(try? FileManager.default.destinationOfSymbolicLink(atPath: source.path), destination.path)
+        XCTAssertEqual(try Data(contentsOf: source.appendingPathComponent("first.bin")), Data("first archive".utf8))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: destination.appendingPathComponent("Sub/file.txt").path))
+        let record = try XCTUnwrap(OperationJournal().listIncompleteMoves(on: volumeDir).first)
+        XCTAssertEqual(record.phase, .linkSwapped)
+        XCTAssertEqual(record.backupPath, manager.backup?.path)
+        let volumeManager = VolumeManager(fileManager: MockFileManager(mountedPaths: [volumeDir.path]),
+            diskInfoProvider: MockDiskInfoProvider([volumeDir.path: externalDiskInfo]), volumeMountPrefix: tempDir.path)
+        let checker = DoctorChecker(fileManager: .default, volumeManager: volumeManager,
+            configStore: ConfigStore(environment: ["XDG_CONFIG_HOME": tempDir.appendingPathComponent("config").path], homeDirectory: tempDir),
+            operationLock: NoOpVolumeOperationLock())
+        let report = try checker.check(volumePath: volumeDir.path, applicationDirectories: [], developerCacheTargets: [], fix: true)
+        XCTAssertEqual(report.fixes.first { $0.code == .incompleteOperation }?.status, .skipped)
+        XCTAssertEqual(OperationJournal().listIncompleteMoves(on: volumeDir).count, 1)
+        XCTAssertEqual(try Data(contentsOf: source.appendingPathComponent("first.bin")), Data("first archive".utf8))
+    }
+
+    func testManifestFailureKeepsJournalAndCompleteLinkedCopy() throws {
+        let source = try makeSourceDirectory()
+        try FileManager.default.createDirectory(at: MacBayPaths.externalRoot(on: volumeDir), withIntermediateDirectories: true)
+        try Data("invalid manifest".utf8).write(to: MacBayPaths.manifestURL(on: volumeDir))
+        XCTAssertThrowsError(try makeManager().move(path: source.path, on: volumeDir, dryRun: false))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: source.appendingPathComponent("Sub/file.txt").path))
+        XCTAssertNotNil(try? FileManager.default.destinationOfSymbolicLink(atPath: source.path))
+        XCTAssertEqual(OperationJournal().listIncompleteMoves(on: volumeDir).first?.phase, .linkSwapped)
+    }
+
+    func testFailedCopyCleanupKeepsTheJournalAndUntouchedOriginal() throws {
+        let source = try makeSourceDirectory()
+        let manager = makeManager(commandRunner: PartialCopyFailure(), fileManager: PartialCopyRemovalFailure())
+        XCTAssertThrowsError(try manager.move(path: source.path, on: volumeDir, dryRun: false))
+        let record = try XCTUnwrap(OperationJournal().listIncompleteMoves(on: volumeDir).first)
+        XCTAssertEqual(record.phase, .started)
+        XCTAssertNil(try? FileManager.default.destinationOfSymbolicLink(atPath: source.path))
+        XCTAssertEqual(try Data(contentsOf: source.appendingPathComponent("Sub/file.txt")), Data("payload".utf8))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: record.destinationPath + "/partial.bin"))
+    }
+
+    private final class PartialCopyFailure: CommandRunner, @unchecked Sendable {
+        func run(_ executable: String, arguments: [String]) throws -> CommandResult {
+            if executable.hasSuffix("ditto") {
+                let destination = URL(fileURLWithPath: arguments.last!)
+                try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+                try Data("partial".utf8).write(to: destination.appendingPathComponent("partial.bin"))
+                return CommandResult(status: 1, standardError: "Copy interrupted")
+            }
+            return CommandResult(status: 1)
+        }
+    }
+
+    private final class PartialCopyRemovalFailure: FileManager, @unchecked Sendable {
+        override func removeItem(at url: URL) throws {
+            if url.path.hasSuffix("/MacBay/Data/Games") {
+                throw NSError(domain: NSCocoaErrorDomain, code: NSFileWriteNoPermissionError)
+            }
+            try super.removeItem(at: url)
+        }
+    }
+
+    func testJournalWriteFailureStopsBeforeCopyingOrChangingSource() throws {
+        let source = try makeSourceDirectory()
+        let operations = MacBayPaths.operationsRoot(on: volumeDir)
+        try FileManager.default.createDirectory(at: operations.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("blocked".utf8).write(to: operations)
+        XCTAssertThrowsError(try makeManager().move(path: source.path, on: volumeDir, dryRun: false))
+        XCTAssertNil(try? FileManager.default.destinationOfSymbolicLink(atPath: source.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: source.appendingPathComponent("Sub/file.txt").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: MacBayPaths.dataRoot(on: volumeDir).appendingPathComponent(source.lastPathComponent).path))
+    }
+
+    func testDoctorNeverRemovesDataOutsideTheRecordedVolumesManagedRoots() throws {
+        let source = try makeSourceDirectory()
+        let important = tempDir.appendingPathComponent("Important")
+        let original = important.appendingPathComponent("Sub")
+        let payload = original.appendingPathComponent("keep.bin")
+        let dataRoot = MacBayPaths.dataRoot(on: volumeDir)
+        let redirected = dataRoot.appendingPathComponent("Sub")
+        let volumeManager = VolumeManager(fileManager: MockFileManager(mountedPaths: [volumeDir.path]),
+            diskInfoProvider: MockDiskInfoProvider([volumeDir.path: externalDiskInfo]), volumeMountPrefix: tempDir.path)
+        let checker = DoctorChecker(fileManager: .default, volumeManager: volumeManager,
+            configStore: ConfigStore(environment: ["XDG_CONFIG_HOME": tempDir.appendingPathComponent("config").path], homeDirectory: tempDir),
+            operationLock: NoOpVolumeOperationLock())
+        let journal = OperationJournal()
+        for (index, destination) in [original, redirected].enumerated() {
+            try FileManager.default.createDirectory(at: original, withIntermediateDirectories: true)
+            try Data("keep this data".utf8).write(to: payload)
+            if index == 1 { try FileManager.default.createSymbolicLink(at: dataRoot, withDestinationURL: important) }
+            let record = MoveOperationRecord(id: "outside-\(index)", kind: .move, name: source.lastPathComponent,
+                sourcePath: source.path, destinationPath: destination.path, volumePath: volumeDir.path, phase: .copied, timestamp: "")
+            try journal.saveMove(record, on: volumeDir)
+            let report = try checker.check(volumePath: volumeDir.path, applicationDirectories: [], developerCacheTargets: [], fix: true)
+            XCTAssertEqual(report.fixes.first { $0.code == .incompleteOperation }?.status, .skipped)
+            XCTAssertEqual(try Data(contentsOf: payload), Data("keep this data".utf8))
+            XCTAssertTrue(journal.listIncompleteMoves(on: volumeDir).contains { $0.id == record.id })
+            journal.removeMove(id: record.id, on: volumeDir)
+        }
+        // The redirected tree is also protected when no interruption journal exists.
+        let orphan = try checker.check(volumePath: volumeDir.path, applicationDirectories: [], developerCacheTargets: [], fix: true)
+        XCTAssertFalse(orphan.fixes.contains { $0.code == .localDataDetected && $0.status == .fixed })
+        XCTAssertEqual(try Data(contentsOf: payload), Data("keep this data".utf8))
     }
 
     func testMoveDryRunChangesNothing() throws {

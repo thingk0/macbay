@@ -61,7 +61,7 @@ public extension XcodeDoctorOptions {
         var actions: [String] = []
         if externalizeDeviceSupport { actions.append("externalize Xcode DeviceSupport") }
         if externalizeArchives { actions.append("externalize Archives") }
-        actions.append("delete unavailable simulators")
+        if deleteUnavailableSimulators { actions.append("delete unavailable simulators") }
         if externalizeDerivedData { actions.append("externalize DerivedData") }
         if cleanDerivedData { actions.append("clean DerivedData") }
         if cleanCaches { actions.append("clean simulator and Xcode caches") }
@@ -71,18 +71,18 @@ public extension XcodeDoctorOptions {
 
 /// Bounded metadata snapshots detect replaced paths, link changes and same-size file edits.
 /// Access times are excluded because reading the preview must not invalidate it.
-struct XcodePathFingerprinter {
+struct OperationPathFingerprinter {
     let fileManager: FileManager
     static let maximumEntries = 100_000
 
-    func fingerprint(_ root: URL, recursive: Bool) throws -> String {
+    func fingerprint(_ root: URL, recursive: Bool, includeDirectoryContentsMetadata: Bool = true) throws -> String {
         var hash = SHA256()
         var count = 0
         func add(_ value: String) { hash.update(data: Data((value + "\u{0000}").utf8)) }
         func visit(_ url: URL, recurse: Bool) throws {
             count += 1
             guard count <= Self.maximumEntries else {
-                throw MacBayError.unsupportedOperation("Xcode preview exceeded \(Self.maximumEntries) entries at \(root.path). Reduce the selected scope before retrying.")
+                throw MacBayError.unsupportedOperation("Operation preview exceeded \(Self.maximumEntries) entries at \(root.path). Reduce the selected scope before retrying.")
             }
             add(url.path)
             let attributes: [FileAttributeKey: Any]
@@ -93,6 +93,8 @@ struct XcodePathFingerprinter {
                 return
             }
             for key in [FileAttributeKey.type, .systemFileNumber, .systemNumber, .size, .modificationDate, .creationDate, .posixPermissions] {
+                if !includeDirectoryContentsMetadata, attributes[.type] as? FileAttributeType == .typeDirectory,
+                   key == .size || key == .modificationDate { continue }
                 if let date = attributes[key] as? Date {
                     add(String(date.timeIntervalSinceReferenceDate))
                 } else {

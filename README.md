@@ -14,7 +14,7 @@
   <a href="docs/README.ja.md">日本語</a>
 </p>
 
-MacBay is a developer-first storage externalizer designed for Apple Silicon Macs. It safely moves large applications, Xcode DeviceSupport data, and developer caches to an external APFS drive while transparently preserving the original paths for terminal CLIs, LaunchAgents, and the macOS Dock.
+MacBay is a macOS storage manager for Apple Silicon Macs, with a native SwiftUI app as its primary interface. Review storage, update managed apps, and recover supported interrupted operations from the GUI. The shared engine also powers the CLI and TUI to externalize applications, Xcode data, and developer caches while preserving their original paths.
 
 [![CI](https://github.com/thingk0/macbay/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/thingk0/macbay/actions/workflows/ci.yml?query=branch%3Amain)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -25,6 +25,10 @@ MacBay is a developer-first storage externalizer designed for Apple Silicon Macs
 
 ## Features
 
+- **Native macOS App**: English SwiftUI interface with native macOS sidebars, tables, a separate Settings window, confirmed app moves/restores and cache cleanup, Diagnostics, and History. First-run setup checks the selected drive and access; Settings offers completion notifications and a manual MacBay update check. Build a local app and DMG with `bash scripts/build-app.sh --dmg`; see [GUI setup and scope](docs/gui-poc.md).
+- **GUI Update Center**: Preview and confirm Prepare → vendor update → Finish, or run the supported managed Kiro CLI updater. Rechecks app identity, signature, process locks, space, workflow state, and the original drive.
+- **GUI Xcode Storage**: Choose DeviceSupport and Archives moves, a single DerivedData action (keep, move, or remove), and optional cache/simulator cleanup. Review exact paths, confirm, and follow progress and per-action results. Moves are recorded in the volume manifest; cleanup stays off until selected.
+- **GUI Recovery Center**: Groups interrupted repairs, updates, adoptions, moves, and restores. Validated repair rollbacks and update actions execute after confirmation; ambiguous states show operation-specific manual guidance.
 - **Interactive TUI Mode (`mb tui` / `mb ui`)**: Launch an interactive, keyboard-driven Terminal User Interface to visually inspect storage capacity, browse applications with Safe/Review/Blocked status, and preview moves and restorations.
 - **Application Relocation (`dock` / `undock` / `adopt`)**: Migrate large apps to external storage, restore them to internal disk, or adopt already-externalized apps into standard MacBay layout without restoring first. Dock icons and LaunchServices are automatically refreshed.
 - **Repair Backup Management (`backups`)**: List the backups created by `repair --action redock` with their saved version, date, and logical size, and remove only the unreferenced backups you no longer need. Backups referenced by an operation or recovery journal, or whose metadata cannot be verified, stay protected.
@@ -48,7 +52,26 @@ MacBay is a developer-first storage externalizer designed for Apple Silicon Macs
 
 ## Installation
 
-### Method 1: Homebrew (Recommended)
+### macOS App — Development Preview
+
+From a source checkout:
+
+```sh
+bash scripts/build-app.sh --dmg
+open .build/gui/MacBay.app
+```
+
+For 1.10.0, the script produces `.build/gui/MacBay.app`,
+`.build/gui/MacBay-1.10.0-arm64-local.dmg`, and its SHA-256 checksum.
+`MacBay-PoC.dmg` remains a compatibility symlink.
+These are locally ad-hoc signed development artifacts, not notarized public releases.
+Use `bash scripts/run-app.sh --demo` to explore the native interface without reading or changing real apps.
+Moves, restores, cleanup, updates, and supported recovery actions require a separate
+preview and confirmation. Developer Data also executes selected Xcode storage actions after review;
+simulator and cache deletion are off by default and require a separate removal acknowledgment.
+See [distribution setup](docs/releasing-1.10.md) for the Developer ID and notarization pipeline.
+
+### CLI via Homebrew
 
 Install MacBay using Homebrew:
 
@@ -87,7 +110,7 @@ brew upgrade macbay
 
 ---
 
-### Method 2: Building from Source
+### CLI from Source
 
 Requirements: macOS 13 or newer, Apple Silicon, and Xcode Command Line Tools or Xcode 15.3+ (providing Swift 5.10 or newer).
 
@@ -99,8 +122,8 @@ cd macbay
 # Build release binaries
 swift build -c release
 
-# Run tests
-swift test
+# Run hardware-free tests
+bash scripts/test-safe.sh
 
 # Copy to /usr/local/bin (optional)
 sudo cp .build/release/mb /usr/local/bin/mb
@@ -111,7 +134,7 @@ Verify installation:
 
 ```sh
 mb --version
-# Output: 1.2.1
+# Output for this source version: 1.10.0
 ```
 
 ---
@@ -693,6 +716,13 @@ mb xcode --externalize-derived-data --dry-run
 
 > [!NOTE]
 > `mb xcode` checks whether `Xcode.app` is actively running before modifying its storage or deleting caches. To proceed anyway, pass `-f, --force`.
+
+The GUI leaves simulator and cache removal off by default; CLI/TUI retain their existing simulator-cleanup default.
+Confirmed GUI/TUI plans delete only the simulator IDs shown in the preview. Xcode moves now save manifest entries
+and interruption journals, so `mb status`, `mb unmove <original-path>`, Diagnostics, and Recovery can track them.
+Cleanup refuses links into unrelated data folders and checks open files before deleting build data or caches.
+If removing an old backup fails after a move, the working link and complete external copy are preserved;
+the possibly incomplete backup is left for inspection rather than restored over the live data.
 
 ### Developer Cache Routing (`cache`)
 

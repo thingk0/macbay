@@ -553,6 +553,42 @@ public struct MacBayService {
         )
     }
 
+    public func planRepairRollback(appName: String, volumePath: String) throws -> RepairRollbackPlan {
+        let selection = try selectVolume(path: volumePath)
+        guard try volumeManager.externalVolumes().contains(where: { $0.path == selection.volume.path }) else {
+            throw MacBayError.invalidVolume("Reconnect the original repair volume and refresh Recovery Center.")
+        }
+        let info = try volumeManager.diskInfoProvider.diskInfo(for: selection.volume.path)
+        guard let uuid = info.volumeUUID, !uuid.isEmpty else {
+            throw MacBayError.invalidVolume("Unable to verify the repair volume UUID.")
+        }
+        return try RepairRollbackPlanner(fileManager: fileManager, commandRunner: commandRunner,
+            applicationsDirectory: applicationsDirectory).plan(appName: appName,
+                volume: URL(fileURLWithPath: selection.volume.path), volumeUUID: uuid)
+    }
+
+    public func executeRepairRollback(plan: RepairRollbackPlan,
+                                      progress: (@Sendable (String) -> Void)? = nil) throws -> RepairExecutionResult {
+        let record = plan.record
+        do {
+            guard try planRepairRollback(appName: record.appName, volumePath: record.volumePath) == plan else {
+                throw MacBayError.unsupportedOperation("Repair conditions changed. Refresh and review a new rollback preview.")
+            }
+            let result = try repairAppUseCase.rollback(appName: record.appName,
+                on: URL(fileURLWithPath: record.volumePath), expectedRecord: record, preflight: {
+                    let current = try planRepairRollback(appName: record.appName, volumePath: record.volumePath)
+                    guard current == plan else {
+                        throw MacBayError.unsupportedOperation("Repair conditions changed. Refresh and review a new rollback preview.")
+                    }
+                }, progress: progress)
+            recordOperation(command: "repair --rollback", subject: record.appName, outcome: .success)
+            return result
+        } catch {
+            recordOperation(command: "repair --rollback", subject: record.appName, outcome: .failure, detail: error.localizedDescription)
+            throw error
+        }
+    }
+
     public func planRepairBackupRemoval(
         ids: [String],
         volumePath: String?
@@ -1070,6 +1106,50 @@ public struct MacBayService {
         }
     }
 
+    public func planAppUpdate(action: AppUpdateAction, appPath: String) throws -> AppUpdatePlan {
+        let existing = try updateWorkflowStore.record(for: appPath)
+        let report: UpdateWorkflowReport
+        switch action {
+        case .begin:
+            report = try beginAppUpdate(appName: appPath, dryRun: true)
+        case .finish:
+            report = try finishAppUpdate(appName: appPath, dryRun: true)
+        case .managedKiro:
+            let expected = applicationsDirectory.appendingPathComponent("Kiro CLI.app").standardizedFileURL.path
+            guard URL(fileURLWithPath: appPath).standardizedFileURL.path == expected else {
+                throw MacBayError.unsupportedOperation("Managed updates only support the recorded Kiro CLI application.")
+            }
+            report = try runKiroUpdate(dryRun: true)
+        }
+        let volume = try updateWorkflowVolume(for: report.record)
+        let currentExternal = MacBayPaths.applicationsRoot(on: URL(fileURLWithPath: volume.path))
+            .appendingPathComponent(report.record.appName)
+        let fingerprinter = OperationPathFingerprinter(fileManager: fileManager)
+        var fingerprints: [String: String] = [:]
+        for path in Set([report.record.sourcePath, currentExternal.path,
+                         MacBayPaths.manifestURL(on: URL(fileURLWithPath: volume.path)).path]) {
+            fingerprints[path] = try fingerprinter.fingerprint(URL(fileURLWithPath: path), recursive: true)
+        }
+        return AppUpdatePlan(action: action, appPath: appPath, resolvedVolumePath: volume.path, report: report,
+                             existingRecord: existing, fingerprints: fingerprints)
+    }
+
+    public func executeAppUpdate(plan: AppUpdatePlan, acknowledgeRisks: Bool = false,
+                                 progress: ProgressHandler? = nil) throws -> UpdateWorkflowReport {
+        let current = try planAppUpdate(action: plan.action, appPath: plan.appPath)
+        guard plan.hasSameConditions(as: current) else {
+            throw MacBayError.unsupportedOperation("Update conditions changed. No update was started. Refresh and review a new preview.")
+        }
+        switch plan.action {
+        case .begin:
+            return try beginAppUpdate(appName: plan.appPath, dryRun: false, progress: progress)
+        case .finish:
+            return try finishAppUpdate(appName: plan.appPath, force: acknowledgeRisks, dryRun: false, progress: progress)
+        case .managedKiro:
+            return try runKiroUpdate(dryRun: false, progress: progress)
+        }
+    }
+
     private func updateWorkflowVolume(for record: UpdateWorkflowRecord) throws -> StorageVolume {
         let configured = DefaultVolume(
             path: record.volumePath,
@@ -1141,7 +1221,11 @@ public struct MacBayService {
         dryRun: Bool
     ) throws -> XcodeDoctorReport {
         let selection = try selectVolume(path: volumePath)
-        return try xcodeDoctor.run(on: URL(fileURLWithPath: selection.volume.path), options: options, dryRun: dryRun)
+        let volume = URL(fileURLWithPath: selection.volume.path)
+        if dryRun { return try xcodeDoctor.run(on: volume, options: options, dryRun: true) }
+        return try VolumeOperationLock().withVolumeLock(on: volume) {
+            try xcodeDoctor.run(on: volume, options: options, dryRun: false)
+        }
     }
 
     public func isXcodeRunning() throws -> Bool { try xcodeDoctor.isXcodeRunning() }
@@ -1151,28 +1235,35 @@ public struct MacBayService {
         return try xcodeDoctor.makePlan(on: URL(fileURLWithPath: selection.volume.path), options: options)
     }
 
-    public func executeXcode(plan: XcodeStoragePlan) throws -> XcodeDoctorReport {
-        // Re-select the exact mount, never fall back to a different default volume.
-        do {
-            let current = try planXcode(volumePath: plan.volumePath, options: plan.options)
-            guard plan.hasSameConditions(as: current) else {
-                throw XcodePlanError.conditionsChanged("Selected paths, volume identity, Xcode state or simulator targets changed.")
+    public func executeXcode(plan: XcodeStoragePlan, progress: ProgressHandler? = nil) throws -> XcodeDoctorReport {
+        // Check the exact mount before creating lock metadata, then check all
+        // reviewed conditions again while holding the same lock as CLI/TUI moves.
+        let volume: URL
+        do { volume = URL(fileURLWithPath: try selectVolume(path: plan.volumePath).volume.path) }
+        catch { throw XcodePlanError.conditionsChanged(error.localizedDescription) }
+        return try VolumeOperationLock().withVolumeLock(on: volume) {
+            do {
+                let current = try planXcode(volumePath: plan.volumePath, options: plan.options)
+                guard plan.hasSameConditions(as: current) else {
+                    throw XcodePlanError.conditionsChanged("Selected paths, volume identity, Xcode state or simulator targets changed.")
+                }
+            } catch let error as XcodePlanError {
+                throw error
+            } catch {
+                throw XcodePlanError.conditionsChanged(error.localizedDescription)
             }
-        } catch let error as XcodePlanError {
-            throw error
-        } catch {
-            throw XcodePlanError.conditionsChanged(error.localizedDescription)
-        }
-        do {
-            let report = try xcode(volumePath: plan.volumePath, options: plan.options, dryRun: false)
-            historyStore.record(HistoryEntry(command: "xcode", subject: "Xcode data",
-                outcome: report.hasFailures ? .partial : .success,
-                detail: plan.options.actionDescriptions.joined(separator: ", ")))
-            return report
-        } catch {
-            historyStore.record(HistoryEntry(command: "xcode", subject: "Xcode data",
-                outcome: .failure, detail: error.localizedDescription))
-            throw error
+            do {
+                let report = try xcodeDoctor.run(on: volume, options: plan.options, dryRun: false,
+                    unavailableSimulatorIDs: plan.unavailableSimulatorIDs, progress: progress)
+                historyStore.record(HistoryEntry(command: "xcode", subject: "Xcode data",
+                    outcome: report.hasFailures ? .partial : .success,
+                    detail: plan.options.actionDescriptions.joined(separator: ", ")))
+                return report
+            } catch {
+                historyStore.record(HistoryEntry(command: "xcode", subject: "Xcode data",
+                    outcome: .failure, detail: error.localizedDescription))
+                throw error
+            }
         }
     }
 
@@ -1227,6 +1318,109 @@ public struct MacBayService {
 
     public func scanPurge(options: PurgeOptions = PurgeOptions()) -> [PurgeItem] {
         purgeEngine.scan(options: options)
+    }
+
+    public func planApplicationMigration(action: ApplicationMigrationAction, appPath: String,
+                                         volumePath: String? = nil) throws -> ApplicationMigrationPlan {
+        let source = MacBayPaths.applicationURL(named: appPath)
+        let selectedPath: String
+        if action == .restore {
+            let target = try fileManager.destinationOfSymbolicLink(atPath: source.path)
+            let resolved = URL(fileURLWithPath: target, relativeTo: source.deletingLastPathComponent()).standardizedFileURL
+            selectedPath = try macBayVolumePath(for: resolved, appName: source.lastPathComponent)
+            let items = try manifestStore.load(on: URL(fileURLWithPath: selectedPath)).items
+            guard items.contains(where: { $0.kind == .application && $0.sourcePath == source.path && $0.externalPath == resolved.path }) else {
+                throw MacBayError.unsupportedOperation("The application link and manifest no longer match. Refresh Diagnostics.")
+            }
+        } else {
+            guard let volumePath else { throw MacBayError.invalidVolume("Choose an explicit destination drive.") }
+            selectedPath = volumePath
+        }
+        let volume = try volumeManager.resolveExternalVolume(path: selectedPath)
+        guard try volumeManager.externalVolumes().contains(where: { $0.path == volume.path }),
+              let uuid = try volumeManager.diskInfoProvider.diskInfo(for: volume.path).volumeUUID, !uuid.isEmpty else {
+            throw MacBayError.invalidVolume("The selected drive is not mounted or its UUID cannot be verified.")
+        }
+        let report = action == .restore
+            ? try undock(appName: source.path, volumePath: volume.path, dryRun: true)
+            : try dock(appName: source.path, volumePath: volume.path, dryRun: true)
+        var fingerprints: [String: String] = [:]
+        let fingerprinter = OperationPathFingerprinter(fileManager: fileManager)
+        for path in Set([source.path, report.sourcePath, report.destinationPath,
+                         MacBayPaths.manifestURL(on: URL(fileURLWithPath: volume.path)).path]) {
+            fingerprints[path] = try fingerprinter.fingerprint(URL(fileURLWithPath: path), recursive: true)
+        }
+        return ApplicationMigrationPlan(action: action, appPath: source.path, volumePath: volume.path,
+            volumeUUID: uuid, report: report, fingerprints: fingerprints)
+    }
+
+    public func executeApplicationMigration(plan: ApplicationMigrationPlan, acknowledgeRisks: Bool = false,
+                                             progress: ProgressHandler? = nil) throws -> MigrationResult {
+        let current = try planApplicationMigration(action: plan.action, appPath: plan.appPath, volumePath: plan.volumePath)
+        guard current.volumePath == plan.volumePath, current.volumeUUID == plan.volumeUUID,
+              current.fingerprints == plan.fingerprints, current.report.sourcePath == plan.report.sourcePath,
+              current.report.destinationPath == plan.report.destinationPath, current.report.sizeBytes == plan.report.sizeBytes,
+              current.report.compatibility == plan.report.compatibility else {
+            throw MacBayError.unsupportedOperation("Application conditions changed. Refresh and review a new preview.")
+        }
+        return plan.action == .restore
+            ? try undock(appName: plan.appPath, volumePath: plan.volumePath, dryRun: false, progress: progress)
+            : try dock(appName: plan.appPath, volumePath: plan.volumePath, dryRun: false, force: acknowledgeRisks, progress: progress)
+    }
+
+    public func planCachePurge(items: [PurgeItem]) throws -> CachePurgePlan {
+        guard !items.isEmpty, Set(items.map(\.id)).count == items.count else { throw MacBayError.unsupportedOperation("Select unique disposable caches first.") }
+        let current = Dictionary(scanPurge().map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var selected: [PurgeItem] = []
+        var fingerprints: [String: String] = [:]
+        let fingerprinter = OperationPathFingerprinter(fileManager: fileManager)
+        for item in items {
+            guard let fresh = current[item.id], fresh.category == item.category,
+                  fresh.appName == item.appName, !fresh.isRunning else {
+                throw MacBayError.unsupportedOperation("Selected caches changed or an app is running. Scan again before continuing.")
+            }
+            selected.append(fresh)
+            fingerprints[fresh.path] = try fingerprinter.fingerprint(URL(fileURLWithPath: fresh.path), recursive: true)
+        }
+        let preview = try purge(items: selected, dryRun: true)
+        guard preview.failedItems.isEmpty, preview.skippedItems.isEmpty, preview.purgedItems.count == selected.count else {
+            throw MacBayError.unsupportedOperation("One or more selected cache paths are no longer eligible. Scan again.")
+        }
+        return CachePurgePlan(items: selected, fingerprints: fingerprints)
+    }
+
+    public func executeCachePurge(plan: CachePurgePlan) throws -> PurgeReport {
+        do {
+            guard try planCachePurge(items: plan.items) == plan else {
+                throw MacBayError.unsupportedOperation("Cache contents changed. Scan again and review a new cleanup preview.")
+            }
+            let result = try purge(items: plan.items, dryRun: false)
+            recordOperation(command: "purge", subject: "\(plan.items.count) cache(s)",
+                outcome: result.failedItems.isEmpty && result.skippedItems.isEmpty ? .success : .partial,
+                detail: "Removed \(OutputFormatter.humanBytes(result.totalReclaimedBytes)) of logical cache data.")
+            return result
+        } catch {
+            recordOperation(command: "purge", subject: "\(plan.items.count) cache(s)", outcome: .failure,
+                detail: error.localizedDescription)
+            throw error
+        }
+    }
+
+    public func planDefaultVolume(volumePath: String) throws -> DefaultVolumePlan {
+        let volume = try volumeManager.resolveExternalVolume(path: volumePath)
+        guard try volumeManager.externalVolumes().contains(where: { $0.path == volume.path }),
+              let uuid = try volumeManager.diskInfoProvider.diskInfo(for: volume.path).volumeUUID, !uuid.isEmpty else {
+            throw MacBayError.invalidVolume("Reconnect the selected drive before saving it.")
+        }
+        return DefaultVolumePlan(volume: volume, volumeUUID: uuid, previousDefault: try configStore.load().defaultVolume)
+    }
+
+    public func executeDefaultVolume(plan: DefaultVolumePlan) throws -> InitReport {
+        let current = try planDefaultVolume(volumePath: plan.volume.path)
+        guard current.volumeUUID == plan.volumeUUID, current.previousDefault == plan.previousDefault else {
+            throw MacBayError.unsupportedOperation("The drive or saved default changed. Review setup again before saving.")
+        }
+        return try initialize(volumePath: plan.volume.path)
     }
 
     public func purge(

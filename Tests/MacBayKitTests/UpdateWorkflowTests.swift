@@ -13,6 +13,128 @@ final class UpdateWorkflowTests: XCTestCase {
         try? FileManager.default.removeItem(at: fixture.root)
     }
 
+    func testUpdatePlanIsReadOnlyAndExecutesTheReviewedWorkflow() throws {
+        let plan = try fixture.service.planAppUpdate(action: .begin, appPath: fixture.source.path)
+        XCTAssertTrue(plan.report.dryRun)
+        XCTAssertTrue(try fixture.service.updateStatus().isEmpty)
+        XCTAssertTrue(FileManager.default.destinationOfSymbolicLinkIfExists(fixture.source))
+        _ = try fixture.service.executeAppUpdate(plan: plan)
+        XCTAssertEqual(try fixture.service.updateStatus().first?.phase, .awaitingUpdate)
+        let finish = try fixture.service.planAppUpdate(action: .finish, appPath: fixture.source.path)
+        _ = try fixture.service.executeAppUpdate(plan: finish)
+        XCTAssertTrue(try fixture.service.updateStatus().isEmpty)
+        XCTAssertTrue(FileManager.default.destinationOfSymbolicLinkIfExists(fixture.source))
+    }
+
+    func testUpdatePlanRejectsSameSizeSourceChangesBeforeMutation() throws {
+        let file = fixture.externalApp.appendingPathComponent("Contents/state.txt")
+        try Data("before".utf8).write(to: file)
+        let plan = try fixture.service.planAppUpdate(action: .begin, appPath: fixture.source.path)
+        try Data("after!".utf8).write(to: file, options: .atomic)
+        XCTAssertThrowsError(try fixture.service.executeAppUpdate(plan: plan)) {
+            XCTAssertTrue($0.localizedDescription.contains("conditions changed"))
+        }
+        XCTAssertTrue(try fixture.service.updateStatus().isEmpty)
+        XCTAssertTrue(FileManager.default.destinationOfSymbolicLinkIfExists(fixture.source))
+    }
+
+    func testUpdatePlanRejectsWorkflowChanges() throws {
+        let plan = try fixture.service.planAppUpdate(action: .begin, appPath: fixture.source.path)
+        _ = try fixture.service.beginAppUpdate(appName: fixture.source.path, dryRun: false)
+        let recorded = try fixture.service.updateStatus()
+        XCTAssertThrowsError(try fixture.service.executeAppUpdate(plan: plan))
+        XCTAssertEqual(try fixture.service.updateStatus(), recorded)
+        XCTAssertFalse(FileManager.default.destinationOfSymbolicLinkIfExists(fixture.source))
+    }
+
+    func testUpdatePlanRechecksSignatureAndAllowsFreshRetry() throws {
+        let plan = try fixture.service.planAppUpdate(action: .begin, appPath: fixture.source.path)
+        fixture.runner.verifyStatus = 1
+        XCTAssertThrowsError(try fixture.service.executeAppUpdate(plan: plan))
+        XCTAssertTrue(try fixture.service.updateStatus().isEmpty)
+        XCTAssertTrue(FileManager.default.destinationOfSymbolicLinkIfExists(fixture.source))
+        fixture.runner.verifyStatus = 0
+        let fresh = try fixture.service.planAppUpdate(action: .begin, appPath: fixture.source.path)
+        _ = try fixture.service.executeAppUpdate(plan: fresh)
+        XCTAssertEqual(try fixture.service.updateStatus().first?.phase, .awaitingUpdate)
+    }
+
+    func testUpdatePlanRechecksRunningProcesses() throws {
+        let plan = try fixture.service.planAppUpdate(action: .begin, appPath: fixture.source.path)
+        fixture.runner.lockedPath = fixture.externalApp.path + "/Contents/MacOS/kiro-cli"
+        XCTAssertThrowsError(try fixture.service.executeAppUpdate(plan: plan))
+        XCTAssertTrue(try fixture.service.updateStatus().isEmpty)
+        XCTAssertTrue(FileManager.default.destinationOfSymbolicLinkIfExists(fixture.source))
+    }
+
+    func testManagedUpdatePlanFailurePreservesLocalAppAndWorkflow() throws {
+        let plan = try fixture.service.planAppUpdate(action: .managedKiro, appPath: fixture.source.path)
+        fixture.runner.updateStatus = 1
+        XCTAssertThrowsError(try fixture.service.executeAppUpdate(plan: plan))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.source.path))
+        XCTAssertFalse(FileManager.default.destinationOfSymbolicLinkIfExists(fixture.source))
+        XCTAssertEqual(try fixture.service.updateStatus().first?.phase, .awaitingUpdate)
+    }
+
+    func testManagedUpdatePlanRejectsAnotherApplicationPath() {
+        XCTAssertThrowsError(try fixture.service.planAppUpdate(action: .managedKiro,
+            appPath: fixture.source.deletingLastPathComponent().appendingPathComponent("Other.app").path))
+    }
+
+    func testApplicationMoveAndRestorePlansUseTheReviewedVolume() throws {
+        let restore = try fixture.service.planApplicationMigration(action: .restore, appPath: fixture.source.path,
+                                                                    volumePath: "/Volumes/NotTheRecordedDrive")
+        XCTAssertEqual(restore.volumePath, fixture.volume.path)
+        XCTAssertTrue(FileManager.default.destinationOfSymbolicLinkIfExists(fixture.source))
+        _ = try fixture.service.executeApplicationMigration(plan: restore)
+        XCTAssertFalse(FileManager.default.destinationOfSymbolicLinkIfExists(fixture.source))
+        let move = try fixture.service.planApplicationMigration(action: .move, appPath: fixture.source.path,
+                                                                 volumePath: fixture.volume.path)
+        _ = try fixture.service.executeApplicationMigration(plan: move)
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: fixture.source.path), fixture.externalApp.path)
+    }
+
+    func testMigrationRejectsReplacedDriveAndChangedSourceBeforeCopying() throws {
+        let restore = try fixture.service.planApplicationMigration(action: .restore, appPath: fixture.source.path)
+        fixture.setExternalUUID("ANOTHER-DRIVE")
+        XCTAssertThrowsError(try fixture.service.executeApplicationMigration(plan: restore))
+        fixture.setExternalUUID("UPDATE-TEST-UUID")
+        let file = fixture.externalApp.appendingPathComponent("Contents/MacOS/kiro-cli")
+        try Data("changed".utf8).write(to: file, options: .atomic)
+        XCTAssertThrowsError(try fixture.service.executeApplicationMigration(plan: restore))
+        XCTAssertTrue(FileManager.default.destinationOfSymbolicLinkIfExists(fixture.source))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.externalApp.path))
+    }
+
+    func testMigrationRechecksProcessesAndDoesNotRestoreUnmanagedLinks() throws {
+        let plan = try fixture.service.planApplicationMigration(action: .restore, appPath: fixture.source.path)
+        fixture.runner.lockedPath = fixture.externalApp.appendingPathComponent("Contents/MacOS/kiro-cli").path
+        XCTAssertThrowsError(try fixture.service.executeApplicationMigration(plan: plan))
+        fixture.runner.lockedPath = nil
+        try ManifestStore().updating(on: fixture.volume) { $0.items = [] }
+        XCTAssertThrowsError(try fixture.service.planApplicationMigration(action: .restore, appPath: fixture.source.path))
+        XCTAssertTrue(FileManager.default.destinationOfSymbolicLinkIfExists(fixture.source))
+    }
+
+    func testDefaultDrivePreviewDoesNotSaveAndChangedConfigurationIsRejected() throws {
+        let plan = try fixture.service.planDefaultVolume(volumePath: fixture.volume.path)
+        XCTAssertNil(try fixture.service.showConfig().defaultVolume)
+        _ = try fixture.service.executeDefaultVolume(plan: plan)
+        let saved = try fixture.service.showConfig().defaultVolume
+        XCTAssertEqual(saved?.uuid, "UPDATE-TEST-UUID")
+        XCTAssertThrowsError(try fixture.service.executeDefaultVolume(plan: plan))
+        XCTAssertEqual(try fixture.service.showConfig().defaultVolume, saved)
+    }
+
+    func testDefaultDriveCannotBeReplacedOrDisconnectedWhileSetupIsOpen() throws {
+        let plan = try fixture.service.planDefaultVolume(volumePath: fixture.volume.path)
+        fixture.setExternalUUID("DIFFERENT-DRIVE")
+        XCTAssertThrowsError(try fixture.service.executeDefaultVolume(plan: plan))
+        fixture.fileManager.mountedPaths = ["/"]
+        XCTAssertThrowsError(try fixture.service.executeDefaultVolume(plan: plan))
+        XCTAssertNil(try fixture.service.showConfig().defaultVolume)
+    }
+
     func testBeginAndFinishRestoresUpdatedAppAndClearsWorkflow() throws {
         let preview = try fixture.service.beginAppUpdate(appName: fixture.source.path, dryRun: true)
         XCTAssertTrue(preview.dryRun)
@@ -241,6 +363,126 @@ final class UpdateWorkflowTests: XCTestCase {
     }
 }
 
+final class RepairRollbackPlanTests: XCTestCase {
+    private var fixture: Fixture!
+    override func setUpWithError() throws { fixture = try Fixture() }
+    override func tearDownWithError() throws { try FileManager.default.removeItem(at: fixture.root); fixture = nil }
+
+    func testRollbackPlanOnlyInspectsUntilConfirmedAndRestoresRecordedState() throws {
+        let record = try fixture.interruptRepair()
+        let plan = try fixture.service.planRepairRollback(appName: record.appName, volumePath: record.volumePath)
+        XCTAssertEqual(plan.record, record)
+        XCTAssertNotNil(DarwinRepairJournal().load(appName: record.appName, on: fixture.volume))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: record.stagingPath))
+        _ = try fixture.service.executeRepairRollback(plan: plan)
+        XCTAssertNil(DarwinRepairJournal().load(appName: record.appName, on: fixture.volume))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: record.localPath))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: record.externalPath))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: record.stagingPath))
+    }
+
+    func testChangedJournalPreventsRollback() throws {
+        let record = try fixture.interruptRepair()
+        let plan = try fixture.service.planRepairRollback(appName: record.appName, volumePath: record.volumePath)
+        try DarwinRepairJournal().save(record.updatingPhase(.started), on: fixture.volume)
+        XCTAssertThrowsError(try fixture.service.executeRepairRollback(plan: plan))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: record.stagingPath))
+        XCTAssertNotNil(DarwinRepairJournal().load(appName: record.appName, on: fixture.volume))
+    }
+
+    func testChangedStagingOrSourcePreventsRollback() throws {
+        let record = try fixture.interruptRepair()
+        let plan = try fixture.service.planRepairRollback(appName: record.appName, volumePath: record.volumePath)
+        let file = URL(fileURLWithPath: record.stagingPath).appendingPathComponent("Contents/MacOS/kiro-cli")
+        try Data("changed executable".utf8).write(to: file, options: .atomic)
+        XCTAssertThrowsError(try fixture.service.executeRepairRollback(plan: plan))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: record.stagingPath))
+    }
+
+    func testReplacedVolumePreventsRollbackAndFreshPreviewCanRetry() throws {
+        let record = try fixture.interruptRepair()
+        let plan = try fixture.service.planRepairRollback(appName: record.appName, volumePath: record.volumePath)
+        fixture.setExternalUUID("ANOTHER-VOLUME")
+        XCTAssertThrowsError(try fixture.service.executeRepairRollback(plan: plan))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: record.stagingPath))
+        fixture.setExternalUUID("UPDATE-TEST-UUID")
+        let fresh = try fixture.service.planRepairRollback(appName: record.appName, volumePath: record.volumePath)
+        _ = try fixture.service.executeRepairRollback(plan: fresh)
+        XCTAssertNil(DarwinRepairJournal().load(appName: record.appName, on: fixture.volume))
+    }
+
+    func testMissingVolumeAndRunningAppPreventRollback() throws {
+        let record = try fixture.interruptRepair()
+        let plan = try fixture.service.planRepairRollback(appName: record.appName, volumePath: record.volumePath)
+        fixture.fileManager.mountedPaths = ["/"]
+        XCTAssertThrowsError(try fixture.service.executeRepairRollback(plan: plan))
+        fixture.fileManager.mountedPaths = ["/", fixture.volume.path]
+        fixture.runner.lockedPath = record.localPath + "/Contents/MacOS/kiro-cli"
+        XCTAssertThrowsError(try fixture.service.executeRepairRollback(plan: plan))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: record.stagingPath))
+    }
+
+    func testRedirectedStagingParentStaysReadOnly() throws {
+        let record = try fixture.interruptRepair()
+        let parent = URL(fileURLWithPath: record.stagingPath).deletingLastPathComponent()
+        let other = MacBayPaths.operationsRoot(on: fixture.volume).appendingPathComponent("another-operation")
+        try FileManager.default.moveItem(at: parent, to: other)
+        try FileManager.default.createSymbolicLink(atPath: parent.path, withDestinationPath: other.path)
+        XCTAssertThrowsError(try fixture.service.planRepairRollback(appName: record.appName, volumePath: record.volumePath))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: other.appendingPathComponent(record.appName).path))
+    }
+
+    func testAdditionalStagingDataIsNeverIncludedInRollbackCleanup() throws {
+        let record = try fixture.interruptRepair()
+        let extra = URL(fileURLWithPath: record.stagingPath).deletingLastPathComponent().appendingPathComponent("unrelated.txt")
+        try Data("preserve".utf8).write(to: extra)
+        XCTAssertThrowsError(try fixture.service.planRepairRollback(appName: record.appName, volumePath: record.volumePath))
+        XCTAssertEqual(try String(contentsOf: extra), "preserve")
+        XCTAssertNotNil(DarwinRepairJournal().load(appName: record.appName, on: fixture.volume))
+    }
+
+    func testPartialCleanupFailureKeepsJournalAndRemainingStaging() throws {
+        let record = try fixture.interruptRepair()
+        let plan = try fixture.service.planRepairRollback(appName: record.appName, volumePath: record.volumePath)
+        fixture.fileManager.failOnRemoval = record.stagingPath
+        XCTAssertThrowsError(try fixture.service.executeRepairRollback(plan: plan)) {
+            XCTAssertTrue($0.localizedDescription.contains("Rollback incomplete"))
+        }
+        XCTAssertNotNil(DarwinRepairJournal().load(appName: record.appName, on: fixture.volume))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: record.stagingPath))
+        fixture.fileManager.failOnRemoval = nil
+        let fresh = try fixture.service.planRepairRollback(appName: record.appName, volumePath: record.volumePath)
+        _ = try fixture.service.executeRepairRollback(plan: fresh)
+    }
+
+    func testAmbiguousPhaseAndInvalidSignatureStayReadOnly() throws {
+        let record = try fixture.interruptRepair()
+        try DarwinRepairJournal().save(record.updatingPhase(.linked), on: fixture.volume)
+        XCTAssertThrowsError(try fixture.service.planRepairRollback(appName: record.appName, volumePath: record.volumePath))
+        try DarwinRepairJournal().save(record, on: fixture.volume)
+        fixture.runner.verifyStatus = 1
+        XCTAssertThrowsError(try fixture.service.planRepairRollback(appName: record.appName, volumePath: record.volumePath))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: record.stagingPath))
+    }
+
+    func testJournalCleanupFailureIsReportedAndCanBeRetried() throws {
+        let record = try fixture.interruptRepair()
+        let plan = try fixture.service.planRepairRollback(appName: record.appName, volumePath: record.volumePath)
+        fixture.fileManager.failOnRemoval = MacBayPaths.operationsRoot(on: fixture.volume)
+            .appendingPathComponent("repair-" + record.appName + ".json").path
+        XCTAssertThrowsError(try fixture.service.executeRepairRollback(plan: plan)) {
+            XCTAssertTrue($0.localizedDescription.contains("journal could not be cleared"))
+        }
+        XCTAssertNotNil(DarwinRepairJournal().load(appName: record.appName, on: fixture.volume))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: record.localPath))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: record.externalPath))
+        fixture.fileManager.failOnRemoval = nil
+        let fresh = try fixture.service.planRepairRollback(appName: record.appName, volumePath: record.volumePath)
+        _ = try fixture.service.executeRepairRollback(plan: fresh)
+        XCTAssertNil(DarwinRepairJournal().load(appName: record.appName, on: fixture.volume))
+    }
+}
+
 private extension FileManager {
     func isSymbolicLinkAtPath(_ path: String) -> Bool {
         (try? attributesOfItem(atPath: path)[.type] as? FileAttributeType) == .typeSymbolicLink
@@ -253,6 +495,12 @@ private extension FileManager {
 
 private final class UpdateWorkflowTestFileManager: FileManager, @unchecked Sendable {
     var mountedPaths: [String]
+    var failOnRemoval: String?
+
+    override func removeItem(at URL: URL) throws {
+        if URL.path == failOnRemoval { throw CocoaError(.fileWriteNoPermission) }
+        try super.removeItem(at: URL)
+    }
 
     init(mountedPaths: [String]) {
         self.mountedPaths = mountedPaths
@@ -414,6 +662,24 @@ private final class Fixture {
                 dockedAt: macBayTimestamp()
             )]
         }
+    }
+
+    func interruptRepair() throws -> RepairJournalRecord {
+        try FileManager.default.removeItem(at: source)
+        try FileManager.default.copyItem(at: externalApp, to: source)
+        let id = UUID().uuidString
+        let staging = MacBayPaths.operationsRoot(on: volume).appendingPathComponent(".staging-" + id).appendingPathComponent(appName)
+        try FileManager.default.createDirectory(at: staging.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: source, to: staging)
+        let item = try XCTUnwrap(ManifestStore().load(on: volume).items.first)
+        let record = RepairJournalRecord(id: id, appName: appName, localPath: source.path,
+            externalPath: externalApp.path,
+            backupPath: MacBayPaths.backupsRoot(on: volume).appendingPathComponent(id).appendingPathComponent(appName).path,
+            stagingPath: staging.path,
+            localBackupPath: source.deletingLastPathComponent().appendingPathComponent("." + appName + ".macbay-local-backup-" + id).path,
+            volumePath: volume.path, phase: .staged, timestamp: macBayTimestamp(), originalManifestItem: item)
+        try DarwinRepairJournal().save(record, on: volume)
+        return record
     }
 
     func writeMetadata(
