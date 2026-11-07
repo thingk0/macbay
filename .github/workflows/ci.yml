@@ -1,64 +1,77 @@
 name: CI
 
-# Pushes run CI for main only, so direct pushes to develop stay fast. Pull
-# requests still run it; start it manually from the Actions tab when a develop
-# change needs the Xcode 15.4 toolchain check.
 on:
   push:
-    branches: [ main ]
-    paths-ignore:
-      - '**/*.md'
-      - 'docs/**'
-      - '.github/FUNDING.yml'
+    branches: [main]
+    paths-ignore: ["**/*.md", "docs/**", ".github/FUNDING.yml"]
   pull_request:
-    branches: [ main, develop ]
-    paths-ignore:
-      - '**/*.md'
-      - 'docs/**'
-      - '.github/FUNDING.yml'
+    branches: [main, develop]
+    paths-ignore: ["**/*.md", "docs/**", ".github/FUNDING.yml"]
   workflow_dispatch:
 
-# A new push to the same branch makes the in-flight run obsolete.
+permissions:
+  contents: read
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build-and-test:
-    name: Build and Test (macOS)
-    runs-on: macos-14
-    # Draft pull requests do not run CI; marking one ready for review starts it.
+    name: ${{ matrix.name }}
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Build and Test (macOS)
+            os: macos-26
+            xcode: /Applications/Xcode_26.6.app/Contents/Developer
+            legacy: false
+          - name: Legacy GUI and CLI compatibility
+            os: macos-15
+            xcode: /Applications/Xcode_16.4.app/Contents/Developer
+            legacy: true
+    runs-on: ${{ matrix.os }}
+    env:
+      DEVELOPER_DIR: ${{ matrix.xcode }}
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_15.4.app
-
-      - name: Show Swift version
-        run: swift --version
-
-      # Builds the package, the executables and the test targets in one pass,
-      # so the test step does not compile them a second time.
-      - name: Build package and tests
-        run: swift build --build-tests
-
-      - name: Run test suite
-        run: swift test --skip-build
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Verify toolchain
+        run: |
+          swift --version
+          xcrun --show-sdk-version
+      - name: Hardware-free regression tests
+        run: bash scripts/test-safe.sh
+      - name: App packaging tests
+        run: python3 -m unittest discover -s Tests/PackagingTests -v
+      - name: Compile material fallback
+        if: matrix.legacy
+        run: swift build --product MacBayApp -Xswiftc -DMACBAY_LEGACY_APPEARANCE
+      - name: Build local GUI artifact
+        if: matrix.legacy == false
+        run: bash scripts/build-app.sh --dmg
+      - name: Upload local verification DMG
+        if: matrix.legacy == false
+        uses: actions/upload-artifact@v6
+        with:
+          name: MacBay-local-verification
+          path: |
+            .build/gui/MacBay-*-arm64-local.dmg
+            .build/gui/MacBay-*-arm64-local.dmg.sha256
+          if-no-files-found: error
+          retention-days: 7
 
   release-build:
     name: Release Build (macOS)
-    runs-on: macos-14
+    runs-on: macos-26
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_15.4.app
-
-      - name: Build release binaries
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Build all release products
         run: swift build -c release
