@@ -16,7 +16,7 @@
 
 MacBay is a macOS storage manager for Apple Silicon Macs, with a native SwiftUI app as its primary interface. Review storage, update managed apps, and recover supported interrupted operations from the GUI. The shared engine also powers the CLI and TUI to externalize applications, Xcode data, and developer caches while preserving their original paths.
 
-[![CI](https://github.com/thingk0/macbay/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/thingk0/macbay/actions/workflows/ci.yml?query=branch%3Amain)
+[![CI](https://github.com/Mildbit-Studio/macbay/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Mildbit-Studio/macbay/actions/workflows/ci.yml?query=branch%3Amain)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![macOS 13+](https://img.shields.io/badge/macOS-13%2B-black.svg?logo=apple)](https://www.apple.com/macos/)
 [![Apple Silicon](https://img.shields.io/badge/Architecture-Apple%20Silicon-orange.svg)](https://en.wikipedia.org/wiki/Apple_silicon) [![Sponsor](https://img.shields.io/badge/Sponsor-thingk0-ea4aaa?logo=github-sponsors)](https://github.com/sponsors/thingk0)
@@ -116,7 +116,7 @@ Requirements: macOS 13 or newer, Apple Silicon, and Xcode Command Line Tools or 
 
 ```sh
 # Clone the repository
-git clone https://github.com/thingk0/macbay.git
+git clone https://github.com/Mildbit-Studio/macbay.git
 cd macbay
 
 # Build release binaries

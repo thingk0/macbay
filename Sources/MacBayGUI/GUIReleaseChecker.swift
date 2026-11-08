@@ -29,7 +29,7 @@ public actor GitHubGUIReleaseChecker: GUIReleaseChecking {
         self.session = session ?? URLSession(configuration: configuration)
     }
     public func check(installedVersion: String) async throws -> GUIReleaseInfo {
-        let endpoint = URL(string: "https://api.github.com/repos/thingk0/macbay/releases/latest")!
+        let endpoint = URL(string: "https://api.github.com/repos/Mildbit-Studio/macbay/releases/latest")!
         var request = URLRequest(url: endpoint)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("MacBay/" + installedVersion, forHTTPHeaderField: "User-Agent")
@@ -52,7 +52,7 @@ public actor GitHubGUIReleaseChecker: GUIReleaseChecking {
             || (installed.numbers == latest.numbers && installed.prerelease)
         return GUIReleaseInfo(status: newer ? .updateAvailable : .upToDate, installedVersion: installedVersion,
             latestVersion: latest.normalized,
-            pageURL: URL(string: "https://github.com/thingk0/macbay/releases/tag/" + release.tag_name))
+            pageURL: URL(string: "https://github.com/Mildbit-Studio/macbay/releases/tag/" + release.tag_name))
     }
 }
 
