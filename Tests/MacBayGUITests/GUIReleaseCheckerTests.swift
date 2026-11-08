@@ -12,9 +12,9 @@ final class GUIReleaseCheckerTests: XCTestCase {
     func testNewStableReleaseUsesOnlyTheOfficialReleaseURLAndNoInventory() async throws {
         let result = try await checker(#"{"tag_name":"v1.10.1","draft":false,"prerelease":false}"#).check(installedVersion: "1.10.0")
         XCTAssertEqual(result.status, .updateAvailable)
-        XCTAssertEqual(result.pageURL?.absoluteString, "https://github.com/thingk0/macbay/releases/tag/v1.10.1")
+        XCTAssertEqual(result.pageURL?.absoluteString, "https://github.com/Mildbit-Studio/macbay/releases/tag/v1.10.1")
         let request = try XCTUnwrap(ReleaseProtocol.lastRequest)
-        XCTAssertEqual(request.url?.absoluteString, "https://api.github.com/repos/thingk0/macbay/releases/latest")
+        XCTAssertEqual(request.url?.absoluteString, "https://api.github.com/repos/Mildbit-Studio/macbay/releases/latest")
         XCTAssertNil(request.httpBody)
         XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
         XCTAssertNil(request.url?.query)
@@ -69,7 +69,7 @@ private final class ReleaseProtocol: URLProtocol, @unchecked Sendable {
         Self.request = request
         let body = Self.body, status = Self.status, host = Self.host
         Self.lock.unlock()
-        let response = HTTPURLResponse(url: URL(string: "https://" + host + "/repos/thingk0/macbay/releases/latest")!,
+        let response = HTTPURLResponse(url: URL(string: "https://" + host + "/repos/Mildbit-Studio/macbay/releases/latest")!,
             statusCode: status, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Data(body.utf8))
